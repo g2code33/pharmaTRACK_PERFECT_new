@@ -1,36 +1,24 @@
 name: "Build Windows App"
-
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch: # Allows you to manually trigger the build
-
+    branches: [ main ]
+  workflow_dispatch:
 jobs:
   build-tauri:
     permissions:
       contents: write
     runs-on: windows-latest
-
+    env:
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Install Frontend Dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: Build Tauri App
-        uses: tauri-apps/tauri-action@v0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: x86_64-pc-windows-msvc }
+      - run: npm install --legacy-peer-deps
+      - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
