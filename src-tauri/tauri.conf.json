@@ -11,18 +11,25 @@
     "copyright": "",
     "targets": "all",
     "icon": [
-      "src-tauri/icons/32x32.png",
-      "src-tauri/icons/128x128.png",
-      "src-tauri/icons/128x128@2x.png",
-      "src-tauri/icons/icon.icns",
-      "src-tauri/icons/icon.ico"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
     ]
   },
   "productName": "PharmaTRACK",
   "mainBinaryName": "PharmaTRACK",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "identifier": "com.pharmatrack.app",
-  "plugins": {},
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest/download/latest.json"
+      ],
+      "pubkey": ""
+    }
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { open } from '@tauri-apps/plugin-shell';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
@@ -106,19 +106,13 @@ const SlideReader: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const openExternalWeb = () => {
+  const openExternalWeb = async () => {
     try {
-      new WebviewWindow('ext-web', {
-        url: 'https://www.google.com/search?igu=1',
-        title: 'PharmaTRACK Browser',
-        width: 450,
-        height: 700,
-        x: window.innerWidth - 470,
-        y: 100,
-        alwaysOnTop: true,
-      });
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open('https://chatgpt.com');
     } catch(e) {
-      window.open('https://www.google.com/search?igu=1', '_blank', 'width=450,height=700');
+      console.error('Shell Open Error:', e);
+      window.open('https://chatgpt.com', '_blank');
     }
   };
 
