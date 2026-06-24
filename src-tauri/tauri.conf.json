@@ -20,14 +20,14 @@
   },
   "productName": "PharmaTRACK",
   "mainBinaryName": "PharmaTRACK",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "identifier": "com.pharmatrack.app",
   "plugins": {
     "updater": {
       "endpoints": [
         "https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest/download/latest.json"
       ],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4RTA1NEU4N0EwREJGRDAKUldUUXZ3MTY2RlRncU40VGdiMnJFT2kvOUtIQ3R0YVhxczdTaVRJSzJtTktTWC9DVVRINzdRSmcK"
     }
   },
   "app": {
