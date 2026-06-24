@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import { supabase } from '../utils/supabase';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { getVersion } from '@tauri-apps/api/app';
 import {
   Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings,
   Menu, X, Search, ClipboardList, StickyNote, Upload,
@@ -36,6 +37,11 @@ const Layout: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
+  const [appVersion, setAppVersion] = useState('1.0.0');
+
+  useEffect(() => {
+    getVersion().then(v => setAppVersion(v)).catch(console.error);
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -186,7 +192,7 @@ const Layout: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
-                  <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v1.0.7</span>
+                  <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
                   <button onClick={checkForUpdates} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
                   {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
                   <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span>
