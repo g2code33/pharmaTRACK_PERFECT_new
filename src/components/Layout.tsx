@@ -101,7 +101,7 @@ const Layout: React.FC = () => {
     }
   };
 
-  const checkForUpdates = async () => {
+    const checkForUpdates = async () => {
     try {
       setUpdateStatus('checking');
       const update = await check();
@@ -120,9 +120,9 @@ const Layout: React.FC = () => {
         alert('You are already on the latest version!');
         setUpdateStatus('idle');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Update failed:', error);
-      alert('Failed to check for updates. Make sure you have internet access.');
+      alert(`Update Check Failed: ${error.message || error}`);
       setUpdateStatus('idle');
     }
   };
