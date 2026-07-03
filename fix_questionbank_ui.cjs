@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+const fs = require('fs');
+
+const code = `import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { FileQuestion, Upload, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle } from 'lucide-react';
+import { FileQuestion, Upload, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers } from 'lucide-react';
 import { ExamQuestion } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -167,7 +169,7 @@ const QuestionBank = () => {
                                 {q.options && (
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
                                     {q.options.map((opt, oIdx) => (
-                                      <div key={oIdx} className={`p-3 rounded-lg border ${oIdx === q.correctOption ? 'bg-green-50 border-green-200 text-green-900 font-semibold' : 'bg-slate-50 border-slate-100 text-slate-600'}`}><span className="mr-2 font-black opacity-50">{String.fromCharCode(65 + oIdx)}.</span>{opt}</div>
+                                      <div key={oIdx} className={\`p-3 rounded-lg border \${oIdx === q.correctOption ? 'bg-green-50 border-green-200 text-green-900 font-semibold' : 'bg-slate-50 border-slate-100 text-slate-600'}\`}><span className="mr-2 font-black opacity-50">{String.fromCharCode(65 + oIdx)}.</span>{opt}</div>
                                     ))}
                                   </div>
                                 )}
@@ -260,7 +262,7 @@ const QuestionBank = () => {
                       <div key={idx} className="flex items-center gap-3">
                          <input type="radio" name="correctOpt" checked={editForm.correctOption === idx} onChange={() => setEditForm({...editForm, correctOption: idx})} className="w-5 h-5 text-blue-600 focus:ring-blue-500" />
                          <span className="font-black text-slate-400 w-6">{String.fromCharCode(65 + idx)}.</span>
-                         <input type="text" value={opt} onChange={(e) => { const newOpts = [...editForm.options]; newOpts[idx] = e.target.value; setEditForm({...editForm, options: newOpts}); }} className={`flex-1 border-2 rounded-xl p-3 outline-none transition-all font-medium ${editForm.correctOption === idx ? 'border-green-400 bg-green-50 text-green-900' : 'border-slate-200 bg-white focus:border-blue-400'}`} />
+                         <input type="text" value={opt} onChange={(e) => { const newOpts = [...editForm.options]; newOpts[idx] = e.target.value; setEditForm({...editForm, options: newOpts}); }} className={\`flex-1 border-2 rounded-xl p-3 outline-none transition-all font-medium \${editForm.correctOption === idx ? 'border-green-400 bg-green-50 text-green-900' : 'border-slate-200 bg-white focus:border-blue-400'}\`} />
                       </div>
                    ))}
                 </div>
@@ -279,8 +281,12 @@ const QuestionBank = () => {
           </div>
         </div>
       )}
+
     </div>
   );
 };
 
 export default QuestionBank;
+`;
+fs.writeFileSync('src/pages/QuestionBank.tsx', code);
+console.log('Question Bank Overhauled!');
