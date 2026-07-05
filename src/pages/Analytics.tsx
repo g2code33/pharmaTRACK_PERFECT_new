@@ -29,6 +29,7 @@ import {
   AlertTriangle,
   Clock,
   Award,
+  Printer,
 } from 'lucide-react';
 
 const Analytics: React.FC = () => {
@@ -122,7 +123,19 @@ const Analytics: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+            {/* Print-only Header */}
+      <div className="hidden print:block mb-8 text-center border-b-2 border-gray-800 pb-4">
+        <h1 className="text-3xl font-black text-gray-900 mb-2">PharmaTRACK Progress Report</h1>
+        <div className="grid grid-cols-2 gap-4 text-left text-sm mt-6 mb-2 mx-auto max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200">
+           <div><span className="font-bold text-gray-500">Student Name:</span> <span className="font-semibold text-gray-800">{state.student?.name || 'N/A'}</span></div>
+           <div><span className="font-bold text-gray-500">University:</span> <span className="font-semibold text-gray-800">{state.student?.university || 'N/A'}</span></div>
+           <div><span className="font-bold text-gray-500">Program:</span> <span className="font-semibold text-gray-800">{state.student?.program || 'N/A'}</span></div>
+           <div><span className="font-bold text-gray-500">Level/Semester:</span> <span className="font-semibold text-gray-800">{state.student?.level || 'N/A'} / {state.student?.semester || 'N/A'}</span></div>
+        </div>
+        <p className="text-xs font-bold text-gray-400 mt-4 text-right">Generated on: {new Date().toLocaleDateString()}</p>
+      </div>
+
+      {/* Screen Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
@@ -131,7 +144,18 @@ const Analytics: React.FC = () => {
           </h1>
           <p className="text-gray-500">Track your progress and identify areas for improvement</p>
         </div>
-        <div className="flex gap-2">
+                <div className="flex gap-2 print:hidden">
+          <button 
+            onClick={() => {
+              const originalTitle = document.title;
+              document.title = `PharmaTRACK_Progress_${state.student?.name?.replace(/\s+/g, '_') || 'Report'}_${new Date().toISOString().split('T')[0]}`;
+              window.print();
+              document.title = originalTitle;
+            }} 
+            className="flex items-center gap-2 px-4 py-2 bg-[#2D6A4F] text-white rounded-lg text-sm font-bold shadow-md hover:bg-[#1B4332] transition-colors"
+          >
+            <Printer className="w-4 h-4" /> Print Report
+          </button>
           {(['7d', '30d', 'all'] as const).map((range) => (
             <button
               key={range}
