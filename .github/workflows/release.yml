@@ -6,7 +6,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release Structure
+        id: create_release
+        uses: tauri-apps/tauri-action@v0.5.17
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          tagName: v__VERSION__
+          releaseName: "PharmaTRACK v__VERSION__"
+          releaseBody: "Official binaries and update artifacts for PharmaTRACK v__VERSION__."
+          releaseDraft: false
+          prerelease: false
+
   release:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -22,6 +43,8 @@ jobs:
     
     env:
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
+      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
     steps:
       - uses: actions/checkout@v4
@@ -55,12 +78,7 @@ jobs:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
-          tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
+          releaseId: ${{ needs.create-release.outputs.release_id }}
 
   updater:
     needs: release
@@ -74,5 +92,4 @@ jobs:
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         with:
-          includeRelease: false
-          includeUpdaterJson: true
+          updaterJsonKeepFiles: true
