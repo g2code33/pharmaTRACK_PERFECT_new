@@ -66,23 +66,28 @@ const Layout: React.FC = () => {
     }
   };
 
-    const checkForUpdates = async () => {
+      const checkForUpdates = async () => {
     try {
       setUpdateStatus('checking');
-      const update = await check();
-      if (update) {
+      const currentVersion = await getVersion();
+      
+      const response = await fetch('https://api.github.com/repos/g2code33/pharmaTRACK_PERFECT_new/releases/latest');
+      if (!response.ok) throw new Error('Failed to fetch from GitHub');
+      
+      const data = await response.json();
+      const latestVersion = data.tag_name.replace('v', '');
+      
+      if (latestVersion !== currentVersion) {
         setUpdateStatus('available');
-        if (window.confirm(`Version ${update.version} is available! Do you want to install it now?`)) {
-          setUpdateStatus('downloading');
-          await update.downloadAndInstall();
-          setUpdateStatus('done');
-          alert('Update complete! The app will now restart.');
-          await relaunch();
+        if (window.confirm(`Good news! Version ${latestVersion} is available! (You have ${currentVersion})\n\nClick OK to download the new installer.`)) {
+          const { open } = await import('@tauri-apps/plugin-shell');
+          await open(data.html_url); 
+          setUpdateStatus('idle');
         } else {
           setUpdateStatus('idle');
         }
       } else {
-        alert('You are already on the latest version!');
+        alert('You are already on the latest version (' + currentVersion + ')!');
         setUpdateStatus('idle');
       }
     } catch (error: any) {
