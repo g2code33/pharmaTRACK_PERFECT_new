@@ -1,3 +1,5 @@
+# 1. Provide the CORRECTED Matrix workflow
+cat << 'YML_EOF' > .github/workflows/release.yml
 name: "Build & Release PharmaTRACK"
 
 on:
@@ -76,3 +78,27 @@ jobs:
         with:
           includeRelease: false
           includeUpdaterJson: true
+YML_EOF
+
+# 2. Bump version to 1.1.21
+node -e "
+const fs = require('fs');
+
+let t = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+t.version = '1.1.21';
+fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(t, null, 2));
+
+let p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+p.version = '1.1.21';
+fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+
+let layout = fs.readFileSync('src/components/Layout.tsx', 'utf8');
+layout = layout.replace(/v1\.\d+\.\d+/g, 'v1.1.21');
+fs.writeFileSync('src/components/Layout.tsx', layout);
+console.log('Version bumped to 1.1.21');
+"
+
+# 3. Push to GitHub!
+git add .
+git commit -m "Fixed updater manifest sync arguments (v1.1.21)"
+git push
