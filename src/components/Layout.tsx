@@ -128,9 +128,17 @@ const Layout: React.FC = () => {
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 flex-shrink-0 z-20">
-            <div className="flex items-center gap-6">
+            <div className="flex items-center gap-4 lg:gap-6">
               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
               
+              {/* Universal Home Button */}
+              <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
+                 <Home className="w-5 h-5" />
+              </Link>
+              <Link to="/" className="sm:hidden flex items-center justify-center p-2 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
+                 <Home className="w-5 h-5" />
+              </Link>
+
               <div className="flex-1 max-w-3xl relative">
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none"><Search className="w-4 h-4 text-gray-400" /></div>
