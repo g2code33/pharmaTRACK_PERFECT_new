@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Note } from '../types';
 import { Link } from 'react-router-dom';
-import { StickyNote, Plus, Edit2, Trash2, X, Search, BookOpen, ChevronDown, ChevronUp, Sparkles, Download, Clock, Paperclip, FileText, Image, XCircle } from 'lucide-react';
+import { StickyNote, Plus, Edit2, Trash2, X, Search, BookOpen, ChevronDown, ChevronUp, Sparkles, Download, Clock, Paperclip, Loader2, FileText, Image, XCircle } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 
 const Notes: React.FC = () => {
