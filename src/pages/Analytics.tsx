@@ -28,7 +28,7 @@ const Analytics: React.FC = () => {
     { name: 'Case Study', value: state.examQuestions.filter((q) => q.questionType === 'case_study').length },
   ].filter((d) => d.value > 0);
   const COLORS = ['#10B981', '#3B82F6', '#8B5CF6', '#EC4899', '#F59E0B'];
-  const quizPerformanceData = state.quizHistory.slice(-10).map((quiz, idx) => ({ name: \`Quiz \${idx + 1}\`, score: quiz.scorePercentage, date: format(parseISO(quiz.completedAt), 'MMM d') }));
+  const quizPerformanceData = state.quizHistory.slice(-10).map((quiz, idx) => ({ name: `Quiz ${idx + 1}`, score: quiz.scorePercentage, date: format(parseISO(quiz.completedAt), 'MMM d') }));
   const getDaysAgo = timeRange === '7d' ? 7 : timeRange === '30d' ? 30 : 365;
   const cutoffDate = subDays(new Date(), getDaysAgo);
   const recentActivities = state.activities.filter((a) => isAfter(parseISO(a.timestamp), cutoffDate));
@@ -53,7 +53,6 @@ const Analytics: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Print-only Header */}
       <div className="hidden print:block mb-8 text-center border-b-2 border-gray-800 pb-4">
         <img src="/logo.png" className="h-16 mx-auto mb-4" alt="PharmaTRACK Logo" />
         <h1 className="text-3xl font-black text-gray-900 mb-2">PharmaTRACK Progress Report</h1>
@@ -66,14 +65,13 @@ const Analytics: React.FC = () => {
         <p className="text-xs font-bold text-gray-400 mt-4 text-right">Generated on: {new Date().toLocaleDateString()}</p>
       </div>
 
-      {/* Screen Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 flex items-center gap-2"><BarChart3 className="w-7 h-7 text-blue-600" /> Study Analytics</h1>
           <p className="text-gray-500">Track your progress and identify areas for improvement</p>
         </div>
         <div className="flex gap-2 print:hidden">
-          <button onClick={() => { const originalTitle = document.title; document.title = \`PharmaTRACK_Progress_\${state.student?.name?.replace(/\\s+/g, '_') || 'Report'}_\${new Date().toISOString().split('T')[0]}\`; window.print(); document.title = originalTitle; }} className="flex items-center gap-2 px-4 py-2 bg-[#2D6A4F] text-white rounded-lg text-sm font-bold shadow-md hover:bg-[#1B4332] transition-colors"><Printer className="w-4 h-4" /> Print Report</button>
+          <button onClick={() => { const originalTitle = document.title; document.title = `PharmaTRACK_Progress_${state.student?.name?.replace(/\s+/g, '_') || 'Report'}_${new Date().toISOString().split('T')[0]}`; window.print(); document.title = originalTitle; }} className="flex items-center gap-2 px-4 py-2 bg-[#2D6A4F] text-white rounded-lg text-sm font-bold shadow-md hover:bg-[#1B4332] transition-colors"><Printer className="w-4 h-4" /> Print Report</button>
           {(['7d', '30d', 'all'] as const).map((range) => (
             <button key={range} onClick={() => setTimeRange(range)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${timeRange === range ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
               {range === '7d' ? '7 Days' : range === '30d' ? '30 Days' : 'All Time'}
@@ -82,7 +80,6 @@ const Analytics: React.FC = () => {
         </div>
       </div>
 
-      {/* CLICKABLE Quick stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Link to="/courses" className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-400 transition-all group block cursor-pointer">
           <div className="flex items-center gap-3">
@@ -127,7 +124,7 @@ const Analytics: React.FC = () => {
           <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><BookOpen className="w-5 h-5 text-green-600" /> Slide Completion Status</h3>
           {slideStatusData.length > 0 ? (
             <div className="flex items-center gap-6">
-              <ResponsiveContainer width="50%" height={200}><PieChart><Pie data={slideStatusData} cx="50%" cy="50%" innerRadius={40} outerRadius={70} paddingAngle={3} dataKey="value">{slideStatusData.map((entry, index) => (<Cell key={\`cell-\${index}\`} fill={entry.color} />))}</Pie><Tooltip /></PieChart></ResponsiveContainer>
+              <ResponsiveContainer width="50%" height={200}><PieChart><Pie data={slideStatusData} cx="50%" cy="50%" innerRadius={40} outerRadius={70} paddingAngle={3} dataKey="value">{slideStatusData.map((entry, index) => (<Cell key={`cell-${index}`} fill={entry.color} />))}</Pie><Tooltip /></PieChart></ResponsiveContainer>
               <div className="space-y-3">{slideStatusData.map((item) => (<div key={item.name} className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: item.color }} /><span className="text-sm font-bold text-gray-600">{item.name}: {item.value}</span></div>))}</div>
             </div>
           ) : <div className="h-[200px] flex items-center justify-center text-gray-400">No slides yet</div>}
@@ -136,7 +133,7 @@ const Analytics: React.FC = () => {
           <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2"><FileQuestion className="w-5 h-5 text-purple-600" /> Question Types</h3>
           {questionTypeData.length > 0 ? (
             <div className="flex items-center gap-6">
-              <ResponsiveContainer width="50%" height={200}><PieChart><Pie data={questionTypeData} cx="50%" cy="50%" outerRadius={70} paddingAngle={3} dataKey="value">{questionTypeData.map((_, index) => (<Cell key={\`cell-\${index}\`} fill={COLORS[index % COLORS.length]} />))}</Pie><Tooltip /></PieChart></ResponsiveContainer>
+              <ResponsiveContainer width="50%" height={200}><PieChart><Pie data={questionTypeData} cx="50%" cy="50%" outerRadius={70} paddingAngle={3} dataKey="value">{questionTypeData.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}</Pie><Tooltip /></PieChart></ResponsiveContainer>
               <div className="space-y-2">{questionTypeData.map((item, idx) => (<div key={item.name} className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} /><span className="text-sm font-bold text-gray-600">{item.name}: {item.value}</span></div>))}</div>
             </div>
           ) : <div className="h-[200px] flex items-center justify-center text-gray-400">No questions generated yet</div>}
