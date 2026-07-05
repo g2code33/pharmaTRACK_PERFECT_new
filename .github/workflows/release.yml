@@ -6,7 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Job 1: Creates the release baseline structure ahead of time on a single thread
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release Structure
+        id: create_release
+        uses: tauri-apps/tauri-action@v0.5.8
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          tagName: v__VERSION__
+          releaseName: "PharmaTRACK v__VERSION__"
+          releaseBody: "Official binaries and update artifacts for PharmaTRACK."
+          releaseDraft: true # Kept as draft so runners can cleanly upload assets
+          prerelease: false
+
+  # Job 2: Compiles the Windows and Linux applications side-by-side without colliding
   release:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -36,6 +59,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Install Linux dependencies only when executing on the Ubuntu runner environment
       - name: Install Linux Dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -52,29 +76,26 @@ jobs:
           VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       - name: Build and Sign Tauri App
-        uses: tauri-apps/tauri-action@v0.5.17
+        uses: tauri-apps/tauri-action@v0.5.8
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
           tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
+          releaseId: ${{ needs.create-release.outputs.release_id }}
 
+  # Job 3: Gathers the platform signatures and automatically builds your updater.json asset
   updater:
-    needs: release
+    needs: [create-release, release]
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Tauri Update Manifest Sync
-        uses: tauri-apps/tauri-action@v0.5.17
+        uses: tauri-apps/tauri-action@v0.5.8
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         with:
-          includeRelease: false
-          includeUpdaterJson: true
+          tagName: v__VERSION__
+          releaseId: ${{ needs.create-release.outputs.release_id }}
