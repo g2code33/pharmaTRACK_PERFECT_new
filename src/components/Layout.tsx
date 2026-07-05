@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../utils/supabase';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { open } from '@tauri-apps/plugin-shell';
+
 import { getVersion } from '@tauri-apps/api/app';
 import {
   Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings,
@@ -101,23 +101,29 @@ const Layout: React.FC = () => {
     }
   };
 
-    const checkForUpdates = async () => {
+      const checkForUpdates = async () => {
     try {
       setUpdateStatus('checking');
-      const update = await check();
-      if (update) {
+      const currentVersion = await getVersion();
+      
+      // 1. Fetch directly from GitHub's public API (No signatures required!)
+      const response = await fetch('https://api.github.com/repos/g2code33/pharmaTRACK_PERFECT_new/releases/latest');
+      if (!response.ok) throw new Error('Could not connect to GitHub');
+      
+      const data = await response.json();
+      const latestVersion = data.tag_name.replace('v', '');
+      
+      // 2. Compare versions
+      if (latestVersion !== currentVersion) {
         setUpdateStatus('available');
-        if (window.confirm(`Version ${update.version} is available! Do you want to install it now?`)) {
-          setUpdateStatus('downloading');
-          await update.downloadAndInstall();
-          setUpdateStatus('done');
-          alert('Update complete! The app will now restart.');
-          await relaunch();
+        if (window.confirm(`Good news! Version ${latestVersion} is available! (You have ${currentVersion})\n\nClick OK to open the download page.`)) {
+          await open(data.html_url); // Opens GitHub Releases natively in their web browser
+          setUpdateStatus('idle');
         } else {
           setUpdateStatus('idle');
         }
       } else {
-        alert('You are already on the latest version!');
+        alert('You are already on the latest version (' + currentVersion + ')!');
         setUpdateStatus('idle');
       }
     } catch (error: any) {
