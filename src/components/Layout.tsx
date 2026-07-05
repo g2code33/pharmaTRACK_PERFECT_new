@@ -66,27 +66,34 @@ const Layout: React.FC = () => {
     }
   };
 
-      const checkForUpdates = async () => {
+        const checkForUpdates = async () => {
     try {
       setUpdateStatus('checking');
-      const currentVersion = await getVersion();
+      const update = await check();
       
-      const response = await fetch('https://api.github.com/repos/g2code33/pharmaTRACK_PERFECT_new/releases/latest');
-      if (!response.ok) throw new Error('Failed to fetch from GitHub');
-      
-      const data = await response.json();
-      const latestVersion = data.tag_name.replace('v', '');
-      
-      if (latestVersion !== currentVersion) {
+      if (update) {
         setUpdateStatus('available');
-        if (window.confirm(`Good news! Version ${latestVersion} is available! (You have ${currentVersion})\n\nClick OK to download the new installer.`)) {
-          const { open } = await import('@tauri-apps/plugin-shell');
-          await open(data.html_url); 
-          setUpdateStatus('idle');
+        let downloaded = 0;
+        let contentLength = 0;
+        
+        if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
+          setUpdateStatus('downloading');
+          
+          // Natively download and install in the background
+          await update.downloadAndInstall((event) => {
+            if (event.event === 'Started') contentLength = event.data.contentLength || 0;
+            if (event.event === 'Progress') downloaded += event.data.chunkLength;
+            console.log(`Downloaded ${downloaded} of ${contentLength}`);
+          });
+          
+          setUpdateStatus('done');
+          alert('Update installed successfully! The app will now restart.');
+          await relaunch(); // Auto-restarts the app!
         } else {
           setUpdateStatus('idle');
         }
       } else {
+        const currentVersion = await getVersion();
         alert('You are already on the latest version (' + currentVersion + ')!');
         setUpdateStatus('idle');
       }
