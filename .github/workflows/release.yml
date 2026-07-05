@@ -62,8 +62,8 @@ jobs:
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true
 
+  # This job merges the build results and creates your tauri v2 updater.json WITHOUT building the app again!
   updater:
     needs: release
     permissions:
@@ -71,22 +71,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install Dependencies
-        run: npm install --legacy-peer-deps
-      - name: Build Web Assets
-        run: npm run build
       - name: Tauri Update Manifest Sync
         uses: tauri-apps/tauri-action@v0.5.17
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         with:
-          tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: true
+          updaterJsonKeepFiles: true
