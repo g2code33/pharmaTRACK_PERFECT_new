@@ -32,7 +32,7 @@ const Layout: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.1.7');
+  const [appVersion, setAppVersion] = useState('1.0.0');
 
   useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(console.error); }, []);
   
