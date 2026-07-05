@@ -1,4 +1,6 @@
-name: "Build & Release PharmaTRACK"
+const fs = require('fs');
+
+const yml = `name: "Build & Release PharmaTRACK"
 
 on:
   push:
@@ -18,12 +20,12 @@ jobs:
           - os: ubuntu-22.04
             target: ""
 
-    runs-on: ${{ matrix.os }}
+    runs-on: \${{ matrix.os }}
     
     env:
-      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
-      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+      TAURI_SIGNING_PRIVATE_KEY: "\${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+      VITE_SUPABASE_URL: "\${{ secrets.VITE_SUPABASE_URL }}"
+      VITE_SUPABASE_ANON_KEY: "\${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +36,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: \${{ matrix.target }}
 
       - name: Install Linux Dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -48,14 +50,14 @@ jobs:
       - name: Build Web Assets
         run: npm run build
         env:
-          VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-          VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+          VITE_SUPABASE_URL: "\${{ secrets.VITE_SUPABASE_URL }}"
+          VITE_SUPABASE_ANON_KEY: "\${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       - name: Build and Sign Tauri App
         uses: tauri-apps/tauri-action@v0.5.17
         env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+          GITHUB_TOKEN: "\${{ secrets.GITHUB_TOKEN }}"
+          TAURI_SIGNING_PRIVATE_KEY: "\${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
@@ -73,6 +75,25 @@ jobs:
       - name: Tauri Update Manifest Sync
         uses: tauri-apps/tauri-action@v0.5.17
         env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          GITHUB_TOKEN: "\${{ secrets.GITHUB_TOKEN }}"
         with:
           updaterJsonKeepFiles: true
+`;
+
+fs.writeFileSync('.github/workflows/release.yml', yml);
+
+let t = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+t.plugins.updater = {
+  endpoints: ['https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest/download/updater.json'],
+  pubkey: "RWS2RumTDyPTXwTiwgzklt09LgMF+90WYU/a+EOz9kofpa3m/Bc2Gt1n"
+};
+t.version = '1.1.16';
+fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(t, null, 2));
+
+let p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+p.version = '1.1.16';
+fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+
+let layout = fs.readFileSync('src/components/Layout.tsx', 'utf8');
+layout = layout.replace(/v1\.\d+\.\d+/g, 'v1.1.16');
+fs.writeFileSync('src/components/Layout.tsx', layout);
