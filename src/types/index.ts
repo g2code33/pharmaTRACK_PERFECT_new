@@ -106,6 +106,7 @@ export interface Note {
   isAiGenerated: boolean;
   createdAt: string;
   avatar_url?: string;
+  attachedFiles?: { id: string; name: string; type: string; data: string }[];
 }
 
 export interface ExamDate {
