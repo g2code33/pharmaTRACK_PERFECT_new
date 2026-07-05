@@ -45,3 +45,29 @@ body { background-color: #F8FAFC; color: #0F172A; }
     display: none !important;
   }
 }
+
+@media print {
+  @page { margin: 20mm; }
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    background-color: white !important;
+    color: black !important;
+  }
+  aside, nav, header, button {
+    display: none !important;
+  }
+  main {
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    background-color: white !important;
+    width: 100% !important;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  .print\:block { display: block !important; }
+  .print\:hidden { display: none !important; }
+}

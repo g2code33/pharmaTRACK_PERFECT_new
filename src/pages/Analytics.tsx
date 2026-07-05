@@ -125,6 +125,7 @@ const Analytics: React.FC = () => {
     <div className="space-y-6">
             {/* Print-only Header */}
       <div className="hidden print:block mb-8 text-center border-b-2 border-gray-800 pb-4">
+        <img src="/logo.png" className="h-16 mx-auto mb-4" alt="PharmaTRACK Logo" />
         <h1 className="text-3xl font-black text-gray-900 mb-2">PharmaTRACK Progress Report</h1>
         <div className="grid grid-cols-2 gap-4 text-left text-sm mt-6 mb-2 mx-auto max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200">
            <div><span className="font-bold text-gray-500">Student Name:</span> <span className="font-semibold text-gray-800">{state.student?.name || 'N/A'}</span></div>
