@@ -32,9 +32,10 @@ const Layout: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.0.0');
+  const [appVersion, setAppVersion] = useState('1.1.7');
 
   useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(console.error); }, []);
+  
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
@@ -48,11 +49,11 @@ const Layout: React.FC = () => {
     const query = searchQuery.trim().toLowerCase();
     if (query.length > 2) {
       let results: any[] = [];
-      state.courses.forEach(c => { if (c.courseName.toLowerCase().includes(query) || c.courseCode.toLowerCase().includes(query)) results.push({ id: \`c-\${c.id}\`, title: \`\${c.courseCode}: \${c.courseName}\`, subtitle: 'Course', link: \`/course/\${c.id}\` }); });
-      state.topics.forEach(t => { if (t.topicName.toLowerCase().includes(query)) results.push({ id: \`t-\${t.id}\`, title: t.topicName, subtitle: 'Topic', link: \`/read/\${t.id}\` }); });
-      state.slides.forEach(s => { if (s.title.toLowerCase().includes(query) || s.contentText?.toLowerCase().includes(query)) results.push({ id: \`s-\${s.id}\`, title: s.title, subtitle: 'Study Material', link: \`/read/\${s.topicId}?slide=\${s.slideNumber - 1}\` }); });
-      state.notes.forEach(n => { if (n.noteText.toLowerCase().includes(query)) results.push({ id: \`n-\${n.id}\`, title: n.noteText.substring(0, 30) + "...", subtitle: 'My Note', link: '/notes' }); });
-      state.examQuestions.forEach(q => { if (q.questionText.toLowerCase().includes(query)) results.push({ id: \`q-\${q.id}\`, title: q.questionText, subtitle: 'Question Bank', link: '/questions' }); });
+      state.courses.forEach(c => { if (c.courseName.toLowerCase().includes(query) || c.courseCode.toLowerCase().includes(query)) results.push({ id: `c-${c.id}`, title: `${c.courseCode}: ${c.courseName}`, subtitle: 'Course', link: `/course/${c.id}` }); });
+      state.topics.forEach(t => { if (t.topicName.toLowerCase().includes(query)) results.push({ id: `t-${t.id}`, title: t.topicName, subtitle: 'Topic', link: `/read/${t.id}` }); });
+      state.slides.forEach(s => { if (s.title.toLowerCase().includes(query) || s.contentText?.toLowerCase().includes(query)) results.push({ id: `s-${s.id}`, title: s.title, subtitle: 'Study Material', link: `/read/${s.topicId}?slide=${s.slideNumber - 1}` }); });
+      state.notes.forEach(n => { if (n.noteText.toLowerCase().includes(query)) results.push({ id: `n-${n.id}`, title: n.noteText.substring(0, 30) + "...", subtitle: 'My Note', link: '/notes' }); });
+      state.examQuestions.forEach(q => { if (q.questionText.toLowerCase().includes(query)) results.push({ id: `q-${q.id}`, title: q.questionText, subtitle: 'Question Bank', link: '/questions' }); });
       setSearchResults(results.slice(0, 15));
     } else { setSearchResults([]); }
   }, [searchQuery, state]);
@@ -66,15 +67,31 @@ const Layout: React.FC = () => {
   const checkForUpdates = async () => {
     try {
       setUpdateStatus('checking');
-      const update = await check();
-      if (update) {
+      const currentVersion = await getVersion();
+      const response = await fetch('https://api.github.com/repos/g2code33/pharmaTRACK_PERFECT_new/releases/latest');
+      if (!response.ok) throw new Error('Could not connect to GitHub');
+      
+      const data = await response.json();
+      const latestVersion = data.tag_name.replace('v', '');
+      
+      if (latestVersion !== currentVersion) {
         setUpdateStatus('available');
-        if (window.confirm(\`Version \${update.version} is available! Do you want to install it now?\`)) {
-          setUpdateStatus('downloading'); await update.downloadAndInstall(); setUpdateStatus('done');
-          alert('Update complete! The app will now restart.'); await relaunch();
-        } else { setUpdateStatus('idle'); }
-      } else { alert('You are already on the latest version!'); setUpdateStatus('idle'); }
-    } catch (error: any) { alert(\`Update Check Failed: \${error.message || error}\`); setUpdateStatus('idle'); }
+        if (window.confirm(`Good news! Version ${latestVersion} is available! (You have ${currentVersion})\n\nClick OK to open the download page.`)) {
+          const { open } = await import('@tauri-apps/plugin-shell');
+          await open(data.html_url); 
+          setUpdateStatus('idle');
+        } else {
+          setUpdateStatus('idle');
+        }
+      } else {
+        alert('You are already on the latest version (' + currentVersion + ')!');
+        setUpdateStatus('idle');
+      }
+    } catch (error: any) {
+      console.error('Update failed:', error);
+      alert(`Update Check Failed: ${error.message || error}`);
+      setUpdateStatus('idle');
+    }
   };
 
   return (
@@ -149,7 +166,15 @@ const Layout: React.FC = () => {
 
               <div className="hidden sm:flex items-center gap-4">
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-full border border-green-100"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" /><span className="text-[10px] font-black text-green-700 uppercase tracking-widest">Cloud Ready</span></div>
-                <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md"><span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span><button onClick={checkForUpdates} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">{updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}<span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span></button></div>
+                
+                <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
+                  <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
+                  <button onClick={checkForUpdates} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
+                    {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span>
+                  </button>
+                </div>
+
                 <Link to="/settings" className="w-10 h-10 flex items-center justify-center text-gray-500 hover:bg-gray-100 hover:text-[#2D6A4F] rounded-full transition-all border border-gray-100 shadow-sm"><Settings className="w-5 h-5" /></Link>
               </div>
             </div>
