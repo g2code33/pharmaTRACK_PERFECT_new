@@ -11,20 +11,30 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
+      release_id: ${{ steps.create-release.outputs.result }}
     steps:
       - uses: actions/checkout@v4
-      - name: Create GitHub Release Structure
-        id: create_release
-        uses: tauri-apps/tauri-action@v0.5.17
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+      - name: setup node
+        uses: actions/setup-node@v4
         with:
-          tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseBody: "Official binaries and update artifacts for PharmaTRACK v__VERSION__."
-          releaseDraft: false
-          prerelease: false
+          node-version: 20
+      - name: get version
+        run: echo "PACKAGE_VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+      - name: create release
+        id: create-release
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${process.env.PACKAGE_VERSION}`,
+              name: `PharmaTRACK v${process.env.PACKAGE_VERSION}`,
+              body: 'Official binaries and update artifacts for PharmaTRACK.',
+              draft: false,
+              prerelease: false
+            })
+            return data.id
 
   release:
     needs: create-release
@@ -40,7 +50,6 @@ jobs:
             target: ""
 
     runs-on: ${{ matrix.os }}
-    
     env:
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
@@ -48,58 +57,30 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
       - name: Install Linux Dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
       - name: Install Dependencies
         run: npm install --legacy-peer-deps
-
       - name: Build Web Assets
         run: npm run build
         env:
           VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
           VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-
       - name: Build and Sign Tauri App
         uses: tauri-apps/tauri-action@v0.5.17
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
-          tagName: v__VERSION__
           releaseId: ${{ needs.create-release.outputs.release_id }}
-
-  updater:
-    needs: [create-release, release]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install Dependencies
-        run: npm install --legacy-peer-deps
-      - name: Build Web Assets
-        run: npm run build
-      - name: Tauri Update Manifest Sync
-        uses: tauri-apps/tauri-action@v0.5.17
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-        with:
-          tagName: v__VERSION__
-          releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
+          updaterJsonKeepFiles: true
