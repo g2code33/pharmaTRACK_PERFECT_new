@@ -78,20 +78,20 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # Flawless Fix: Uses grep and tr instead of jq to completely bypass quoting issues
+            # Flawless Fix: Uses authenticated Bearer headers to safely read the Windows signature string
       - name: Generate Unified Manifest with Real Signatures
         env:
           APP_VER: ${{ needs.build-windows.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Safely read the local Linux signature using standard wildcard fallback logic
+          # Safely extract local Linux signature
           LINUX_SIG=$(cat src-tauri/target/release/bundle/deb/*.sig src-tauri/target/release/bundle/appimage/*.sig 2>/dev/null | head -n 1 || echo "")
           
-          # Safely pull the remote Windows signature link using zero-conflict parsing utilities
-          WIN_URL=$(curl -sH "Authorization: token $GH_TOKEN" "https://github.com{{ github.repository }}/releases/tags/v$APP_VER" | grep "browser_download_url" | grep ".msi.sig" | head -n 1 | tr -d ' ' | cut -d'"' -f4)
+          # FIXED: Uses correct Bearer token authentication header to pull the Windows signature asset from GitHub's api
+          WIN_URL=$(curl -sH "Authorization: Bearer $GH_TOKEN" "https://github.com{{ github.repository }}/releases/tags/v$APP_VER" | grep "browser_download_url" | grep ".msi.sig" | head -n 1 | tr -d ' ' | cut -d'"' -f4)
           
           if [ ! -z "$WIN_URL" ]; then
-            WIN_SIG=$(curl -sL "$WIN_URL")
+            WIN_SIG=$(curl -sLH "Authorization: Bearer $GH_TOKEN" "$WIN_URL")
           else
             WIN_SIG=""
           fi
@@ -112,11 +112,3 @@ jobs:
             }
           }
           EOF
-
-      # Explicitly upload the completed updater.json map file to the draft release
-      - name: Upload Manifest Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.build-windows.outputs.version }}
-          files: updater.json
-          draft: true
