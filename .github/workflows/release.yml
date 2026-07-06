@@ -39,7 +39,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
-          releaseDraft: true # Keeps it as a draft so Ubuntu can attach files
+          releaseDraft: true
           prerelease: false
 
   # Step 2: Build Ubuntu App and Generate the Flawless updater.json
@@ -58,7 +58,6 @@ jobs:
         with: { node-version: 20 }
       - uses: dtolnay/rust-toolchain@stable
       
-       Cinderella Setup
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
@@ -81,13 +80,9 @@ jobs:
           APP_VER: ${{ needs.build-windows.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Read local Linux signature file
           LINUX_SIG=$(cat src-tauri/target/release/bundle/deb/*.deb.sig || echo "")
-          
-          # Fetch Windows signature file from GitHub release assets
-          WIN_SIG=$(curl -sH "Authorization: token $GH_TOKEN" "https://github.com{{ github.repository }}/releases" | jq -r '.[0].assets[] | select(.name | endswith(".msi.sig")) | .browser_download_url' | xargs curl -sL)
+          WIN_SIG=$(curl -sH "Authorization: token $GH_TOKEN" "https://github.com{{ github.repository }}/releases" | jq -r '..assets[] | select(.name | endswith(".msi.sig")) | .browser_download_url' | xargs curl -sL)
 
-          # Write perfectly signed update file
           cat << EOF > updater.json
           {
             "version": "$APP_VER",
