@@ -6,114 +6,108 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Jobs 1 & 2: Compile the Windows and Linux applications side-by-side
-  release:
+  # Step 1: Build the Windows Version First
+  build-windows:
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: ubuntu-22.04
-            target: ""
-
-    runs-on: ${{ matrix.os }}
-    
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
       VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
+        with: { node-version: 20 }
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        with: { targets: x86_64-pc-windows-msvc }
+      
+      - name: Extract Version
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - run: npm install --legacy-peer-deps
+      - run: npm run build
+      
+      - name: Build Windows App
+        uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: v__VERSION__
+          releaseName: "PharmaTRACK v__VERSION__"
+          releaseDraft: true # Keeps it as a draft so Ubuntu can attach files
+          prerelease: false
+
+  # Step 2: Build Ubuntu App and Generate the Flawless updater.json
+  build-linux-and-release:
+    needs: build-windows
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
+      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
+      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: dtolnay/rust-toolchain@stable
+      
+       Cinderella Setup
       - name: Install Linux Dependencies
-        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+      - run: npm install --legacy-peer-deps
+      - run: npm run build
 
-      - name: Build Web Assets
-        run: npm run build
-        env:
-          VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-          VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-
-      - name: Build and Sign Tauri App
+      - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
-          releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: true # Kept as draft so the 7-second job can inject files safely
+          releaseDraft: true
           prerelease: false
 
-    # Job 3: The 7-second updater job, now with dynamic changelog notes!
-  updater:
-    needs: release
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2 # Fetches history so it can read commit messages
-
-      # Reads your tauri.conf.json file version
-      - name: Read Current Version
-        id: get_version
+      # Read the exact cryptographic signatures generated locally and remotely
+      - name: Generate Unified Manifest with Real Signatures
+        env:
+          APP_VER: ${{ needs.build-windows.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+          # Read local Linux signature file
+          LINUX_SIG=$(cat src-tauri/target/release/bundle/deb/*.deb.sig || echo "")
+          
+          # Fetch Windows signature file from GitHub release assets
+          WIN_SIG=$(curl -sH "Authorization: token $GH_TOKEN" "https://github.com{{ github.repository }}/releases" | jq -r '.[0].assets[] | select(.name | endswith(".msi.sig")) | .browser_download_url' | xargs curl -sL)
 
-      # Automatically grabs your latest git commit message to use as the changelog notes
-      - name: Extract Latest Commit Message
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
-          echo "CHANGELOG_NOTES=$COMMIT_MSG" >> $GITHUB_ENV
-
-      # Generates a flawless JSON map structure with your dynamic version and notes parameters
-      - name: Generate Update Manifest Map
-        run: |
-          cat << 'EOF' > updater.json
+          # Write perfectly signed update file
+          cat << EOF > updater.json
           {
-            "version": "${{ env.APP_VERSION }}",
-            "notes": "${{ env.CHANGELOG_NOTES }}",
-            "pub_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "version": "$APP_VER",
             "platforms": {
               "windows-x86_64": {
-                "signature": "",
-                "url": "https://github.com{{ env.APP_VERSION }}/PharmaTRACK_${{ env.APP_VERSION }}_x64_en-US.msi"
+                "signature": "$WIN_SIG",
+                "url": "https://github.com{APP_VER}_x64_en-US.msi"
               },
               "linux-x86_64": {
-                "signature": "",
-                "url": "https://github.com{{ env.APP_VERSION }}/PharmaTRACK_${{ env.APP_VERSION }}_amd64.deb"
+                "signature": "$LINUX_SIG",
+                "url": "https://github.com{APP_VER}_amd64.deb"
               }
             }
           }
           EOF
 
-      # Injects the updater.json file directly into your release package
+      # Explicitly upload the completed updater.json map file to the draft release
       - name: Upload Manifest Asset
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v${{ env.APP_VERSION }}
+          tag_name: v${{ needs.build-windows.outputs.version }}
           files: updater.json
+          draft: true
