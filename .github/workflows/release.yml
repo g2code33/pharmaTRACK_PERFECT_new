@@ -36,6 +36,8 @@ jobs:
       
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" # <-- FIXED: Restores authentication token scope
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
@@ -68,6 +70,8 @@ jobs:
 
       - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" # <-- FIXED: Restores authentication token scope here too
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
