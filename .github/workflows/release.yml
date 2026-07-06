@@ -53,7 +53,7 @@ jobs:
           VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       # Native Tauri release step
-      - name: Build and Sign Tauri App
+            - name: Build and Sign Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
@@ -64,3 +64,4 @@ jobs:
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
           releaseDraft: true
           prerelease: false
+          includeUpdaterJson: true  # <-- CRUCIAL: Forces the native runner to output the update configuration assets
