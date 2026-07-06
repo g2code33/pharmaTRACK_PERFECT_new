@@ -10,6 +10,7 @@
     "category": "Education",
     "copyright": "",
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -20,7 +21,7 @@
   },
   "productName": "PharmaTRACK",
   "mainBinaryName": "PharmaTRACK",
-  "version": "1.1.50",
+  "version": "1.1.53",
   "identifier": "com.pharmatrack.app",
   "plugins": {
     "updater": {
