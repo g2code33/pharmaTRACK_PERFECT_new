@@ -61,10 +61,10 @@ jobs:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: true # Keeps it as a draft so the final job can upload files safely
+          releaseDraft: true # Kept as draft so the 7-second job can inject files safely
           prerelease: false
 
-  # Job 3: The exact 3-node layout, optimized to never crash or require system compilation
+  # Job 3: The 7-second updater job, now completely dynamic!
   updater:
     needs: release
     permissions:
@@ -73,30 +73,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Generates a flawless JSON map structure matching your version targets
+      # Automatically reads your tauri.conf.json file to pull the exact current version number
+      - name: Read Current Version
+        id: get_version
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
+
+      # Generates a flawless JSON map structure matching your version targets dynamically
       - name: Generate Update Manifest Map
         run: |
           cat << 'EOF' > updater.json
           {
-            "version": "1.1.35",
+            "version": "${{ env.APP_VERSION }}",
             "platforms": {
               "windows-x86_64": {
                 "signature": "",
-                "url": "https://github.com"
+                "url": "https://github.com{{ env.APP_VERSION }}/PharmaTRACK_${{ env.APP_VERSION }}_x64_en-US.msi"
               },
               "linux-x86_64": {
                 "signature": "",
-                "url": "https://github.com"
+                "url": "https://github.com{{ env.APP_VERSION }}/PharmaTRACK_${{ env.APP_VERSION }}_amd64.deb"
               }
             }
           }
           EOF
 
-      # Cleanly injects the updater file directly into your release draft without compilation dependencies
+      # Injects the file straight into the same release version container folder
       - name: Upload Manifest Asset
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v1.1.35
+          tag_name: v${{ env.APP_VERSION }}
           files: updater.json
