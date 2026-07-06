@@ -64,7 +64,7 @@ jobs:
           releaseDraft: true # Kept as draft so the 7-second job can inject files safely
           prerelease: false
 
-  # Job 3: The 7-second updater job, now completely dynamic!
+    # Job 3: The 7-second updater job, now with dynamic changelog notes!
   updater:
     needs: release
     permissions:
@@ -72,20 +72,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Fetches history so it can read commit messages
 
-      # Automatically reads your tauri.conf.json file to pull the exact current version number
+      # Reads your tauri.conf.json file version
       - name: Read Current Version
         id: get_version
         run: |
           VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
           echo "APP_VERSION=$VERSION" >> $GITHUB_ENV
 
-      # Generates a flawless JSON map structure matching your version targets dynamically
+      # Automatically grabs your latest git commit message to use as the changelog notes
+      - name: Extract Latest Commit Message
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B | head -n 1)
+          echo "CHANGELOG_NOTES=$COMMIT_MSG" >> $GITHUB_ENV
+
+      # Generates a flawless JSON map structure with your dynamic version and notes parameters
       - name: Generate Update Manifest Map
         run: |
           cat << 'EOF' > updater.json
           {
             "version": "${{ env.APP_VERSION }}",
+            "notes": "${{ env.CHANGELOG_NOTES }}",
+            "pub_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
             "platforms": {
               "windows-x86_64": {
                 "signature": "",
@@ -99,7 +109,7 @@ jobs:
           }
           EOF
 
-      # Injects the file straight into the same release version container folder
+      # Injects the updater.json file directly into your release package
       - name: Upload Manifest Asset
         uses: softprops/action-gh-release@v2
         env:
