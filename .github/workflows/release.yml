@@ -1,5 +1,4 @@
 name: "Build & Release PharmaTRACK"
-
 on:
   push:
     branches: [ main ]
@@ -13,6 +12,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       version: ${{ steps.get_version.outputs.version }}
+      win_sig: ${{ steps.win_sig.outputs.sig }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
@@ -23,7 +23,7 @@ jobs:
         with: { node-version: 20 }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-pc-windows-msvc }
-      
+
       - name: Extract Version
         id: get_version
         shell: bash
@@ -33,7 +33,7 @@ jobs:
 
       - run: npm install --legacy-peer-deps
       - run: npm run build
-      
+
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
         env:
@@ -43,6 +43,16 @@ jobs:
           releaseName: "PharmaTRACK v__VERSION__"
           releaseDraft: true
           prerelease: false
+
+      # Read the real Windows signature generated during the build (MSI or NSIS)
+      - name: Read Windows Signature
+        id: win_sig
+        shell: bash
+        run: |
+          SIG=$(cat src-tauri/target/release/bundle/msi/*.msi.sig 2>/dev/null || \
+                cat src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null || \
+                echo "")
+          echo "sig=$SIG" >> $GITHUB_OUTPUT
 
   # Job 2: Build Ubuntu App and Force Upload latest.json Manifest
   build-linux-and-release:
@@ -59,7 +69,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - uses: dtolnay/rust-toolchain@stable
-      
+
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
@@ -78,12 +88,14 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # Flawless Fix: Reads the real compiled Linux signature strings and injects them into the file map
+      # Reads the real compiled Linux signature and injects it, along with the
+      # Windows signature passed from job 1, into a valid updater manifest.
       - name: Generate Manual Manifest File
         env:
           APP_VER: ${{ needs.build-windows.outputs.version }}
+          WIN_SIG: ${{ needs.build-windows.outputs.win_sig }}
+          REPO: ${{ github.repository }}
         run: |
-          # Read the real Linux signature generated during the build step safely
           LINUX_SIG=$(cat src-tauri/target/release/bundle/deb/*.sig src-tauri/target/release/bundle/appimage/*.sig 2>/dev/null | head -n 1 || echo "")
 
           cat << EOF > latest.json
@@ -93,12 +105,12 @@ jobs:
             "pub_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
             "platforms": {
               "windows-x86_64": {
-                "signature": "",
-                "url": "https://github.com{APP_VER}_x64_en-US.msi"
+                "signature": "$WIN_SIG",
+                "url": "https://github.com/$REPO/releases/download/v$APP_VER/PharmaTRACK_${APP_VER}_x64_en-US.msi"
               },
               "linux-x86_64": {
                 "signature": "$LINUX_SIG",
-                "url": "https://github.com{APP_VER}_amd64.deb"
+                "url": "https://github.com/$REPO/releases/download/v$APP_VER/PharmaTRACK_${APP_VER}_amd64.deb"
               }
             }
           }
