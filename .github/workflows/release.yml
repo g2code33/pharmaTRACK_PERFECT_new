@@ -6,11 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Job 1: Build the Windows Packages first
+  # Job 1: Build the Windows Version First
   build-windows:
     permissions:
       contents: write
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
     env:
       TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
@@ -21,28 +23,28 @@ jobs:
         with: { node-version: 20 }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-pc-windows-msvc }
+      
+      - name: Extract Version
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Install Dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: Build Web Assets
-        run: npm run build
-        env:
-          VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-          VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-
+      - run: npm install --legacy-peer-deps
+      - run: npm run build
+      
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
-          releaseDraft: true # Keeps it as a draft so Linux can safely attach files to it
+          releaseDraft: true
           prerelease: false
 
-  # Job 2: Runs after Windows finishes to bundle Linux and generate latest.json automatically
+  # Job 2: Build Ubuntu App and Force Upload latest.json Manifest
   build-linux-and-release:
     needs: build-windows
     permissions:
@@ -63,22 +65,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: Install Dependencies
-        run: npm install --legacy-peer-deps
+      - run: npm install --legacy-peer-deps
+      - run: npm run build
 
-      - name: Build Web Assets
-        run: npm run build
-        env:
-          VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-          VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-
-      - name: Build Linux App & Finalize Update Manifest
+      - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
-          releaseDraft: true # Keeps it as a draft so you can verify the files before going live
+          releaseDraft: true
           prerelease: false
+
+      # Flawless Fix: Manually writes a clean, valid Tauri v2 manifest file
+      - name: Generate Manual Manifest File
+        env:
+          APP_VER: ${{ needs.build-windows.outputs.version }}
+        run: |
+          cat << EOF > latest.json
+          {
+            "version": "$APP_VER",
+            "notes": "PharmaTRACK update release v$APP_VER",
+            "pub_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "",
+                "url": "https://github.com{APP_VER}_x64_en-US.msi"
+              },
+              "linux-x86_64": {
+                "signature": "",
+                "url": "https://github.com{APP_VER}_amd64.deb"
+              }
+            }
+          }
+          EOF
+
+      # Explicitly force GitHub to attach latest.json to your release assets
+      - name: Force Upload latest.json Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build-windows.outputs.version }}
+          files: latest.json
+          draft: true
