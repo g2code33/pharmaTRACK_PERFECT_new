@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Job 1 & 2: Compiles Windows & Ubuntu applications side-by-side
   release:
     permissions:
       contents: write
@@ -36,7 +37,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Install Linux dependencies only when running on the Ubuntu runner
       - name: Install Linux Dependencies
         if: matrix.os == 'ubuntu-22.04'
         run: |
@@ -53,7 +53,6 @@ jobs:
           VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       - name: Build and Sign Tauri App
-        id: tauri_build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
@@ -62,27 +61,30 @@ jobs:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: true
+          releaseDraft: true # Keeps it as a draft so the updater job can add the file
           prerelease: false
 
-      # Flawless Step: Forces extraction of the signature files and creates updater.json manually
-      - name: Inject Tauri V2 Updater Manifest
-        if: always()
-        shell: bash
-        run: |
-          echo "Generating manual updater.json matrix override..."
-          cat << 'EOF' > src-tauri/updater.json
-          {
-            "version": "1.1.32",
-            "platforms": {
-              "windows-x86_64": {
-                "signature": "",
-                "url": "https://github.com"
-              },
-              "linux-x86_64": {
-                "signature": "",
-                "url": "https://github.com"
-              }
-            }
-          }
-          EOF
+  # Job 3: The exact 6-second updater job from your screenshot, now with the crash fix!
+  updater:
+    needs: release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # CRUCIAL CRASH FIX: Installs your CLI dependencies so the updater job knows how to parse your configuration
+      - name: Install Tauri CLI
+        run: npm install @tauri-apps/cli --legacy-peer-deps
+
+      - name: Tauri Update Manifest Sync
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          tagName: v__VERSION__
+          updaterJsonKeepFiles: true
