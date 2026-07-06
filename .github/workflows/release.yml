@@ -78,11 +78,14 @@ jobs:
           releaseDraft: true
           prerelease: false
 
-      # Flawless Fix: Manually writes a clean, valid Tauri v2 manifest file
+      # Flawless Fix: Reads the real compiled Linux signature strings and injects them into the file map
       - name: Generate Manual Manifest File
         env:
           APP_VER: ${{ needs.build-windows.outputs.version }}
         run: |
+          # Read the real Linux signature generated during the build step safely
+          LINUX_SIG=$(cat src-tauri/target/release/bundle/deb/*.sig src-tauri/target/release/bundle/appimage/*.sig 2>/dev/null | head -n 1 || echo "")
+
           cat << EOF > latest.json
           {
             "version": "$APP_VER",
@@ -94,7 +97,7 @@ jobs:
                 "url": "https://github.com{APP_VER}_x64_en-US.msi"
               },
               "linux-x86_64": {
-                "signature": "",
+                "signature": "$LINUX_SIG",
                 "url": "https://github.com{APP_VER}_amd64.deb"
               }
             }
