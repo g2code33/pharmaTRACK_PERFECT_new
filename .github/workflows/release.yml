@@ -53,14 +53,29 @@ jobs:
           VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
 
       - name: Build and Sign Tauri App
-        uses: tauri-apps/tauri-action@v0.5.8
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
-          ENABLE_BUN_UPDATER: true # <-- Forces compilation of the updater json target file
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
           releaseDraft: false
           prerelease: false
+
+  # CRUCIAL FIX: This job runs AFTER the builds finish to gather signatures and create updater.json
+  updater:
+    needs: release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tauri Update Manifest Sync
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        with:
+          tagName: v__VERSION__
+          updaterJsonKeepFiles: true
