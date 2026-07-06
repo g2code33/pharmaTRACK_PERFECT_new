@@ -61,6 +61,6 @@ jobs:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseBody: "Official binaries and update artifacts for PharmaTRACK."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true # <-- Tells Tauri v2 to output the signature json file natively
