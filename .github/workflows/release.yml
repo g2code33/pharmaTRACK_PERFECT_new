@@ -14,7 +14,6 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
       win_sig: ${{ steps.win_sig.outputs.sig }}
     env:
-      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
       VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
     steps:
@@ -34,10 +33,22 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run build
 
+      # Decode the base64-wrapped signing key back into a real key file.
+      # This sidesteps any newline/whitespace corruption that can happen when
+      # a raw multi-line key is pasted into a GitHub secret.
+      - name: Decode signing key
+        id: decode_key
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/tauri-keys"
+          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}" | base64 -d > "$RUNNER_TEMP/tauri-keys/key.txt"
+          echo "key_path=$RUNNER_TEMP/tauri-keys/key.txt" >> $GITHUB_OUTPUT
+
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          TAURI_SIGNING_PRIVATE_KEY: "${{ steps.decode_key.outputs.key_path }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
@@ -69,7 +80,6 @@ jobs:
       contents: write
     runs-on: ubuntu-22.04
     env:
-      TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}"
       VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
       VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
     steps:
@@ -86,10 +96,20 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run build
 
+      # Decode the base64-wrapped signing key back into a real key file.
+      - name: Decode signing key
+        id: decode_key
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/tauri-keys"
+          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}" | base64 -d > "$RUNNER_TEMP/tauri-keys/key.txt"
+          echo "key_path=$RUNNER_TEMP/tauri-keys/key.txt" >> $GITHUB_OUTPUT
+
       - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+          TAURI_SIGNING_PRIVATE_KEY: "${{ steps.decode_key.outputs.key_path }}"
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
