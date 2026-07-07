@@ -55,6 +55,7 @@ jobs:
           releaseName: "PharmaTRACK v__VERSION__"
           releaseDraft: true
           prerelease: false
+          args: --config '{"bundle":{"updater":{"privateKey":"${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"}}}'
 
       # Read the real Windows signature generated during the build (MSI or NSIS)
       - name: Read Windows Signature
@@ -117,6 +118,7 @@ jobs:
           releaseName: "PharmaTRACK v__VERSION__"
           releaseDraft: true
           prerelease: false
+          args: --config '{"bundle":{"updater":{"privateKey":"${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"}}}'
 
       # Reads the real compiled Linux signature and injects it, along with the
       # Windows signature passed from job 1, into a valid updater manifest.
