@@ -33,29 +33,20 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run build
 
-      # Decode the base64-wrapped signing key back into a real key file.
-      # This sidesteps any newline/whitespace corruption that can happen when
-      # a raw multi-line key is pasted into a GitHub secret.
-      - name: Decode signing key
-        id: decode_key
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/tauri-keys"
-          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}" | base64 -d > "$RUNNER_TEMP/tauri-keys/key.txt"
-          echo "key_path=$RUNNER_TEMP/tauri-keys/key.txt" >> $GITHUB_OUTPUT
-
+      # TAURI_SIGNING_PRIVATE_KEY_B64 already holds the exact clean, single-line,
+      # base64-wrapped key content (the untouched output of `cat updater_keys`).
+      # Pass it straight through as content — do NOT base64-decode it here.
+      # Tauri does that decoding internally; doing it twice corrupts the key.
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
-
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseDraft: true
           prerelease: false
-          args: --config '{"bundle":{"updater":{"privateKey":"${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"}}}'
 
       # Read the real Windows signature generated during the build (MSI or NSIS)
       - name: Read Windows Signature
@@ -98,27 +89,16 @@ jobs:
       - run: npm install --legacy-peer-deps
       - run: npm run build
 
-      # Decode the base64-wrapped signing key back into a real key file.
-      - name: Decode signing key
-        id: decode_key
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/tauri-keys"
-          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}" | base64 -d > "$RUNNER_TEMP/tauri-keys/key.txt"
-          echo "key_path=$RUNNER_TEMP/tauri-keys/key.txt" >> $GITHUB_OUTPUT
-
       - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
-
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
           releaseDraft: true
           prerelease: false
-          args: --config '{"bundle":{"updater":{"privateKey":"${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"}}}'
 
       # Reads the real compiled Linux signature and injects it, along with the
       # Windows signature passed from job 1, into a valid updater manifest.
