@@ -48,7 +48,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ steps.decode_key.outputs.key_path }}"
+          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
@@ -109,7 +110,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ steps.decode_key.outputs.key_path }}"
+          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+
         with:
           tagName: v__VERSION__
           releaseName: "PharmaTRACK v__VERSION__"
