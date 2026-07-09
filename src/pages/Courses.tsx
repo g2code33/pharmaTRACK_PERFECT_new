@@ -185,9 +185,10 @@ const Courses: React.FC = () => {
             const topicsCount = getTopicsForCourse(course.id).length;
 
             return (
-              <div
+              <Link
+                to={`/course/${course.id}`}
                 key={course.id}
-                className="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden"
+                className="bg-white rounded-xl border border-gray-100 shadow-sm hover:shadow-md hover:border-blue-300 transition-all overflow-hidden block cursor-pointer"
               >
                 <div className="p-5">
                   <div className="flex items-start justify-between mb-3">
@@ -199,13 +200,13 @@ const Courses: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-1">
                       <button
-                        onClick={() => openEditModal(course)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEditModal(course); }}
                         className="p-1.5 text-gray-400 hover:text-[#2D6A4F] hover:bg-gray-100 rounded transition-colors"
                       >
                         <Edit2 className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(course.id)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(course.id); }}
                         className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -243,20 +244,19 @@ const Courses: React.FC = () => {
                     <span className="text-sm text-gray-400">
                       {topicsCount} {topicsCount === 1 ? 'topic' : 'topics'}
                     </span>
-                    <Link
-                      to={`/courses/${course.id}`}
-                      className="flex items-center gap-1 text-sm font-medium text-[#2D6A4F] hover:underline"
+                    <span
+                      className="flex items-center gap-1 text-sm font-medium text-[#2D6A4F] group-hover:underline"
                     >
                       View Details
                       <ArrowRight className="w-4 h-4" />
-                    </Link>
+                    </span>
                   </div>
                 </div>
 
                 <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-400">
                   {course.semester}
                 </div>
-              </div>
+              </Link>
             );
           })}
         </div>
