@@ -700,14 +700,13 @@ const Quiz: React.FC = () => {
             <textarea
               value={answers.get(currentQuestion.id)?.answer || ''}
               onChange={(e) => { if(!isReviewMode) saveAnswer(currentQuestion.id, e.target.value) }}
-              placeholder="Type your answer here..." readOnly={isReviewMode} readOnly={isReviewMode}
+              placeholder="Type your answer here..." readOnly={isReviewMode}
               rows={6}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none"
             />
           )}
 
           {/* Show answer toggle */}
-          {isReviewMode && (
                     {isReviewMode && (
           <div className="mt-6 pt-4 border-t">
             <button
@@ -723,7 +722,6 @@ const Quiz: React.FC = () => {
               </div>
             )}
           </div>
-          )}
           )}
         </div>
       )}
@@ -758,7 +756,7 @@ const Quiz: React.FC = () => {
             onClick={isReviewMode ? () => setQuizStarted(false) : finishQuiz}
             className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"
           >
-            {isReviewMode ? "Exit Review" : "{isReviewMode ? "Exit Review" : "Finish Quiz"}"}
+            {isReviewMode ? "Exit Review" : "Finish Quiz"}
             <Check className="w-5 h-5" />
           </button>
         ) : (
