@@ -50,6 +50,7 @@ const Quiz: React.FC = () => {
 
   // Quiz state
   const [quizStarted, setQuizStarted] = useState(false);
+  const [isReviewMode, setIsReviewMode] = useState(false);
     const [quizQuestions, setQuizQuestions] = useState<ExamQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Map<string, { answer: string; flagged: boolean }>>(new Map());
