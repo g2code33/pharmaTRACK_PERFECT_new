@@ -708,7 +708,7 @@ const Quiz: React.FC = () => {
 
           {/* Show answer toggle */}
           {isReviewMode && (
-          {isReviewMode && (
+                    {isReviewMode && (
           <div className="mt-6 pt-4 border-t">
             <button
               onClick={() => setShowAnswer(!showAnswer)}
