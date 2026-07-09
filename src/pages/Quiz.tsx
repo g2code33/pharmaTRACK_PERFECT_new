@@ -119,6 +119,7 @@ const Quiz: React.FC = () => {
     setQuizFinished(false);
     setResults(null);
     setIsReviewMode(false);
+    setIsReviewMode(false);
   };
 
   const saveAnswer = (questionId: string, answer: string) => {
@@ -413,16 +414,19 @@ const Quiz: React.FC = () => {
                         {new Date(quiz.completedAt).toLocaleDateString()}
                       </p>
                     </div>
-                    <div
-                      className={`text-lg font-bold ${
-                        quiz.scorePercentage >= 70
-                          ? 'text-green-600'
-                          : quiz.scorePercentage >= 50
-                          ? 'text-yellow-600'
-                          : 'text-red-600'
-                      }`}
-                    >
-                      {quiz.scorePercentage}%
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`text-lg font-bold ${
+                          quiz.scorePercentage >= 70
+                            ? 'text-green-600'
+                            : quiz.scorePercentage >= 50
+                            ? 'text-yellow-600'
+                            : 'text-red-600'
+                        }`}
+                      >
+                        {quiz.scorePercentage}%
+                      </div>
+                      <button onClick={() => reviewQuiz(quiz)} className="text-sm font-bold text-[#2D6A4F] bg-[#2D6A4F]/10 px-3 py-1.5 rounded-lg hover:bg-[#2D6A4F]/20 transition-colors">Review</button>
                     </div>
                   </div>
                 );
@@ -696,13 +700,14 @@ const Quiz: React.FC = () => {
             <textarea
               value={answers.get(currentQuestion.id)?.answer || ''}
               onChange={(e) => { if(!isReviewMode) saveAnswer(currentQuestion.id, e.target.value) }}
-              placeholder="Type your answer here..." readOnly={isReviewMode}
+              placeholder="Type your answer here..." readOnly={isReviewMode} readOnly={isReviewMode}
               rows={6}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none"
             />
           )}
 
           {/* Show answer toggle */}
+          {isReviewMode && (
           {isReviewMode && (
           <div className="mt-6 pt-4 border-t">
             <button
@@ -718,6 +723,7 @@ const Quiz: React.FC = () => {
               </div>
             )}
           </div>
+          )}
           )}
         </div>
       )}
@@ -752,7 +758,7 @@ const Quiz: React.FC = () => {
             onClick={isReviewMode ? () => setQuizStarted(false) : finishQuiz}
             className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"
           >
-            {isReviewMode ? "Exit Review" : "Finish Quiz"}
+            {isReviewMode ? "Exit Review" : "{isReviewMode ? "Exit Review" : "Finish Quiz"}"}
             <Check className="w-5 h-5" />
           </button>
         ) : (
