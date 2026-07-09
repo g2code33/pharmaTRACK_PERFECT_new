@@ -567,7 +567,8 @@ const Settings: React.FC = () => {
                 const file = new Blob([JSON.stringify(loadState(), null, 2)], { type: 'application/json' });
                 const { error } = await supabase.storage.from('user-documents').upload(`${user.id}/pharmatrack_backup.json`, file, { upsert: true });
                 if (error) throw error;
-                alert("Successfully backed up to Cloud!");
+                alert("Cloud Sync Initiated! Uploading local data to your secure bucket...");
+                setTimeout(() => alert("Upload Complete! All local JSON data securely synced to the cloud."), 2000);
               } catch (e: any) {
                 alert("Error: " + e.message);
               }

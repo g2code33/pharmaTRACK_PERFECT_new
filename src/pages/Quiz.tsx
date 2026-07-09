@@ -50,6 +50,7 @@ const Quiz: React.FC = () => {
 
   // Quiz state
   const [quizStarted, setQuizStarted] = useState(false);
+  const [isReviewMode, setIsReviewMode] = useState(false);
   const [quizQuestions, setQuizQuestions] = useState<ExamQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Map<string, { answer: string; flagged: boolean }>>(new Map());
@@ -91,6 +92,19 @@ const Quiz: React.FC = () => {
     return () => clearInterval(timer);
   }, [quizStarted, settings.timed, timeRemaining, quizFinished]);
 
+  
+  const reviewQuiz = (history: QuizHistory) => {
+    const qs = state.examQuestions.filter(q => history.questionsUsed.includes(q.id));
+    setQuizQuestions(qs);
+    const prevAnswers = new Map();
+    history.answersGiven.forEach(a => { prevAnswers.set(a.questionId, { answer: a.answer, flagged: false }); });
+    setAnswers(prevAnswers);
+    setCurrentIndex(0);
+    setIsReviewMode(true);
+    setQuizStarted(true);
+    setQuizFinished(false);
+  };
+
   const startQuiz = () => {
     // Shuffle and select questions
     const shuffled = [...availableQuestions].sort(() => Math.random() - 0.5);
@@ -104,6 +118,7 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
+    setIsReviewMode(false);
   };
 
   const saveAnswer = (questionId: string, answer: string) => {
@@ -655,7 +670,7 @@ const Quiz: React.FC = () => {
                 return (
                   <button
                     key={idx}
-                    onClick={() => saveAnswer(currentQuestion.id, String(idx))}
+                    onClick={() => { if(!isReviewMode) saveAnswer(currentQuestion.id, String(idx)) }}
                     className={`w-full p-4 rounded-lg border-2 text-left transition-all ${
                       isSelected
                         ? 'border-blue-500 bg-blue-50'
@@ -680,14 +695,15 @@ const Quiz: React.FC = () => {
             // Text answer
             <textarea
               value={answers.get(currentQuestion.id)?.answer || ''}
-              onChange={(e) => saveAnswer(currentQuestion.id, e.target.value)}
-              placeholder="Type your answer here..."
+              onChange={(e) => { if(!isReviewMode) saveAnswer(currentQuestion.id, e.target.value) }}
+              placeholder="Type your answer here..." readOnly={isReviewMode}
               rows={6}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none"
             />
           )}
 
           {/* Show answer toggle */}
+          {isReviewMode && (
           <div className="mt-6 pt-4 border-t">
             <button
               onClick={() => setShowAnswer(!showAnswer)}
@@ -702,6 +718,7 @@ const Quiz: React.FC = () => {
               </div>
             )}
           </div>
+          )}
         </div>
       )}
 
@@ -732,10 +749,10 @@ const Quiz: React.FC = () => {
 
         {currentIndex === quizQuestions.length - 1 ? (
           <button
-            onClick={finishQuiz}
+            onClick={isReviewMode ? () => setQuizStarted(false) : finishQuiz}
             className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"
           >
-            Finish Quiz
+            {isReviewMode ? "Exit Review" : "Finish Quiz"}
             <Check className="w-5 h-5" />
           </button>
         ) : (
