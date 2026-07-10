@@ -3,7 +3,8 @@
     windows_subsystem = "windows"
 )]
 
-use tauri::{Manager, WebviewBuilder, WebviewUrl};
+// Notice the new tauri::webview::WebviewBuilder path and Logical coordinates!
+use tauri::{webview::{WebviewBuilder, WebviewUrl}, LogicalPosition, LogicalSize, Manager};
 
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
@@ -12,21 +13,23 @@ fn open_devtools(window: tauri::WebviewWindow) {
 
 #[tauri::command]
 fn embed_website(app: tauri::AppHandle, label: String, url: String, x: f64, y: f64, width: f64, height: f64) {
-    let main_window = app.get_webview_window("main").unwrap();
+    // 1. Get the WebviewWindow Wrapper
+    let main_webview_window = app.get_webview_window("main").unwrap();
 
+    // 2. We must look up existing webviews natively now
     if let Some(existing_webview) = app.get_webview(&label) {
         let _ = existing_webview.close();
     }
 
-    let _webview = main_window
-        .add_child(
-            WebviewBuilder::new(&label, WebviewUrl::External(url.parse().unwrap()))
-                .auto_resize()
-                .position(x, y)
-                .size(width, height)
-                // Spoof identity to bypass AI bot blockers!
-                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-        )
+    // 3. Construct the builder
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(url.parse().unwrap()))
+        .auto_resize()
+        // Spoof identity to bypass AI bot blockers!
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+
+    // 4. Extract the raw OS Window and add the child Webview natively
+    let _webview = main_webview_window.as_ref().window()
+        .add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(width, height))
         .unwrap();
 }
 
