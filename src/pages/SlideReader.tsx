@@ -45,7 +45,7 @@ const SlideReader: React.FC = () => {
     let unlisten;
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen('new-browser-tab', (event) => {
-        const url = event.payload;
+        const url = event.payload as string;
         const newId = uuidv4();
         const title = url.replace('https://', '').split('/')[0];
         setBrowserTabs(tabs => [...tabs, { id: newId, url, title }]);
