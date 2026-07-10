@@ -30,7 +30,44 @@ const SlideReader: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
-  const [browserUrl, setBrowserUrl] = useState('');
+  const [browserUrl, setBrowserUrl] = useState('https://chatgpt.com');
+  const browserContainerRef = useRef<HTMLDivElement>(null);
+
+  const updateWebview = async () => {
+    if (showBrowserPanel && browserContainerRef.current) {
+      const rect = browserContainerRef.current.getBoundingClientRect();
+      let url = browserUrl.trim();
+      if (!url) url = 'https://chatgpt.com';
+      else if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('embed_website', {
+          label: 'slide_browser',
+          url: url,
+          x: rect.left,
+          y: rect.top,
+          width: rect.width,
+          height: rect.height
+        });
+      } catch(e) { console.error(e); }
+    } else {
+      try { 
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('destroy_website', { label: 'slide_browser' }); 
+      } catch(e) {}
+    }
+  };
+
+  useEffect(() => {
+    updateWebview();
+    const handleResize = () => updateWebview();
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      import('@tauri-apps/api/core').then(({invoke}) => invoke('destroy_website', { label: 'slide_browser' })).catch(()=>{});
+    };
+  }, [showBrowserPanel, panelWidth, browserUrl, isFullscreen]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -385,8 +422,8 @@ const SlideReader: React.FC = () => {
               <button onClick={() => setShowBrowserPanel(false)} className="p-2 hover:bg-gray-200 rounded-lg"><X className="w-4 h-4 text-gray-500"/></button>
             </div>
             
-            <div className="flex-1 overflow-hidden bg-white relative">
-              <iframe src={browserUrl} className="w-full h-full border-0 browser-frame" title="Browser" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation allow-modals" />
+            <div ref={browserContainerRef} className="flex-1 overflow-hidden bg-[#1E293B] relative flex items-center justify-center">
+              <Loader2 className="w-8 h-8 text-gray-500 animate-spin" />
             </div>
           </div>
         )}
