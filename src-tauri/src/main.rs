@@ -38,9 +38,16 @@ async fn embed_website(
         ));
     }
 
-    let main_webview_window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
+    let main_webview_window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => {
+            let available: Vec<String> = app.webview_windows().keys().cloned().collect();
+            return Err(format!(
+                "main window not found. Available window labels: {:?}",
+                available
+            ));
+        }
+    };
 
     // Re-use an existing webview if the user switches back to this tab
     if let Some(existing_webview) = app.get_webview(&label) {

@@ -32,7 +32,7 @@ const Layout: React.FC = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.1.77');
+  const [appVersion, setAppVersion] = useState('1.1.78');
   const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
