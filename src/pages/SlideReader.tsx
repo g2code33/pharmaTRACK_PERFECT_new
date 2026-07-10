@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event'; from '@tauri-apps/api/webviewWindow';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
@@ -30,31 +31,51 @@ const SlideReader: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
-  const [browserUrl, setBrowserUrl] = useState('https://chatgpt.com');
+  const [browserTabs, setBrowserTabs] = useState([{ id: 'default', url: 'https://chatgpt.com', title: 'ChatGPT' }]);
+  const [activeTabId, setActiveTabId] = useState('default');
+  const [urlInput, setUrlInput] = useState('https://chatgpt.com');
+
+  useEffect(() => {
+    const tab = browserTabs.find(t => t.id === activeTabId);
+    if (tab) setUrlInput(tab.url);
+  }, [activeTabId, browserTabs]);
   const browserContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let unlisten;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen('new-browser-tab', (event) => {
+        const url = event.payload;
+        const newId = uuidv4();
+        const title = url.replace('https://', '').split('/')[0];
+        setBrowserTabs(tabs => [...tabs, { id: newId, url, title }]);
+        setActiveTabId(newId);
+        setShowBrowserPanel(true);
+        setShowAIPanel(false);
+      }).then(u => unlisten = u);
+    });
+    return () => { if (unlisten) unlisten(); }
+  }, []);
 
   const updateWebview = async () => {
     if (showBrowserPanel && browserContainerRef.current) {
       const rect = browserContainerRef.current.getBoundingClientRect();
-      let url = browserUrl.trim();
-      if (!url) url = 'https://chatgpt.com';
-      else if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+      const activeTab = browserTabs.find(t => t.id === activeTabId);
+      if (!activeTab) return;
 
       try {
         const { invoke } = await import('@tauri-apps/api/core');
+        for (const tab of browserTabs) {
+           if (tab.id !== activeTabId) invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(()=>{});
+        }
         await invoke('embed_website', {
-          label: 'slide_browser',
-          url: url,
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height
+          label: `browser_tab_${activeTabId}`, url: activeTab.url, x: rect.left, y: rect.top, width: rect.width, height: rect.height
         });
-      } catch(e) { console.error(e); }
+      } catch(e) {}
     } else {
       try { 
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('destroy_website', { label: 'slide_browser' }); 
+        for (const tab of browserTabs) invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(()=>{});
       } catch(e) {}
     }
   };
@@ -67,7 +88,7 @@ const SlideReader: React.FC = () => {
       window.removeEventListener('resize', handleResize);
       import('@tauri-apps/api/core').then(({invoke}) => invoke('destroy_website', { label: 'slide_browser' })).catch(()=>{});
     };
-  }, [showBrowserPanel, panelWidth, browserUrl, isFullscreen]);
+  }, [showBrowserPanel, panelWidth, activeTabId, isFullscreen]);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
