@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { listen } from '@tauri-apps/api/event'; from '@tauri-apps/api/webviewWindow';
+import { listen } from '@tauri-apps/api/event';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
@@ -45,7 +45,7 @@ const SlideReader: React.FC = () => {
     let unlisten;
     import('@tauri-apps/api/event').then(({ listen }) => {
       listen('new-browser-tab', (event) => {
-        const url = event.payload as string;
+        const url = event.payload;
         const newId = uuidv4();
         const title = url.replace('https://', '').split('/')[0];
         setBrowserTabs(tabs => [...tabs, { id: newId, url, title }]);
@@ -410,39 +410,6 @@ const SlideReader: React.FC = () => {
         )}
 
         {showBrowserPanel && (
-          <div className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
-            <div className="p-3 border-b bg-gray-50 flex items-center gap-2">
-              <div className="flex items-center gap-1 flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2">
-                <Globe className="w-4 h-4 text-gray-400" />
-                <input 
-                  type="text" 
-                  value={browserUrl}
-                  onChange={(e) => setBrowserUrl(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setShowBrowserPanel(false);
-                      return;
-                    }
-                    if (e.key === 'Enter') {
-                      let url = browserUrl.trim();
-                      const isUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(url);
-                      let finalUrl = url;
-                      if (isUrl) {
-                        if (!url.startsWith('http')) finalUrl = 'https://' + url;
-                      } else {
-                        finalUrl = `https://www.google.com/search?q=${encodeURIComponent(url)}&igu=1`;
-                      }
-                      const iframe = document.querySelector('.browser-frame') as HTMLIFrameElement;
-                      if (iframe) iframe.src = finalUrl;
-                    }
-                  }}
-                  className="flex-1 bg-transparent outline-none text-sm"
-                  placeholder="Enter URL (Press Enter)..."
-                />
-              </div>
-              <button onClick={() => setShowBrowserPanel(false)} className="p-2 hover:bg-gray-200 rounded-lg"><X className="w-4 h-4 text-gray-500"/></button>
-            </div>
-            
             <div ref={browserContainerRef} className="flex-1 overflow-hidden bg-[#1E293B] relative flex items-center justify-center">
               <Loader2 className="w-8 h-8 text-gray-500 animate-spin" />
             </div>
