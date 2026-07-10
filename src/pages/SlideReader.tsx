@@ -79,15 +79,22 @@ const SlideReader: React.FC = () => {
           data = new Uint8Array(fileData);
       }
       
-      const blob = new Blob([data], { type: currentMaterial.fileType === 'pdf' ? 'application/pdf' : 'application/octet-stream' });
-      setFileUrl(URL.createObjectURL(blob));
+            const blob = new Blob([data], { type: currentMaterial.fileType === 'pdf' ? 'application/pdf' : 'application/octet-stream' });
+      const newUrl = URL.createObjectURL(blob);
+      setFileUrl(newUrl);
       setIsLoadingContent(false);
     }).catch(err => {
       console.error(err);
       if (isMounted) setIsLoadingContent(false);
     });
 
-    return () => { isMounted = false; };
+    return () => { 
+      isMounted = false; 
+      setFileUrl(prevUrl => {
+         if (prevUrl) URL.revokeObjectURL(prevUrl);
+         return null;
+      });
+    };
   }, [currentMaterial]);
 
   useEffect(() => {

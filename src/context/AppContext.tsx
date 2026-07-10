@@ -435,9 +435,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [state.student?.id, state.isLoggedIn]);
 
   useEffect(() => {
-    if (state.student !== null || state.courses.length > 0) {
-      saveState(state);
-    }
+    const timeoutId = setTimeout(() => {
+      if (state.student !== null || state.courses.length > 0) {
+        saveState(state);
+      }
+    }, 1000); // Debounce saves by 1 second to prevent UI freezing
+    return () => clearTimeout(timeoutId);
   }, [state]);
 
   const getCourseProgress = (courseId: string): number => {
