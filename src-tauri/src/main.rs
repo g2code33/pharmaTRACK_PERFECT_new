@@ -7,6 +7,12 @@ use tauri::{
     webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
 };
 
+#[derive(Clone, serde::Serialize)]
+struct NavUpdate {
+    label: String,
+    url: String,
+}
+
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
@@ -22,27 +28,59 @@ async fn embed_website(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    let main_webview_window = app.get_webview_window("main").unwrap();
+    // Guard: a zero-size webview is created "successfully" but is invisible,
+    // which looks identical to an infinite spinner from the frontend's
+    // point of view. Reject early instead of silently creating a ghost webview.
+    if width <= 0.0 || height <= 0.0 {
+        return Err(format!(
+            "embed_website called with invalid size: {}x{}",
+            width, height
+        ));
+    }
+
+    let main_webview_window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
 
     // Re-use an existing webview if the user switches back to this tab
     if let Some(existing_webview) = app.get_webview(&label) {
-        let _ = existing_webview.set_position(LogicalPosition::new(x, y));
-        let _ = existing_webview.set_size(LogicalSize::new(width, height));
-        let _ = existing_webview.show();
+        existing_webview
+            .set_position(LogicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+        existing_webview
+            .set_size(LogicalSize::new(width, height))
+            .map_err(|e| e.to_string())?;
+        existing_webview.show().map_err(|e| e.to_string())?;
         return Ok(());
     }
 
+    // Never .unwrap() a parse that comes from user/JS input — propagate the
+    // error instead so the frontend actually sees why it failed.
+    let parsed_url: url::Url = url
+        .parse()
+        .map_err(|e: url::ParseError| format!("invalid url '{}': {}", url, e))?;
+
     let app_clone = app.clone();
-    let builder = WebviewBuilder::new(&label, WebviewUrl::External(url.parse().unwrap()))
+    let label_clone = label.clone();
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url))
         .auto_resize()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-        .on_new_window(move |url, _features| {
-            // Emits an event to React to CREATE A NEW TAB dynamically inside PharmaTRACK!
-            let _ = app_clone.emit("new-browser-tab", url.to_string());
-            tauri::webview::NewWindowResponse::Deny
+        .on_navigation(move |nav_url| {
+            let _ = app_clone.emit(
+                "webview-navigation-update",
+                NavUpdate { label: label_clone.clone(), url: nav_url.to_string() },
+            );
+            true // allow the navigation
+        })
+        .on_new_window({
+            let app_clone2 = app.clone();
+            move |url, _features| {
+                let _ = app_clone2.emit("new-browser-tab", url.to_string());
+                tauri::webview::NewWindowResponse::Deny
+            }
         });
 
-    let _webview = main_webview_window
+    main_webview_window
         .as_ref()
         .window()
         .add_child(
@@ -58,7 +96,7 @@ async fn embed_website(
 #[tauri::command]
 async fn hide_website(app: tauri::AppHandle, label: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.hide();
+        webview.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -66,8 +104,44 @@ async fn hide_website(app: tauri::AppHandle, label: String) -> Result<(), String
 #[tauri::command]
 async fn update_website(app: tauri::AppHandle, label: String, url: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        let script = format!("window.location.href = '{}';", url);
-        let _ = webview.eval(&script);
+        let script = format!("window.location.href = '{}';", url.replace('\'', "\\'"));
+        webview.eval(&script).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn navigate_website(app: tauri::AppHandle, label: String, url: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        let parsed_url: url::Url = url
+            .parse()
+            .map_err(|e: url::ParseError| format!("invalid url '{}': {}", url, e))?;
+        webview.navigate(parsed_url).map_err(|e| e.to_string())?;
+        let _ = app.emit("webview-navigation-update", NavUpdate { label, url });
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn webview_back(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.eval("window.history.back();").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn webview_forward(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.eval("window.history.forward();").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn webview_reload(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    if let Some(webview) = app.get_webview(&label) {
+        webview.eval("window.location.reload();").map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -75,7 +149,7 @@ async fn update_website(app: tauri::AppHandle, label: String, url: String) -> Re
 #[tauri::command]
 async fn destroy_website(app: tauri::AppHandle, label: String) -> Result<(), String> {
     if let Some(webview) = app.get_webview(&label) {
-        let _ = webview.close();
+        webview.close().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -90,6 +164,10 @@ fn main() {
             embed_website,
             hide_website,
             update_website,
+            navigate_website,
+            webview_back,
+            webview_forward,
+            webview_reload,
             destroy_website
         ])
         .run(tauri::generate_context!())
