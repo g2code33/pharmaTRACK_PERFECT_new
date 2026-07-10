@@ -3,7 +3,6 @@
     windows_subsystem = "windows"
 )]
 
-// Notice the correct WebviewUrl import directly from tauri, and the Logical coordinates!
 use tauri::{webview::WebviewBuilder, WebviewUrl, LogicalPosition, LogicalSize, Manager};
 
 #[tauri::command]
@@ -11,33 +10,34 @@ fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
 }
 
+// 1. Added ASYNC keyword to offload from the main UI thread and prevent Deadlocks!
 #[tauri::command]
-fn embed_website(app: tauri::AppHandle, label: String, url: String, x: f64, y: f64, width: f64, height: f64) {
-    // 1. Get the WebviewWindow Wrapper
+async fn embed_website(app: tauri::AppHandle, label: String, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     let main_webview_window = app.get_webview_window("main").unwrap();
 
-    // 2. We must look up existing webviews natively now
     if let Some(existing_webview) = app.get_webview(&label) {
         let _ = existing_webview.close();
     }
 
-    // 3. Construct the builder
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(url.parse().unwrap()))
         .auto_resize()
         // Spoof identity to bypass AI bot blockers!
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
 
-    // 4. Extract the raw OS Window and add the child Webview natively
     let _webview = main_webview_window.as_ref().window()
         .add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(width, height))
-        .unwrap();
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
+// 2. Added ASYNC keyword here as well to prevent deadlocks when closing the AI pane
 #[tauri::command]
-fn destroy_website(app: tauri::AppHandle, label: String) {
+async fn destroy_website(app: tauri::AppHandle, label: String) -> Result<(), String> {
     if let Some(existing_webview) = app.get_webview(&label) {
         let _ = existing_webview.close();
     }
+    Ok(())
 }
 
 fn main() {
