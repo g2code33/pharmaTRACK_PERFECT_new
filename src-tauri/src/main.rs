@@ -3,8 +3,8 @@
     windows_subsystem = "windows"
 )]
 
-// Notice the new tauri::webview::WebviewBuilder path and Logical coordinates!
-use tauri::{webview::{WebviewBuilder, WebviewUrl}, LogicalPosition, LogicalSize, Manager};
+// Notice the correct WebviewUrl import directly from tauri, and the Logical coordinates!
+use tauri::{webview::WebviewBuilder, WebviewUrl, LogicalPosition, LogicalSize, Manager};
 
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
