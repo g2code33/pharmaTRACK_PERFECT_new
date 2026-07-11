@@ -4,6 +4,7 @@
 )]
 
 use tauri::{
+    Position, Size, PhysicalPosition, PhysicalSize,
     webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
 };
 
@@ -49,10 +50,10 @@ async fn embed_website(
     // Re-use an existing webview if the user switches back to this tab
     if let Some(existing_webview) = app.get_webview(&label) {
         existing_webview
-            .set_position(LogicalPosition::new(x, y))
+            .set_position(Position::Physical(PhysicalPosition::new(x as i32, y as i32)))
             .map_err(|e| e.to_string())?;
         existing_webview
-            .set_size(LogicalSize::new(width, height))
+            .set_size(Size::Physical(PhysicalSize::new(width as u32, height as u32)))
             .map_err(|e| e.to_string())?;
         existing_webview.show().map_err(|e| e.to_string())?;
         return Ok(());
@@ -89,8 +90,8 @@ async fn embed_website(
         .window()
         .add_child(
             builder,
-            LogicalPosition::new(x, y),
-            LogicalSize::new(width, height),
+            Position::Physical(PhysicalPosition::new(x as i32, y as i32)),
+            Size::Physical(PhysicalSize::new(width as u32, height as u32)),
         )
         .map_err(|e| e.to_string())?;
 
