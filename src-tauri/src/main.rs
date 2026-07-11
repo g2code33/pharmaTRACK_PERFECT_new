@@ -67,7 +67,6 @@ async fn embed_website(
     let app_clone = app.clone();
     let label_clone = label.clone();
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed_url))
-        .auto_resize()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
         .on_navigation(move |nav_url| {
             let _ = app_clone.emit(

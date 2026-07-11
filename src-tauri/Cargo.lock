@@ -2258,7 +2258,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pharmatrack"
-version = "1.1.79"
+version = "1.1.80"
 dependencies = [
  "serde",
  "serde_json",
@@ -2267,6 +2267,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tauri-plugin-updater",
+ "url",
 ]
 
 [[package]]
