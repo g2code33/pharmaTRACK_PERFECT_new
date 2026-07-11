@@ -13,6 +13,13 @@ struct NavUpdate {
     url: String,
 }
 
+// Captured once in .setup() and held for the app's lifetime, so embed_website
+// never needs to re-query get_webview_window("main") — which was observed
+// returning an empty window registry on the second/later call for reasons
+// that didn't match any documented Tauri behavior. Holding a direct handle
+// sidesteps that lookup entirely.
+struct MainWindowHandle(tauri::WebviewWindow);
+
 #[tauri::command]
 fn open_devtools(window: tauri::WebviewWindow) {
     window.open_devtools();
@@ -21,6 +28,7 @@ fn open_devtools(window: tauri::WebviewWindow) {
 #[tauri::command]
 async fn embed_website(
     app: tauri::AppHandle,
+    main_window: tauri::State<'_, MainWindowHandle>,
     label: String,
     url: String,
     x: f64,
@@ -37,17 +45,6 @@ async fn embed_website(
             width, height
         ));
     }
-
-    let main_webview_window = match app.get_webview_window("main") {
-        Some(w) => w,
-        None => {
-            let available: Vec<String> = app.webview_windows().keys().cloned().collect();
-            return Err(format!(
-                "main window not found. Available window labels: {:?}",
-                available
-            ));
-        }
-    };
 
     // Re-use an existing webview if the user switches back to this tab
     if let Some(existing_webview) = app.get_webview(&label) {
@@ -87,7 +84,8 @@ async fn embed_website(
             }
         });
 
-    main_webview_window
+    main_window
+        .0
         .as_ref()
         .window()
         .add_child(
@@ -166,6 +164,13 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let main_window = app
+                .get_webview_window("main")
+                .expect("main window must exist at startup");
+            app.manage(MainWindowHandle(main_window));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             embed_website,
