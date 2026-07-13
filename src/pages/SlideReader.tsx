@@ -65,6 +65,28 @@ const SlideReader: React.FC = () => {
   const [webviewReady, setWebviewReady] = useState(false);
 
   const browserContainerRef = useRef<HTMLDivElement>(null);
+  const boundsUpdateRafRef = useRef<number | null>(null);
+
+  const getBrowserContainerBounds = () => {
+    const el = browserContainerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  };
+
+  const scheduleWebviewBoundsUpdate = () => {
+    if (boundsUpdateRafRef.current !== null) return;
+    boundsUpdateRafRef.current = requestAnimationFrame(() => {
+      boundsUpdateRafRef.current = null;
+      void updateWebview();
+    });
+  };
 
   // Keep the address bar in sync with whichever tab is active
   useEffect(() => {
@@ -110,16 +132,12 @@ const SlideReader: React.FC = () => {
 
   const updateWebview = async () => {
     if (showBrowserPanel && browserContainerRef.current) {
-      const rect = browserContainerRef.current.getBoundingClientRect();
+      const bounds = getBrowserContainerBounds();
       const activeTab = browserTabs.find(t => t.id === activeTabId);
-      if (!activeTab) return;
-
-      // Guard against firing before the panel has actually laid out — a zero-size
-      // rect creates an invisible webview that looks identical to an infinite
-      // spinner, with no error thrown. The effect re-runs on the next resize/state
-      // change once the container has real dimensions.
-      if (rect.width === 0 || rect.height === 0) {
-        console.warn('embed_website skipped: container not laid out yet', rect);
+      if (!activeTab || !bounds) {
+        if (!bounds) {
+          console.warn('embed_website skipped: container not laid out yet');
+        }
         return;
       }
 
@@ -133,10 +151,10 @@ const SlideReader: React.FC = () => {
         await invoke('embed_website', {
           label: `browser_tab_${activeTabId}`,
           url: activeTab.url,
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
         });
       } catch (e) {
         console.error('embed_website failed:', e);
@@ -154,14 +172,29 @@ const SlideReader: React.FC = () => {
   };
 
   useEffect(() => {
-    updateWebview();
-    const handleResize = () => updateWebview();
+    scheduleWebviewBoundsUpdate();
+    const handleResize = () => scheduleWebviewBoundsUpdate();
     window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (boundsUpdateRafRef.current !== null) {
+        cancelAnimationFrame(boundsUpdateRafRef.current);
+        boundsUpdateRafRef.current = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBrowserPanel, panelWidth, activeTabId, isFullscreen, browserTabs.length]);
+  }, [showBrowserPanel, panelWidth, activeTabId, isFullscreen, browserTabs.length, showAIPanel]);
+
+  // Track the browser container's own size changes (panel drag, flex reflow, etc.)
+  useEffect(() => {
+    const el = browserContainerRef.current;
+    if (!el || !showBrowserPanel) return;
+
+    const observer = new ResizeObserver(() => scheduleWebviewBoundsUpdate());
+    observer.observe(el);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBrowserPanel, activeTabId, panelWidth]);
 
   // Destroy every tab's native webview on unmount so nothing leaks across a long session
   useEffect(() => {
@@ -410,6 +443,7 @@ const SlideReader: React.FC = () => {
       const newWidth = window.innerWidth - e.clientX;
       if (newWidth > 200 && newWidth < window.innerWidth * 0.7) {
         setPanelWidth(newWidth);
+        scheduleWebviewBoundsUpdate();
       }
     };
     const handleMouseUp = () => {
