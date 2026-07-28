@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useRef, useCallback, ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
   AppState,
@@ -18,7 +18,7 @@ import {
   ChatMessageStore,
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
-import { supabase } from '../utils/supabase';
+import { supabase, purgeStoredSession } from '../utils/supabase';
 import { TimetableItem } from '../types';
 
 type Action =
@@ -316,7 +316,14 @@ const appReducer = (state: AppState, action: Action): AppState => {
     case 'SET_TIMETABLE_PDF':
       return { ...state, timetablePdf: action.payload };
     case 'LOGOUT':
-      return { ...initialState };
+      // Clear identity/session only, and deliberately KEEP the locally cached
+      // study data (courses, topics, slides, notes...).
+      // Resetting to initialState here is unsafe: the debounced save effect
+      // writes state back to localStorage as soon as `student` is non-null
+      // again, so the next sign-in would flush an empty state over the user's
+      // real material and destroy it permanently. Settings ->
+      // "Clear ALL Data" remains the explicit way to wipe local content.
+      return { ...state, isLoggedIn: false, student: null };
 
     default:
       return state;
@@ -359,12 +366,42 @@ interface AppContextType {
   getNotesForTopic: (topicId: string) => Note[];
   getExamDatesForCourse: (courseId: string) => ExamDate[];
   addActivity: (type: Activity['type'], description: string, courseId?: string, topicId?: string) => void;
+  logout: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
+
+  // Set the moment the user signs out, and read synchronously by the session
+  // effect below. A ref (not state) is required because the effect and the
+  // in-flight async getSession() must see the new value immediately, before
+  // React has a chance to re-render.
+  const hasSignedOutRef = useRef(false);
+
+  /**
+   * Ends the session for real.
+   *
+   * Order matters: mark signed-out first so any in-flight session check bails
+   * out, then ask Supabase to sign out, then purge the persisted token. The
+   * purge is unconditional because `signOut()` returns early without clearing
+   * storage when its network call fails (i.e. whenever the user is offline),
+   * which is exactly what left users unable to log out.
+   */
+  const logout = useCallback(async () => {
+    hasSignedOutRef.current = true;
+    try {
+      // 'local' clears this device only and, unlike the default 'global'
+      // scope, doesn't need the server to accept the request to be meaningful.
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch (err) {
+      console.error('Supabase sign-out failed, clearing local session anyway:', err);
+    } finally {
+      purgeStoredSession();
+      dispatch({ type: 'LOGOUT' });
+    }
+  }, []);
 
   // Initial Load from IDB/LocalStorage
   useEffect(() => {
@@ -404,12 +441,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   useEffect(() => {
     const checkSession = async () => {
+      // Never auto-restore a session the user explicitly ended. This effect
+      // re-runs on every isLoggedIn change (including the one logout causes),
+      // so without this guard it immediately signs the user back in from the
+      // cached student / still-persisted Supabase token.
+      if (hasSignedOutRef.current) return;
+
       if (!navigator.onLine && state.student) {
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
         return;
       }
       try {
         const { data: { session } } = await supabase.auth.getSession();
+        if (hasSignedOutRef.current) return; // logout may have happened while awaiting
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
           if (navigator.onLine) fetchProfile(session.user.id);
@@ -421,13 +465,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     checkSession();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      // A real sign-in clears the signed-out latch so the user can get back in.
+      // Only SIGNED_IN counts: INITIAL_SESSION/TOKEN_REFRESHED can fire from the
+      // very session we just discarded and would otherwise undo the logout.
+      if (event === 'SIGNED_IN') hasSignedOutRef.current = false;
+
       if (session?.user) {
+        if (hasSignedOutRef.current) return;
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
         if (navigator.onLine) fetchProfile(session.user.id);
-      } else if (navigator.onLine) {
-        dispatch({ type: 'SET_LOGGED_IN', payload: false });
-        dispatch({ type: 'SET_STUDENT', payload: null });
+      } else {
+        // A signed-out event must be honoured even while offline. Gating this
+        // on navigator.onLine left offline users stuck in a logged-in state.
+        dispatch({ type: 'LOGOUT' });
       }
     });
 
@@ -530,6 +581,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         getNotesForTopic,
         getExamDatesForCourse,
         addActivity,
+        logout,
       }}
     >
       {children}

@@ -22,7 +22,7 @@ const navItems = [
 ];
 
 const Layout: React.FC = () => {
-  const { state, dispatch } = useApp();
+  const { state, logout } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -62,7 +62,11 @@ const Layout: React.FC = () => {
 
   const handleLogout = async () => {
     if (window.confirm('Terminate PharmTrack Secure Session?')) {
-      dispatch({ type: 'SET_LOGGED_IN', payload: false });
+      // Must go through logout(): dispatching SET_LOGGED_IN alone left the
+      // Supabase session on disk, and the session check immediately signed the
+      // user straight back in.
+      await logout();
+      navigate('/', { replace: true });
     }
   };
 
