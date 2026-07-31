@@ -70,16 +70,19 @@ const Layout: React.FC = () => {
     }
   };
 
-        const checkForUpdates = async () => {
+  // `silent` is used by the automatic check on launch: it still offers a real
+  // update, but stays quiet when already up to date or when the check fails
+  // (e.g. offline), so starting the app never throws up a pointless popup.
+  const checkForUpdates = async (silent = false) => {
     try {
       setUpdateStatus('checking');
       const update = await check();
-      
+
       if (update) {
         setUpdateStatus('available');
         let downloaded = 0;
         let contentLength = 0;
-        
+
         if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
           setUpdateStatus('downloading');
           
@@ -97,16 +100,32 @@ const Layout: React.FC = () => {
           setUpdateStatus('idle');
         }
       } else {
-        const currentVersion = await getVersion();
-        alert('You are already on the latest version (' + currentVersion + ')!');
+        if (!silent) {
+          const currentVersion = await getVersion();
+          alert('You are already on the latest version (' + currentVersion + ')!');
+        }
         setUpdateStatus('idle');
       }
     } catch (error: any) {
       console.error('Update failed:', error);
-      alert(`Update Check Failed: ${error.message || error}`);
+      if (!silent) alert(`Update Check Failed: ${error.message || error}`);
       setUpdateStatus('idle');
     }
   };
+
+  // Check for updates shortly after launch so users get fixes without having to
+  // know the button exists. Runs once, only when online, and stays silent
+  // unless there is genuinely an update to offer. The delay keeps the network
+  // call away from the initial render.
+  const hasAutoCheckedRef = useRef(false);
+  useEffect(() => {
+    if (hasAutoCheckedRef.current) return;
+    hasAutoCheckedRef.current = true;
+    if (!navigator.onLine) return;
+
+    const timer = setTimeout(() => { void checkForUpdates(true); }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   return (
     <div className={`flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
@@ -191,7 +210,7 @@ const Layout: React.FC = () => {
                 
                 <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
                   <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
-                  <button onClick={checkForUpdates} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
+                  <button onClick={() => void checkForUpdates(false)} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
                     {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
                     <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span>
                   </button>
