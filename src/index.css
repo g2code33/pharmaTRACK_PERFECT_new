@@ -113,6 +113,16 @@ html.dark input, html.dark select, html.dark textarea { background-color: #1E293
   background: rgba(45, 106, 79, 0.35);
 }
 
+/* Search matches. Painted onto the real text spans so they line up with the
+   glyphs at any zoom, rather than being re-derived from geometry. */
+.pdf-text-layer mark[data-find] {
+  background: rgba(255, 183, 3, 0.55);
+  color: transparent;
+  border-radius: 2px;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgba(255, 143, 0, 0.55);
+}
+
 /* pdf.js emits this for the end-of-content marker. */
 .pdf-text-layer .endOfContent {
   display: block;
