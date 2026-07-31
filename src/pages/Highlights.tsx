@@ -61,10 +61,13 @@ const Highlights: React.FC = () => {
     return state.courses.filter((c) => ids.has(c.id));
   }, [enriched, state.courses]);
 
-  const openHighlight = (topicId: string, slideIndex: number, page?: number) => {
-    const params = new URLSearchParams({ slide: String(slideIndex) });
-    if (page) params.set('page', String(page));
-    navigate(`/read/${topicId}?${params.toString()}`);
+  const openHighlight = (h: { topicId: string; slideIndex: number; page?: number; id: string }) => {
+    const params = new URLSearchParams({ slide: String(h.slideIndex) });
+    if (h.page) params.set('page', String(h.page));
+    // Pass the id too, so the viewer can scroll to the exact highlight rather
+    // than just the top of its page.
+    params.set('highlight', h.id);
+    navigate(`/read/${h.topicId}?${params.toString()}`);
   };
 
   const copy = (id: string, text: string) => {
@@ -205,7 +208,7 @@ const Highlights: React.FC = () => {
                           {copiedId === h.id ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
                         </button>
                         <button
-                          onClick={() => openHighlight(h.topicId, h.slideIndex, h.page)}
+                          onClick={() => openHighlight(h)}
                           title="Open where this came from"
                           className="p-1.5 rounded-lg hover:bg-gray-100 text-[#2D6A4F]"
                         >

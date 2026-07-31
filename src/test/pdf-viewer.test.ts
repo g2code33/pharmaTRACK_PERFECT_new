@@ -14,6 +14,11 @@ const viewer = fs.readFileSync(
   path.resolve(__dirname, '../components/PdfViewer.tsx'), 'utf8',
 );
 const css = fs.readFileSync(path.resolve(__dirname, '../index.css'), 'utf8');
+const reader = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
+const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
+const studyMaterials = fs.readFileSync(path.resolve(__dirname, '../pages/StudyMaterials.tsx'), 'utf8');
+const courseDetail = fs.readFileSync(path.resolve(__dirname, '../pages/CourseDetail.tsx'), 'utf8');
 
 describe('pdf.js text layer requirements', () => {
   it('sets --scale-factor on the text layer container', () => {
@@ -156,5 +161,54 @@ describe('instant page navigation', () => {
 
   it('avoids duplicate concurrent renders of the same page', () => {
     expect(viewer).toMatch(/inFlight\.current\.has\(pageNum\)/);
+  });
+});
+
+describe('no re-render churn while scrolling', () => {
+  it('does not recompute zoom from currentPage or scale', () => {
+    // Including either created a feedback loop: scroll -> currentPage changes
+    // -> fit recomputes -> setScale -> every cached raster invalidated -> the
+    // visible pages re-render. That is what looked like constant refreshing.
+    expect(viewer).toMatch(/\}, \[doc, zoomPreset, rotation, spreadMode, baseSizes\]\);/);
+    expect(viewer).not.toMatch(/\[doc, zoomPreset, rotation, spreadMode, baseSizes, currentPage, scale\]/);
+  });
+
+  it('ignores sub-pixel resize noise', () => {
+    expect(viewer).toMatch(/Math\.abs\(clamped - prev\) > 0\.01/);
+  });
+});
+
+describe('study bank deep link', () => {
+  it('accepts a highlight id, not just a page', () => {
+    expect(viewer).toContain('focusHighlightId');
+    expect(highlightsPage).toMatch(/params\.set\('highlight', h\.id\)/);
+  });
+
+  it('scrolls the highlight itself into view and flashes it', () => {
+    expect(viewer).toMatch(/data-highlight-id="\$\{focusHighlightId\}"/);
+    expect(viewer).toMatch(/scrollIntoView\(\{ block: 'center'/);
+    expect(css).toMatch(/@keyframes highlight-flash/);
+  });
+
+  it('is wired through the reader', () => {
+    expect(reader).toMatch(/searchParams\.get\('highlight'\)/);
+    expect(reader).toContain('focusHighlightId={focusHighlightId}');
+  });
+});
+
+describe('whole-document uploads', () => {
+  it('has no single-file content-type gate in the upload dialogs', () => {
+    // "PDF / Word / PowerPoint / Image" tabs meant the picker filtered to one
+    // type, which is why .docx and .pptx appeared to be missing.
+    for (const src of [studyMaterials, courseDetail]) {
+      expect(src).not.toMatch(/Material Format/);
+      expect(src).not.toMatch(/label: 'PowerPoint'/);
+      expect(src).toMatch(/Upload documents/);
+    }
+  });
+
+  it('always allows multiple files', () => {
+    expect(uploader).toMatch(/^\s*multiple$/m);
+    expect(uploader).not.toContain('multiple={!compact}');
   });
 });

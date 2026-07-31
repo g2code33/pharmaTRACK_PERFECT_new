@@ -604,7 +604,7 @@ const CourseDetail: React.FC = () => {
                   onClick={() => setShowTopicModal(false)}
                   className="flex-1 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                 >
-                  Cancel
+                  Done
                 </button>
                 <button
                   onClick={handleSaveTopic}
@@ -648,83 +648,42 @@ const CourseDetail: React.FC = () => {
                 />
               </div>
 
+              {/* Documents are uploaded whole - a 100-slide deck is one
+                  material, not 100 records. The reader pages through it. */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Content Type
+                  Upload documents
                 </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { type: 'text', label: 'Text', icon: FileText },
-                    { type: 'pdf', label: 'PDF', icon: FileText },
-                    { type: 'jpg', label: 'Image', icon: Image },
-                  ].map(({ type, label, icon: Icon }) => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => setSlideForm({ ...slideForm, fileType: type as any })}
-                      className={`flex items-center justify-center gap-2 py-2 rounded-lg border-2 transition-all ${
-                        slideForm.fileType === type || (slideForm.fileType === 'png' && type === 'jpg')
-                          ? 'border-[#2D6A4F] bg-[#2D6A4F]/10 text-[#2D6A4F]'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <FileUploader onComplete={handleUploadComplete} />
               </div>
 
-              {slideForm.fileType === 'text' ? (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Content
-                  </label>
-                  <textarea
-                    value={slideForm.contentText}
-                    onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value })}
-                    placeholder="Enter slide content or notes..."
-                    rows={6}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none resize-none"
-                  />
-                </div>
-              ) : (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Upload File
-                  </label>
-                  {/* Single shared uploader (see components/FileUploader). */}
-                  <FileUploader onComplete={handleUploadComplete} compact />
+              <details className="group">
+                <summary className="text-xs font-bold text-slate-500 cursor-pointer hover:text-slate-700 select-none">
+                  Or type a text note instead
+                </summary>
+                <textarea
+                  value={slideForm.contentText}
+                  onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value, fileType: 'text' })}
+                  placeholder="Enter slide content or notes..."
+                  rows={5}
+                  className="mt-2 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none resize-none"
+                />
+              </details>
 
-                  {/* Text notes for files */}
-                  <div className="mt-3">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Notes (optional)
-                    </label>
-                    <textarea
-                      value={slideForm.contentText}
-                      onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value })}
-                      placeholder="Add notes or key points from this slide..."
-                      rows={3}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none resize-none"
-                    />
-                  </div>
-                </div>
-              )}
 
               <div className="flex gap-3 pt-2">
                 <button
                   onClick={() => setShowSlideModal(false)}
                   className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                 >
-                  Cancel
+                  Done
                 </button>
                 <button
                   onClick={handleSaveSlide}
-                  disabled={!slideForm.title.trim()}
+                  disabled={!slideForm.title.trim() || !slideForm.contentText.trim()}
                   className="flex-1 py-2.5 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] disabled:opacity-50"
                 >
-                  {editingSlide ? 'Save Changes' : 'Add Slide'}
+                  {editingSlide ? 'Save Changes' : 'Add Text Note'}
                 </button>
               </div>
             </div>

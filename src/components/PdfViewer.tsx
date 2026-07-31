@@ -47,6 +47,8 @@ interface PdfViewerProps {
   onDeleteHighlight?: (id: string) => void;
   onAskAi?: (text: string) => void;
   jumpToPage?: number;
+  /** Scroll to and flash this highlight after opening (Study Bank deep link). */
+  focusHighlightId?: string;
 }
 
 interface SearchHit {
@@ -64,16 +66,23 @@ const MIN_SCALE = 0.25;
 const MAX_SCALE = 6;
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
-/** Pages rendered around the viewport. Wide enough that scrolling feels instant. */
-const RENDER_WINDOW = 4;
-/** Beyond this, canvases are released so long documents stay within memory. */
-const KEEP_WINDOW = 10;
+/**
+ * Pages rendered around the viewport. Wide enough that normal scrolling always
+ * lands on an already-painted page.
+ */
+const RENDER_WINDOW = 6;
+/**
+ * Beyond this, canvases are released. One page at 2x DPR is roughly 20 MB, so
+ * an unbounded cache would exhaust memory on a 100+ page deck.
+ */
+const KEEP_WINDOW = 14;
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const PdfViewer: React.FC<PdfViewerProps> = ({
   fileUrl, title, onPageChange, onTextExtracted,
   highlights = [], onCreateHighlight, onDeleteHighlight, onAskAi, jumpToPage,
+  focusHighlightId,
 }) => {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
@@ -403,11 +412,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   useEffect(() => { onPageChange?.(currentPage, numPages); }, [currentPage, numPages]);
 
   /* ---------------- zoom presets ---------------- */
+  // Deliberately keyed off page 1's dimensions and NOT currentPage or scale.
+  // Including them created a feedback loop: scrolling changed currentPage,
+  // which recomputed the fit, which called setScale, which invalidated every
+  // cached raster and re-rendered the visible pages. That constant
+  // re-rasterising is what made scrolling feel like it kept refreshing.
   useEffect(() => {
     if (!doc || zoomPreset === 'actual' || !baseSizes.length) return;
+
     const apply = () => {
       const el = containerRef.current;
-      const base = baseSizes[Math.max(0, currentPage - 1)] ?? baseSizes[0];
+      const base = baseSizes[0];
       if (!el || !base) return;
       const swap = rotation % 180 !== 0;
       const bw = swap ? base.h : base.w;
@@ -415,19 +430,21 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       const availW = el.clientWidth - (spreadMode === 'none' ? 40 : 60);
       const availH = el.clientHeight - 40;
 
-      let next = scale;
+      let next: number;
       if (zoomPreset === 'width') next = availW / bw;
       else if (zoomPreset === 'fit') next = Math.min(availW / bw, availH / bh);
-      else if (zoomPreset === 'auto') next = Math.min(1.5, availW / bw);
+      else next = Math.min(1.5, availW / bw);
 
       const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
-      if (Math.abs(clamped - scale) > 0.005) setScale(clamped);
+      // Only commit a meaningful change, so a 1px resize can't thrash renders.
+      setScale((prev) => (Math.abs(clamped - prev) > 0.01 ? clamped : prev));
     };
+
     apply();
     const ro = new ResizeObserver(apply);
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
-  }, [doc, zoomPreset, rotation, spreadMode, baseSizes, currentPage, scale]);
+  }, [doc, zoomPreset, rotation, spreadMode, baseSizes]);
 
   /* ---------------- navigation ---------------- */
   const goToPage = useCallback((n: number) => {
@@ -445,6 +462,24 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       return () => clearTimeout(t);
     }
   }, [jumpToPage, numPages, baseSizes.length, goToPage]);
+
+  // Land on the highlight itself, not just its page. Waits for the page to
+  // paint, centres the first rect, then flashes it so it is obvious which one
+  // was opened.
+  const [flashHighlight, setFlashHighlight] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusHighlightId || !numPages || !baseSizes.length) return;
+    const target = highlights.find((h) => h.id === focusHighlightId);
+    if (!target?.page || !target.rects?.length) return;
+
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-highlight-id="${focusHighlightId}"]`);
+      el?.scrollIntoView({ block: 'center', behavior: 'auto' });
+      setFlashHighlight(focusHighlightId);
+      setTimeout(() => setFlashHighlight(null), 2200);
+    }, 420);
+    return () => clearTimeout(t);
+  }, [focusHighlightId, numPages, baseSizes.length, highlights]);
 
   const goToDestination = async (dest: unknown) => {
     if (!doc || !dest) return;
@@ -882,6 +917,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   h.rects!.map((r, i) => (
                     <div
                       key={`${h.id}-${i}`}
+                      data-highlight-id={i === 0 ? h.id : undefined}
+                      className={flashHighlight === h.id ? 'highlight-flash' : undefined}
                       onClick={() => onDeleteHighlight && window.confirm('Remove this highlight?') && onDeleteHighlight(h.id)}
                       title={onDeleteHighlight ? 'Click to remove highlight' : h.text}
                       style={{

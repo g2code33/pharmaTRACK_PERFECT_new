@@ -837,75 +837,28 @@ const StudyMaterials: React.FC = () => {
                 />
               </div>
 
-              {/* Content type tabs */}
+              {/* Documents are uploaded whole - a 100-slide deck is one
+                  material, not 100 records. The reader pages through it. */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Material Format
+                  Upload documents
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {[
-                    { id: 'pdf', label: 'PDF', icon: FileText, color: 'bg-red-500' },
-                    { id: 'docx', label: 'Word', icon: FileText, color: 'bg-blue-600' },
-                    { id: 'pptx', label: 'PowerPoint', icon: FileVideo, color: 'bg-orange-500' },
-                    { id: 'jpg', label: 'Image', icon: Image, color: 'bg-green-500' },
-                  ].map((type) => {
-                    const Icon = type.icon;
-                    const isActive = slideForm.fileType === type.id || (type.id === 'jpg' && slideForm.fileType === 'png');
-                    return (
-                      <button
-                        key={type.id}
-                        type="button"
-                        onClick={() => setSlideForm({ ...slideForm, fileType: type.id as any })}
-                        className={`flex flex-col items-center gap-2 p-3 rounded-2xl border-2 transition-all ${
-                          isActive
-                            ? 'border-[#2D6A4F] bg-[#2D6A4F]/5 shadow-inner'
-                            : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className={`w-10 h-10 ${type.color} rounded-xl flex items-center justify-center shadow-lg`}>
-                          <Icon className="w-5 h-5 text-white" />
-                        </div>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">{type.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <FileUploader onComplete={handleUploadComplete} />
               </div>
 
-              {/* File upload or text input */}
-              {slideForm.fileType === 'text' ? (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Slide Content
-                  </label>
-                  <textarea
-                    value={slideForm.contentText}
-                    onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value })}
-                    placeholder="Paste or type your lecture slide content here..."
-                    rows={10}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] outline-none resize-none"
-                  />
-                </div>
-              ) : (
-                <>
-                  {/* Single shared uploader (see components/FileUploader). */}
-                  <FileUploader onComplete={handleUploadComplete} compact />
+              <details>
+                <summary className="text-xs font-bold text-slate-500 cursor-pointer hover:text-slate-700 select-none">
+                  Or type a text note instead
+                </summary>
+                <textarea
+                  value={slideForm.contentText}
+                  onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value, fileType: 'text' })}
+                  placeholder="Paste or type your lecture content here..."
+                  rows={8}
+                  className="mt-2 w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] outline-none resize-none"
+                />
+              </details>
 
-                  {/* Notes for uploaded files */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Notes (optional)
-                    </label>
-                    <textarea
-                      value={slideForm.contentText}
-                      onChange={(e) => setSlideForm({ ...slideForm, contentText: e.target.value })}
-                      placeholder="Add notes or key points from this slide..."
-                      rows={4}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] outline-none resize-none"
-                    />
-                  </div>
-                </>
-              )}
 
               {/* Actions */}
               <div className="flex gap-3 pt-2">
@@ -913,14 +866,14 @@ const StudyMaterials: React.FC = () => {
                   onClick={() => setShowSlideModal(false)}
                   className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
                 >
-                  Cancel
+                  Done
                 </button>
                 <button
                   onClick={handleSaveSlide}
-                  disabled={!slideForm.title.trim()}
+                  disabled={!slideForm.title.trim() || !slideForm.contentText.trim()}
                   className="flex-1 py-2.5 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] disabled:opacity-50"
                 >
-                  {editingSlide ? 'Save Changes' : 'Add Slide'}
+                  {editingSlide ? 'Save Changes' : 'Add Text Note'}
                 </button>
               </div>
             </div>

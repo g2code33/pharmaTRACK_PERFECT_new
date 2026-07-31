@@ -63,7 +63,7 @@ interface FileUploaderProps {
   /** Restrict accepted types; defaults to everything supported. */
   accept?: string;
   maxSizeMb?: number;
-  /** Compact single-file mode for dialogs. */
+  /** Tighter padding for dialogs. Always multi-file either way. */
   compact?: boolean;
 }
 
@@ -307,7 +307,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         ref={inputRef}
         type="file"
         accept={accept}
-        multiple={!compact}
+        multiple
         onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); e.target.value = ''; }}
         className="hidden"
       />

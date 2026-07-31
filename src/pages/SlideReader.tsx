@@ -271,6 +271,7 @@ const SlideReader: React.FC = () => {
 
   // Study Bank links in as /read/:topicId?slide=N&page=M
   const deepLinkPage = parseInt(searchParams.get('page') || '0', 10) || undefined;
+  const focusHighlightId = searchParams.get('highlight') || undefined;
 
   /** Highlights belonging to the material currently open. */
   const materialHighlights = React.useMemo(
@@ -453,6 +454,7 @@ const SlideReader: React.FC = () => {
           onDeleteHighlight={(id) => dispatch({ type: 'DELETE_HIGHLIGHT', payload: id })}
           onAskAi={handleAskAiAboutSelection}
           jumpToPage={deepLinkPage}
+          focusHighlightId={focusHighlightId}
         />
       );
     }

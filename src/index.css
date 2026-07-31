@@ -145,3 +145,14 @@ html.dark input, html.dark select, html.dark textarea { background-color: #1E293
 .pdf-text-layer .endOfContent.active {
   top: 0;
 }
+
+/* Flash for a highlight opened from the Study Bank, so the user can see which
+   one they landed on rather than just the right page. */
+@keyframes highlight-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 122, 0, 0); }
+  15%, 60% { box-shadow: 0 0 0 4px rgba(255, 122, 0, 0.85); }
+}
+.highlight-flash {
+  animation: highlight-flash 2.2s ease-in-out;
+  border-radius: 3px;
+}
