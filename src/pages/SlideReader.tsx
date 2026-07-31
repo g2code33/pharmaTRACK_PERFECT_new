@@ -3,6 +3,8 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
+import PdfViewer from '../components/PdfViewer';
+import PptxViewer from '../components/PptxViewer';
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Sparkles, Send, Loader2,
   Lightbulb, Maximize2, Minimize2, Download, X, Globe, MessageSquare as MessageSquareIcon, File,
@@ -404,23 +406,24 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    if (['pdf', 'text'].includes(currentMaterial?.fileType || '')) {
-      return (
-        <div className="w-full flex-1 flex flex-col relative" style={{ minHeight: '85vh', height: '100%' }}>
-          <iframe src={currentMaterial?.fileType === 'pdf' ? `${fileUrl}#toolbar=0` : fileUrl} className="w-full flex-1 border-none absolute inset-0" style={{ height: '100%', width: '100%' }} />
-        </div>
-      );
+    // Canvas-rendered viewer. The old <iframe> clipped the bottom of every
+    // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
+    // iframe) and exposed no page count, search or navigation.
+    if (currentMaterial?.fileType === 'pdf') {
+      return <PdfViewer fileUrl={fileUrl} title={currentMaterial.title} />;
     }
 
-    if (['docx', 'pptx'].includes(currentMaterial?.fileType || '')) {
+    const nameHint = (currentMaterial?.title || '').toLowerCase();
+    if (currentMaterial?.fileType === 'text' && /\.pptx?$/.test(nameHint)) {
+      return <PptxViewer fileUrl={fileUrl} title={currentMaterial.title} />;
+    }
+
+    if (currentMaterial?.fileType === 'text') {
       return (
-        <div className="flex flex-col items-center justify-center h-full w-full bg-gray-50 p-10 min-h-[85vh]">
-          <File className="w-24 h-24 text-gray-300 mb-6" />
-          <h2 className="text-2xl font-black text-gray-800 mb-2">Native Document Loaded</h2>
-          <p className="text-gray-500 mb-8 max-w-sm text-center">Web browsers cannot render Word or PowerPoint files directly in an iframe. Please click below to open it.</p>
-          <a href={fileUrl} download={currentMaterial.title} className="bg-[#2D6A4F] text-white px-8 py-4 rounded-2xl font-bold text-lg shadow-xl hover:bg-[#1B4332] flex items-center gap-3">
-            <Download className="w-6 h-6" /> Open Document
-          </a>
+        <div className="w-full h-full overflow-auto bg-white p-8">
+          <pre className="max-w-4xl mx-auto whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700">
+            {currentMaterial.contentText || 'No text content.'}
+          </pre>
         </div>
       );
     }

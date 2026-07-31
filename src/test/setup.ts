@@ -20,3 +20,11 @@ export const setOnline = (value: boolean) => {
 
 // Default to online; individual tests opt into offline.
 setOnline(true);
+
+// jsdom implements neither of these, but the PPTX renderer and file previews
+// rely on them. Minimal stand-ins so those paths are testable.
+if (typeof URL.createObjectURL !== 'function') {
+  let counter = 0;
+  URL.createObjectURL = () => `blob:mock/${++counter}`;
+  URL.revokeObjectURL = () => {};
+}

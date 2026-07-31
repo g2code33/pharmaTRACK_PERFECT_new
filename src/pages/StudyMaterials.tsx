@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, deleteSlideText } from '../utils/storage';
+import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
 import { processAnyFile } from '../utils/universalProcessor';
 import {
   Upload,
@@ -322,6 +323,35 @@ const StudyMaterials: React.FC = () => {
   };
 
   // Bulk upload handler
+  /**
+   * One uploaded file becomes ONE material.
+   *
+   * The previous bulk handler created a Slide row per file and the transcript
+   * button added another on top, which is what produced the duplicated,
+   * fragmented list. Paging through a document is the viewer's job, so the
+   * data model stores the document once.
+   */
+  const handleUploadComplete = (m: UploadedMaterial) => {
+    if (!selectedTopicId) {
+      alert('Pick a topic first, then upload.');
+      return;
+    }
+    const existing = getSlidesForTopic(selectedTopicId);
+    const newSlide: Slide = {
+      id: m.id,
+      topicId: selectedTopicId,
+      slideNumber: existing.length + 1,
+      title: m.title,
+      contentText: m.text,
+      fileType: m.fileType,
+      fileUrl: m.id,
+      status: 'not_started',
+      createdAt: new Date().toISOString(),
+    };
+    dispatch({ type: 'ADD_SLIDE', payload: newSlide });
+    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, selectedCourse, selectedTopicId);
+  };
+
   const handleBulkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || !selectedTopicId) return;
@@ -832,57 +862,8 @@ const StudyMaterials: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {/* Drag & drop area */}
-                  <div
-                    onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-                    onDragLeave={() => setDragOver(false)}
-                    onDrop={handleDrop}
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
-                      dragOver
-                        ? 'border-[#2D6A4F] bg-[#2D6A4F]/10'
-                        : fileData
-                        ? 'border-green-400 bg-green-50'
-                        : 'border-gray-300 hover:border-gray-400'
-                    }`}
-                  >
-                    {fileData ? (
-                      fileData.includes('image/') ? (
-                        <img src={fileData} alt="Preview" className="max-h-40 mx-auto rounded-lg" />
-                      ) : (
-                        <div className="flex items-center justify-center gap-2 text-green-600">
-                          <Check className="w-6 h-6" />
-                          <span className="font-medium">Word Document Ready!</span>
-                        </div>
-                      )
-                    ) : (
-                      <>
-                        <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-                        {(slideForm.fileType as any) === 'text' ? (
-                          <>
-                            <p className="text-gray-600 font-medium">
-                              Drag & drop your Word document (.docx) here
-                            </p>
-                            <p className="text-sm text-gray-400 mt-1">or click to browse</p>
-                          </>
-                        ) : (
-                          <>
-                            <p className="text-gray-600 font-medium">
-                              Drag & drop your image here
-                            </p>
-                            <p className="text-sm text-gray-400 mt-1">.jpg or .png</p>
-                          </>
-                        )}
-                      </>
-                    )}
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".pdf,.docx,.pptx,image/*"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
+                  {/* Single shared uploader (see components/FileUploader). */}
+                  <FileUploader onComplete={handleUploadComplete} compact />
 
                   {/* Notes for uploaded files */}
                   <div>
@@ -932,24 +913,9 @@ const StudyMaterials: React.FC = () => {
               </button>
             </div>
             <div className="p-6">
-              <div
-                onClick={() => bulkFileInputRef.current?.click()}
-                className="border-2 border-dashed border-purple-300 rounded-xl p-8 text-center cursor-pointer hover:border-purple-500 hover:bg-purple-50 transition-colors"
-              >
-                <Upload className="w-12 h-12 text-purple-400 mx-auto mb-3" />
-                <p className="text-purple-700 font-medium">Click to select multiple files</p>
-                <p className="text-sm text-purple-500 mt-1">PDF, JPG, PNG supported</p>
-              </div>
-              <input
-                ref={bulkFileInputRef}
-                type="file"
-                accept=".pdf,.docx,.pptx,image/*"
-                multiple
-                onChange={handleBulkUpload}
-                className="hidden"
-              />
-              <p className="text-sm text-gray-500 mt-4 text-center">
-                Each file will be added as a separate slide
+              <FileUploader onComplete={handleUploadComplete} />
+              <p className="text-xs text-gray-500 mt-4 text-center">
+                Each file is added as one material — the reader handles its pages.
               </p>
             </div>
           </div>

@@ -7,8 +7,12 @@ import * as pdfjs from 'pdfjs-dist';
 import * as mammoth from 'mammoth';
 import JSZip from 'jszip';
 
-// Set PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+// Bundle the worker locally. This previously pointed at a CDN, which meant
+// PDF processing failed or silently half-completed whenever the user was
+// offline - the usual case for this app, and the likely cause of documents
+// appearing to lose their last pages.
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
+pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 export interface FilePage {
   pageNumber: number;

@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, loadSlideText, deleteSlideText } from '../utils/storage';
+import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
 import {
   ArrowLeft,
   Plus,
@@ -206,6 +207,27 @@ const CourseDetail: React.FC = () => {
       }
     };
     reader.readAsDataURL(file);
+  };
+
+  /** One uploaded file becomes ONE material; the viewer handles its pages. */
+  const handleUploadComplete = (m: UploadedMaterial) => {
+    if (!selectedTopicId) { alert('Pick a topic first, then upload.'); return; }
+    const existing = getSlidesForTopic(selectedTopicId);
+    dispatch({
+      type: 'ADD_SLIDE',
+      payload: {
+        id: m.id,
+        topicId: selectedTopicId,
+        slideNumber: existing.length + 1,
+        title: m.title,
+        contentText: m.text,
+        fileType: m.fileType,
+        fileUrl: m.id,
+        status: 'not_started',
+        createdAt: new Date().toISOString(),
+      } as Slide,
+    });
+    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, selectedTopicId);
   };
 
   const handleSaveSlide = () => {
@@ -647,43 +669,8 @@ const CourseDetail: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Upload File
                   </label>
-                  <div
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
-                      fileData
-                        ? 'border-green-300 bg-green-50'
-                        : 'border-gray-300 hover:border-[#2D6A4F]'
-                    }`}
-                  >
-                    {fileData ? (
-                      slideForm.fileType === 'pdf' ? (
-                        <div className="flex items-center justify-center gap-2 text-green-600">
-                          <Check className="w-5 h-5" />
-                          <span>PDF uploaded</span>
-                        </div>
-                      ) : (
-                        <img
-                          src={typeof fileData === 'string' ? fileData : undefined}
-                          alt="Preview"
-                          className="max-h-32 mx-auto rounded"
-                        />
-                      )
-                    ) : (
-                      <>
-                        <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-                        <p className="text-sm text-gray-500">
-                          Click to upload {slideForm.fileType === 'pdf' ? 'PDF' : 'image'}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept={slideForm.fileType === 'pdf' ? '.pdf' : 'image/*'}
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
+                  {/* Single shared uploader (see components/FileUploader). */}
+                  <FileUploader onComplete={handleUploadComplete} compact />
 
                   {/* Text notes for files */}
                   <div className="mt-3">
