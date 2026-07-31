@@ -84,11 +84,18 @@ const Profile = () => {
       <div className="bg-gradient-to-r from-slate-800 to-slate-900 rounded-2xl p-8 text-white shadow-lg flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold mb-2">Profile Settings</h1>
-          <p className="text-sm text-slate-300">
-            {state.isLoggedIn
-              ? 'Changes save on this device and sync to your account.'
-              : 'Changes save on this device. Sign in if you also want a cloud backup.'}
-          </p>
+          {state.isLoggedIn ? (
+            <p className="text-sm text-slate-300">
+              Changes save on this device and sync to your account.
+            </p>
+          ) : (
+            // Red because this is the state where work exists in exactly one
+            // place — worth emphasising rather than stating quietly.
+            <p className="inline-flex items-center gap-2 text-sm font-bold text-red-100 bg-red-600/90 border border-red-400 rounded-lg px-3 py-2">
+              <CloudOff className="w-4 h-4 shrink-0" />
+              Saved on this device only — no cloud backup. Sign in to protect your work.
+            </p>
+          )}
         </div>
         <ShieldCheck size={48} className="opacity-50" />
       </div>

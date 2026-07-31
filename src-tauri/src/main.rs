@@ -108,13 +108,17 @@ async fn hide_website(app: tauri::AppHandle, label: String) -> Result<(), String
     Ok(())
 }
 
+/// Kept for backwards compatibility; delegates to `navigate_website`.
+///
+/// This used to build a JS string and `eval` it:
+///     format!("window.location.href = '{}';", url.replace('\'', "\\'"))
+/// Escaping only single quotes is not enough to make arbitrary input safe in a
+/// JS context — a newline or a `</script>`-style payload escapes the statement
+/// and runs attacker-controlled code inside the embedded page. Navigating via
+/// the parsed `url::Url` avoids building JS from user input entirely.
 #[tauri::command]
 async fn update_website(app: tauri::AppHandle, label: String, url: String) -> Result<(), String> {
-    if let Some(webview) = app.get_webview(&label) {
-        let script = format!("window.location.href = '{}';", url.replace('\'', "\\'"));
-        webview.eval(&script).map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    navigate_website(app, label, url).await
 }
 
 #[tauri::command]

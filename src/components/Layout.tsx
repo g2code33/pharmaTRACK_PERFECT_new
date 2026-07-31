@@ -212,7 +212,32 @@ const Layout: React.FC = () => {
               </div>
 
               <div className="hidden sm:flex items-center gap-4">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-full border border-green-100"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" /><span className="text-[10px] font-black text-green-700 uppercase tracking-widest">Cloud Ready</span></div>
+                {/* Honest sync status. The old badge was hardcoded to a green
+                    "Cloud Ready" even while offline with no account, which
+                    contradicted the red offline banner right above it. */}
+                {(() => {
+                  const status = isOffline
+                    ? { label: 'Offline', dot: 'bg-red-500', text: 'text-red-700', bg: 'bg-red-50', border: 'border-red-200' }
+                    : !state.isLoggedIn
+                    ? { label: 'Local only', dot: 'bg-slate-400', text: 'text-slate-600', bg: 'bg-slate-50', border: 'border-slate-200' }
+                    : { label: 'Synced', dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50', border: 'border-green-100' };
+                  return (
+                    <div title={
+                      isOffline
+                        ? 'No internet. Everything is saved on this device.'
+                        : !state.isLoggedIn
+                        ? 'Saved on this device only. Sign in to add a cloud backup.'
+                        : 'Signed in — cloud backup available.'
+                    } className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${status.bg} ${status.border}`}>
+                      <span className="relative flex w-2 h-2">
+                        {/* Silent "beep": a soft expanding ping, not a static dot. */}
+                        <span className={`absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping ${status.dot}`} />
+                        <span className={`relative inline-flex w-2 h-2 rounded-full ${status.dot}`} />
+                      </span>
+                      <span className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.label}</span>
+                    </div>
+                  );
+                })()}
                 
                 <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
                   <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
