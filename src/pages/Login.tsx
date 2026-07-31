@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../utils/supabase';
 import { User, Award, Mail, Lock, ArrowRight, Loader2, WifiOff } from 'lucide-react';
 
 const Login: React.FC = () => {
   const { dispatch } = useApp();
+  const navigate = useNavigate();
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,7 +33,13 @@ const Login: React.FC = () => {
       if (isLoginMode) {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        if (data.session) dispatch({ type: 'SET_LOGGED_IN', payload: true });
+        if (data.session) {
+          dispatch({ type: 'SET_LOGGED_IN', payload: true });
+          // Signing in is an optional step taken from inside the app, so send
+          // the user back to what they were doing rather than leaving them on
+          // a now-pointless login screen.
+          navigate('/', { replace: true });
+        }
       } else {
         const { data, error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
@@ -47,7 +55,10 @@ const Login: React.FC = () => {
     <div className="min-h-screen bg-[#1B4332] flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md z-10">
         <div className="bg-white/95 rounded-[2rem] p-8 shadow-2xl">
-          <h1 className="text-3xl font-black text-center mb-6 text-slate-800">PharmaTRACK</h1>
+          <h1 className="text-3xl font-black text-center mb-2 text-slate-800">PharmaTRACK</h1>
+          <p className="text-center text-sm text-slate-500 mb-6">
+            Sign in to back up and sync your work. Everything already on this device stays put either way.
+          </p>
           
           {isOffline && (
             <div className="mb-6 p-4 bg-orange-50 border border-orange-200 rounded-xl flex items-start space-x-3">
@@ -82,6 +93,15 @@ const Login: React.FC = () => {
 
             <button type="submit" disabled={isLoading || isOffline} className="w-full py-4 bg-[#1B4332] text-white font-bold rounded-2xl hover:bg-[#2D6A4F] transition-all">
               {isLoading ? <Loader2 className="animate-spin mx-auto" /> : <>{isLoginMode ? 'Connect' : 'Sign Up'}</>}
+            </button>
+
+            {/* An account is optional, so there must always be a way out. */}
+            <button
+              type="button"
+              onClick={() => navigate('/', { replace: true })}
+              className="w-full py-3 text-sm font-bold text-slate-500 hover:text-[#2D6A4F] transition-colors"
+            >
+              Continue without signing in
             </button>
           </form>
         </div>

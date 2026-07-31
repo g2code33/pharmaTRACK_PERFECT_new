@@ -18,15 +18,24 @@ import CourseDetail from './pages/CourseDetail';
 import SlideReader from './pages/SlideReader';
 import Timetable from './pages/Timetable';
 import Profile from './pages/Profile';
+import Onboarding from './pages/Onboarding';
 
 const App = () => {
   const { state } = useApp();
 
+  // Offline-first: the app is fully usable with no account and no internet.
+  // The only thing that gates the UI is whether we know who the student is —
+  // collected once by Onboarding and stored locally. Signing in is optional
+  // and only unlocks cloud sync (see utils/requireAuth).
+  const needsOnboarding = state.student === null;
+
   return (
     <HashRouter>
       <Routes>
-        {!state.isLoggedIn ? (
-          <Route path="*" element={<Login />} />
+        {needsOnboarding ? (
+          // First run. No login wall: just ask their name/level so the app is
+          // personalised, then let them straight in.
+          <Route path="*" element={<Onboarding />} />
         ) : (
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
@@ -44,6 +53,8 @@ const App = () => {
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/profile" element={<Profile />} />
+            {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
+            <Route path="/login" element={<Login />} />
             <Route path="/timetable" element={<Timetable />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Route>

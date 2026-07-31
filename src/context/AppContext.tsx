@@ -399,7 +399,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       console.error('Supabase sign-out failed, clearing local session anyway:', err);
     } finally {
       purgeStoredSession();
-      dispatch({ type: 'LOGOUT' });
+      // Ends the cloud session but keeps the student profile, so the app stays
+      // fully usable offline afterwards instead of demanding onboarding again.
+      dispatch({ type: 'SET_LOGGED_IN', payload: false });
     }
   }, []);
 
@@ -407,7 +409,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     const savedState = loadState();
     // Default them to True if they are offline and had a student!
-    if (!navigator.onLine && savedState.student) savedState.isLoggedIn = true;
+    // Deliberately no "offline + has student => isLoggedIn = true" fudge here.
+    // That existed only to get past the old login wall. Now that the app runs
+    // without an account, faking a session would wrongly advertise cloud
+    // features to local-only users. isLoggedIn reflects a real Supabase
+    // session and nothing else; checkSession() below restores it if one exists.
     // ensure timetable arrays exist for old users
     if (!savedState.timetables) savedState.timetables = { class: [], quiz: [], exam: [] };
     dispatch({ type: 'LOAD_STATE', payload: savedState });
@@ -447,20 +453,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // cached student / still-persisted Supabase token.
       if (hasSignedOutRef.current) return;
 
-      if (!navigator.onLine && state.student) {
-        dispatch({ type: 'SET_LOGGED_IN', payload: true });
+      // Offline: trust the stored token, not the mere presence of a student.
+      // A local-only user (onboarded, never signed in) has a student but no
+      // session, and must NOT be treated as logged in — that would make the
+      // UI offer cloud features they have no account for.
+      if (!navigator.onLine) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) dispatch({ type: 'SET_LOGGED_IN', payload: true });
         return;
       }
+
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (hasSignedOutRef.current) return; // logout may have happened while awaiting
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
-          if (navigator.onLine) fetchProfile(session.user.id);
-        } else if (navigator.onLine && state.isLoggedIn) {
+          fetchProfile(session.user.id);
+        } else if (state.isLoggedIn) {
           dispatch({ type: 'SET_LOGGED_IN', payload: false });
         }
-      } catch (err) {}
+      } catch (err) {
+        // Network hiccup while checking. Leave the current state alone rather
+        // than signing the user out over a failed request.
+      }
     };
 
     checkSession();
@@ -475,10 +490,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (hasSignedOutRef.current) return;
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
         if (navigator.onLine) fetchProfile(session.user.id);
-      } else {
-        // A signed-out event must be honoured even while offline. Gating this
-        // on navigator.onLine left offline users stuck in a logged-in state.
-        dispatch({ type: 'LOGOUT' });
+      } else if (event === 'SIGNED_OUT') {
+        // Only a genuine SIGNED_OUT clears the session. Other session-less
+        // events (a token refresh that failed offline, INITIAL_SESSION with no
+        // session) must not log anyone out, and must never null the student —
+        // that would bounce a local-only user back to onboarding and lose the
+        // identity their offline app depends on.
+        dispatch({ type: 'SET_LOGGED_IN', payload: false });
       }
     });
 

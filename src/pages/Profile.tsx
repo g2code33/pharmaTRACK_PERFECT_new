@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../utils/supabase';
+import { checkCloudAccess } from '../utils/requireAuth';
 import { User, ShieldCheck, Loader2 } from 'lucide-react';
 
 const Profile = () => {
@@ -12,13 +13,20 @@ const Profile = () => {
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault(); setLoading(true); setMsg('');
     try {
-      if(!navigator.onLine) throw new Error("Must be online to update cloud profile.");
-      const user = (await supabase.auth.getUser()).data.user;
-      if (!user) throw new Error("Not authenticated");
-      await supabase.from('profiles').upsert({ id: user.id, full_name: name });
-      if(state.student) dispatch({ type: 'UPDATE_STUDENT', payload: { name } });
-      setMsg('Profile updated successfully!');
-    } catch (err: any) { setMsg('Error: ' + err.message); } finally { setLoading(false); }
+      // Save locally first — this must always work, with or without an account.
+      dispatch({ type: 'UPDATE_STUDENT', payload: { name } });
+      setMsg('Saved on this device.');
+
+      // Then mirror it to the cloud if that's available. Silently skipped when
+      // offline or signed out; the local save above already succeeded.
+      const access = await checkCloudAccess();
+      if (access.ok) {
+        await supabase.from('profiles').upsert({ id: access.userId, full_name: name });
+        setMsg('Saved and synced to your account.');
+      }
+    } catch (err: any) {
+      setMsg('Saved on this device. Cloud sync failed: ' + err.message);
+    } finally { setLoading(false); }
   };
 
   return (
@@ -31,7 +39,7 @@ const Profile = () => {
         <h2 className="text-xl font-bold flex items-center mb-6"><User className="mr-2 text-[#2D6A4F]" /> Details</h2>
         <form onSubmit={handleUpdateProfile} className="space-y-4">
           <div><label className="block text-sm font-semibold mb-2">Full Name</label><input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full px-4 py-3 rounded-xl border outline-none focus:ring-2 focus:ring-[#2D6A4F]" /></div>
-          <button type="submit" disabled={loading || !navigator.onLine} className="w-full bg-[#1B4332] text-white font-bold py-3 rounded-xl hover:bg-[#2D6A4F] disabled:opacity-50">{loading ? <Loader2 className="animate-spin mx-auto" /> : 'Save Online'}</button>
+          <button type="submit" disabled={loading} className="w-full bg-[#1B4332] text-white font-bold py-3 rounded-xl hover:bg-[#2D6A4F] disabled:opacity-50">{loading ? <Loader2 className="animate-spin mx-auto" /> : 'Save'}</button>
         </form>
       </div>
     </div>

@@ -29,6 +29,7 @@ import {
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
 import { supabase } from '../utils/supabase';
+import { withCloudAccess } from '../utils/requireAuth';
 import { clear } from 'idb-keyval';
 
 const Settings: React.FC = () => {
@@ -531,21 +532,31 @@ const Settings: React.FC = () => {
               <div>
                 <h3 className="font-bold text-slate-800 flex items-center gap-2">
                   <LogOut className="w-5 h-5 text-slate-500" />
-                  Account Session
+                  Cloud Account
                 </h3>
                 <p className="text-sm text-slate-500 mt-1">
-                  {state.student?.name ? `Signed in as ${state.student.name}. ` : ''}
-                  Signing out keeps your courses, slides and notes on this device.
+                  {state.isLoggedIn
+                    ? 'Signing out keeps your courses, slides and notes on this device.'
+                    : 'An account is optional — PharmaTRACK works fully offline. Sign in only if you want a cloud backup you can restore elsewhere.'}
                 </p>
               </div>
-              <button
-                onClick={handleSignOut}
-                disabled={isSigningOut}
-                className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-bold disabled:opacity-50"
-              >
-                <LogOut className="w-4 h-4" />
-                {isSigningOut ? 'Signing out…' : 'Sign Out'}
-              </button>
+              {state.isLoggedIn ? (
+                <button
+                  onClick={handleSignOut}
+                  disabled={isSigningOut}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-bold disabled:opacity-50"
+                >
+                  <LogOut className="w-4 h-4" />
+                  {isSigningOut ? 'Signing out…' : 'Sign Out'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => navigate('/login')}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] font-bold"
+                >
+                  Sign in to sync
+                </button>
+              )}
             </div>
 
             {/* Emergency Fix Section */}
@@ -600,18 +611,23 @@ const Settings: React.FC = () => {
           </p>
           <button 
             onClick={async () => {
-              if (!navigator.onLine) return alert("No internet connection.");
-              try {
-                const { data: { user } } = await supabase.auth.getUser();
-                if (!user) throw new Error("You must be logged in to sync.");
-                const file = new Blob([JSON.stringify(loadState(), null, 2)], { type: 'application/json' });
-                const { error } = await supabase.storage.from('user-documents').upload(`${user.id}/pharmatrack_backup.json`, file, { upsert: true });
-                if (error) throw error;
-                alert("Cloud Sync Initiated! Uploading local data to your secure bucket...");
-                setTimeout(() => alert("Upload Complete! All local JSON data securely synced to the cloud."), 2000);
-              } catch (e: any) {
-                alert("Error: " + e.message);
-              }
+              // Cloud-only feature: ask for sign-in here rather than gating the
+              // whole app. Declining leaves local data untouched.
+              await withCloudAccess(
+                async (userId) => {
+                  try {
+                    const file = new Blob([JSON.stringify(loadState(), null, 2)], { type: 'application/json' });
+                    const { error } = await supabase.storage
+                      .from('user-documents')
+                      .upload(`${userId}/pharmatrack_backup.json`, file, { upsert: true });
+                    if (error) throw error;
+                    alert("Backup complete — your data is safely copied to the cloud.");
+                  } catch (e: any) {
+                    alert("Backup failed: " + e.message + "\n\nYour data is still safe on this device.");
+                  }
+                },
+                () => navigate('/login'),
+              );
             }}
             className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700"
           >
