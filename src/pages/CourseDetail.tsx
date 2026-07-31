@@ -211,13 +211,37 @@ const CourseDetail: React.FC = () => {
 
   /** One uploaded file becomes ONE material; the viewer handles its pages. */
   const handleUploadComplete = (m: UploadedMaterial) => {
-    if (!selectedTopicId) { alert('Pick a topic first, then upload.'); return; }
-    const existing = getSlidesForTopic(selectedTopicId);
+    // Don't discard a completed upload just because no topic is active —
+    // fall back to an "Uploads" topic on this course.
+    let topicId = selectedTopicId;
+    if (!topicId && courseId) {
+      const existingTopics = getTopicsForCourse(courseId);
+      const fallback = existingTopics.find((t) => t.topicName === 'Uploads');
+      if (fallback) {
+        topicId = fallback.id;
+      } else {
+        topicId = uuidv4();
+        dispatch({
+          type: 'ADD_TOPIC',
+          payload: {
+            id: topicId,
+            courseId,
+            topicName: 'Uploads',
+            orderIndex: existingTopics.length,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
+      setSelectedTopicId(topicId);
+    }
+    if (!topicId) { alert('Create a topic first, then upload.'); return; }
+
+    const existing = getSlidesForTopic(topicId);
     dispatch({
       type: 'ADD_SLIDE',
       payload: {
         id: m.id,
-        topicId: selectedTopicId,
+        topicId,
         slideNumber: existing.length + 1,
         title: m.title,
         contentText: m.text,
@@ -227,7 +251,7 @@ const CourseDetail: React.FC = () => {
         createdAt: new Date().toISOString(),
       } as Slide,
     });
-    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, selectedTopicId);
+    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, topicId);
   };
 
   const handleSaveSlide = () => {

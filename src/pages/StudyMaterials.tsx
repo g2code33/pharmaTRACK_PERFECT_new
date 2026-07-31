@@ -332,14 +332,40 @@ const StudyMaterials: React.FC = () => {
    * data model stores the document once.
    */
   const handleUploadComplete = (m: UploadedMaterial) => {
-    if (!selectedTopicId) {
-      alert('Pick a topic first, then upload.');
-      return;
+    // Never discard a file the user already waited for. If no topic is active,
+    // create (or reuse) a default one instead of throwing the work away — the
+    // old `alert(); return;` silently dropped every completed upload.
+    let topicId = selectedTopicId;
+    if (!topicId) {
+      const courseId = selectedCourse || state.courses[0]?.id;
+      if (!courseId) {
+        alert('Create a course first, then upload your materials.');
+        return;
+      }
+      const existingTopics = getTopicsForCourse(courseId);
+      const fallback = existingTopics.find((t) => t.topicName === 'Uploads');
+      if (fallback) {
+        topicId = fallback.id;
+      } else {
+        topicId = uuidv4();
+        dispatch({
+          type: 'ADD_TOPIC',
+          payload: {
+            id: topicId,
+            courseId,
+            topicName: 'Uploads',
+            orderIndex: existingTopics.length,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      }
+      setSelectedTopicId(topicId);
     }
-    const existing = getSlidesForTopic(selectedTopicId);
+
+    const existing = getSlidesForTopic(topicId);
     const newSlide: Slide = {
       id: m.id,
-      topicId: selectedTopicId,
+      topicId,
       slideNumber: existing.length + 1,
       title: m.title,
       contentText: m.text,
@@ -349,7 +375,7 @@ const StudyMaterials: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
     dispatch({ type: 'ADD_SLIDE', payload: newSlide });
-    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, selectedCourse, selectedTopicId);
+    addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, selectedCourse, topicId);
   };
 
   const handleBulkUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {

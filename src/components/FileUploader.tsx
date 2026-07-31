@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
@@ -73,7 +73,7 @@ const kindOf = (file: File): UploadKind => {
   const ext = file.name.toLowerCase().split('.').pop() ?? '';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx' || ext === 'doc') return 'docx';
-  if (ext === 'pptx' || ext === 'ppt') return 'pptx';
+  if (ext === 'pptx' || ext === 'pptm' || ext === 'ppt') return 'pptx';
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
   return 'text';
 };
@@ -95,7 +95,7 @@ const prettySize = (bytes: number) =>
 
 const FileUploader: React.FC<FileUploaderProps> = ({
   onComplete,
-  accept = '.pdf,.docx,.pptx,.txt,image/*',
+  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,image/*',
   maxSizeMb = MAX_DEFAULT_MB,
   compact = false,
 }) => {
@@ -104,6 +104,19 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   const [ocrRequested, setOcrRequested] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+
+  // Callers pass an inline arrow for onComplete, so React creates a new
+  // function every render. addFiles is memoised and processing is async, so a
+  // captured onComplete goes stale: uploads finished against the FIRST render's
+  // closure, where selectedTopicId was still '' — every file was silently
+  // rejected with "Pick a topic first". Reading through a ref always calls the
+  // current handler. Same for ocrRequested, which the user can toggle after
+  // dropping files.
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+
+  const ocrRequestedRef = useRef(ocrRequested);
+  useEffect(() => { ocrRequestedRef.current = ocrRequested; }, [ocrRequested]);
 
   const update = (id: string, patch: Partial<QueueItem>) =>
     setQueue((q) => q.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -116,7 +129,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
     // OCR only when the user asked for it, or when the file plainly has no
     // text layer and they ticked the scanned-document box.
-    if (!hasText && ocrRequested) {
+    if (!hasText && ocrRequestedRef.current) {
       update(item.id, { status: 'ocr', message: 'Scanned document — reading text…' });
       const pages = await ocrPdf(
         bytes,
@@ -168,7 +181,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         pages = deck.slides.length;
         deck.dispose();
       } else if (item.kind === 'image') {
-        if (ocrRequested) {
+        if (ocrRequestedRef.current) {
           update(item.id, { status: 'ocr', message: 'Reading text from image…' });
           text = await ocrImage(item.file, (p) => update(item.id, { progress: p.progress, message: p.status }));
           usedOcr = true;
@@ -189,7 +202,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
       update(item.id, { status: 'done', progress: 1, message: usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`, usedOcr });
 
-      onComplete({
+      onCompleteRef.current({
         id: materialId,
         title: item.file.name.replace(/\.[^.]+$/, ''),
         kind: item.kind,
@@ -239,7 +252,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         if (item.status !== 'error') await processFile(item);
       }
     })();
-  }, [maxSizeMb, ocrRequested]);
+  }, [maxSizeMb]);
 
   /* ---------------- drag & drop ---------------- */
   const onDrop = (e: React.DragEvent) => {
