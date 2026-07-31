@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { searchAll, type SearchResult } from '../utils/search';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
@@ -29,7 +30,10 @@ const Layout: React.FC = () => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
   const [appVersion, setAppVersion] = useState('1.1.82');
@@ -48,17 +52,63 @@ const Layout: React.FC = () => {
   const recentSlides = [...state.slides].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
 
   useEffect(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (query.length > 2) {
-      let results: any[] = [];
-      state.courses.forEach(c => { if (c.courseName.toLowerCase().includes(query) || c.courseCode.toLowerCase().includes(query)) results.push({ id: `c-${c.id}`, title: `${c.courseCode}: ${c.courseName}`, subtitle: 'Course', link: `/course/${c.id}` }); });
-      state.topics.forEach(t => { if (t.topicName.toLowerCase().includes(query)) results.push({ id: `t-${t.id}`, title: t.topicName, subtitle: 'Topic', link: `/read/${t.id}` }); });
-      state.slides.forEach(s => { if (s.title.toLowerCase().includes(query) || s.contentText?.toLowerCase().includes(query)) results.push({ id: `s-${s.id}`, title: s.title, subtitle: 'Study Material', link: `/read/${s.topicId}?slide=${s.slideNumber - 1}` }); });
-      state.notes.forEach(n => { if (n.noteText.toLowerCase().includes(query)) results.push({ id: `n-${n.id}`, title: n.noteText.substring(0, 30) + "...", subtitle: 'My Note', link: '/notes' }); });
-      state.examQuestions.forEach(q => { if (q.questionText.toLowerCase().includes(query)) results.push({ id: `q-${q.id}`, title: q.questionText, subtitle: 'Question Bank', link: '/questions' }); });
-      setSearchResults(results.slice(0, 15));
-    } else { setSearchResults([]); }
+    setSearchResults(searchAll(state, searchQuery));
+    setActiveIndex(0);
   }, [searchQuery, state]);
+
+  // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
+  // which raced with the click it was trying to allow.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target as Node)) {
+        setIsSearchFocused(false);
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, []);
+
+  // Ctrl/Cmd+K focuses search from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const closeSearch = () => {
+    setSearchQuery('');
+    setIsSearchFocused(false);
+    searchInputRef.current?.blur();
+  };
+
+  const goToResult = (link: string) => {
+    navigate(link);
+    closeSearch();
+  };
+
+  const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const list = searchQuery ? searchResults : recentSlides.map(s => ({ link: `/read/${s.topicId}?slide=${Math.max(0, s.slideNumber - 1)}` }));
+    if (e.key === 'Escape') { closeSearch(); return; }
+    if (!list.length) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % list.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + list.length) % list.length);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const chosen = list[activeIndex] ?? list[0];
+      if (chosen) goToResult(chosen.link);
+    }
+  };
 
   const handleLogout = async () => {
     if (window.confirm('Terminate PharmTrack Secure Session?')) {
@@ -175,37 +225,81 @@ const Layout: React.FC = () => {
                  <Home className="w-5 h-5" />
               </Link>
 
-              <div className="flex-1 max-w-3xl relative">
+              <div className="flex-1 max-w-3xl relative" ref={searchBoxRef}>
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none"><Search className="w-4 h-4 text-gray-400" /></div>
-                  <input type="text" placeholder="Global Search: Courses, Topics, Slides, Notes, Questions..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onFocus={() => setIsSearchFocused(true)} onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)} className="w-full pl-11 pr-12 py-3 bg-gray-100 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner" />
-                  <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500 animate-pulse" /></div>
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    placeholder="Search courses, topics, slides, notes, questions…  (Ctrl+K)"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => setIsSearchFocused(true)}
+                    onKeyDown={onSearchKeyDown}
+                    className="w-full pl-11 pr-12 py-3 bg-gray-100 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
+                  />
+                  {searchQuery ? (
+                    <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
+                  ) : (
+                    <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500 animate-pulse" /></div>
+                  )}
                 </div>
-                {(isSearchFocused || searchResults.length > 0) && (
-                  <div className="absolute top-full left-0 w-full mt-2 bg-white rounded-xl shadow-2xl border border-gray-100 overflow-hidden z-50 max-h-64 overflow-y-auto">
+
+                {isSearchFocused && (
+                  <div className="absolute top-full left-0 w-full mt-2 bg-white rounded-xl shadow-2xl border border-gray-100 overflow-hidden z-50 max-h-[26rem] overflow-y-auto">
                     {searchQuery.length === 0 ? (
-                       recentSlides.length > 0 ? (
-                         <>
-                           <div className="px-4 py-2 bg-slate-50 border-b text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><Clock size={12}/> Recent Materials</div>
-                           {recentSlides.map(s => (
-                              <Link key={s.id} to={`/read/${s.topicId}?slide=${s.slideNumber - 1}`} onMouseDown={() => setSearchQuery('')} className="block px-4 py-3 hover:bg-gray-50 border-b last:border-0 transition-colors">
-                                <div className="flex justify-between items-center">
-                                  <p className="font-bold text-[#2D6A4F] truncate pr-4">{s.title}</p>
-                                  <span className="text-[9px] font-black uppercase tracking-widest bg-blue-100 px-2 py-1 rounded-md text-blue-600 flex-shrink-0">PDF / Doc</span>
-                                </div>
-                              </Link>
-                           ))}
-                         </>
-                       ) : <div className="p-4 text-sm text-gray-500 text-center font-bold">No recent materials yet.</div>
+                      recentSlides.length > 0 ? (
+                        <>
+                          <div className="px-4 py-2 bg-slate-50 border-b text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2"><Clock size={12} /> Recent Materials</div>
+                          {recentSlides.map((s, i) => (
+                            // onMouseDown (not onClick) so navigation happens before
+                            // the input's blur can tear the list down.
+                            <div
+                              key={s.id}
+                              role="button"
+                              tabIndex={-1}
+                              onMouseDown={(e) => { e.preventDefault(); goToResult(`/read/${s.topicId}?slide=${Math.max(0, s.slideNumber - 1)}`); }}
+                              onMouseEnter={() => setActiveIndex(i)}
+                              className={`block px-4 py-3 border-b last:border-0 cursor-pointer transition-colors ${activeIndex === i ? 'bg-[#2D6A4F]/10' : 'hover:bg-gray-50'}`}
+                            >
+                              <div className="flex justify-between items-center">
+                                <p className="font-bold text-[#2D6A4F] truncate pr-4">{s.title}</p>
+                                <span className="text-[9px] font-black uppercase tracking-widest bg-blue-100 px-2 py-1 rounded-md text-blue-600 flex-shrink-0">PDF / Doc</span>
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      ) : <div className="p-4 text-sm text-gray-500 text-center font-bold">No recent materials yet.</div>
+                    ) : searchResults.length === 0 ? (
+                      <div className="p-6 text-center">
+                        <p className="text-sm font-bold text-gray-600">No matches for “{searchQuery}”</p>
+                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or check Study Materials.</p>
+                      </div>
                     ) : (
-                      searchResults.map(res => (
-                        <Link key={res.id} to={res.link} onMouseDown={() => setSearchQuery('')} className="block px-4 py-3 hover:bg-gray-50 border-b last:border-0 transition-colors">
-                          <div className="flex justify-between items-center">
-                            <p className="font-bold text-[#2D6A4F] truncate pr-4">{res.title}</p>
-                            <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.subtitle}</span>
+                      <>
+                        <div className="px-4 py-2 bg-slate-50 border-b text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                          <span>{searchResults.length} result{searchResults.length === 1 ? '' : 's'}</span>
+                          <span className="normal-case tracking-normal font-bold text-slate-400">↑↓ to move · ↵ to open · esc to close</span>
+                        </div>
+                        {searchResults.map((res, i) => (
+                          <div
+                            key={res.id}
+                            role="button"
+                            tabIndex={-1}
+                            onMouseDown={(e) => { e.preventDefault(); goToResult(res.link); }}
+                            onMouseEnter={() => setActiveIndex(i)}
+                            className={`block px-4 py-3 border-b last:border-0 cursor-pointer transition-colors ${activeIndex === i ? 'bg-[#2D6A4F]/10' : 'hover:bg-gray-50'}`}
+                          >
+                            <div className="flex justify-between items-start gap-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="font-bold text-[#2D6A4F] truncate">{res.title}</p>
+                                {res.snippet && <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{res.snippet}</p>}
+                              </div>
+                              <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.category}</span>
+                            </div>
                           </div>
-                        </Link>
-                      ))
+                        ))}
+                      </>
                     )}
                   </div>
                 )}
