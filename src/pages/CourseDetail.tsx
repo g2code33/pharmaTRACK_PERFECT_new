@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, loadSlideText, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
+import { indexDocument, removeFromIndex } from '../utils/searchIndex';
 import {
   ArrowLeft,
   Plus,
@@ -152,6 +153,7 @@ const CourseDetail: React.FC = () => {
         if (slide.fileUrl) {
           await deleteFile(slide.id);
           await deleteSlideText(slide.id);
+          await removeFromIndex(slide.id);
         }
       }
       dispatch({ type: 'DELETE_TOPIC', payload: topicId });
@@ -237,6 +239,9 @@ const CourseDetail: React.FC = () => {
     if (!topicId) { alert('Create a topic first, then upload.'); return; }
 
     const existing = getSlidesForTopic(topicId);
+    if (m.pages?.length) {
+      void indexDocument({ materialId: m.id, topicId, title: m.title, pages: m.pages });
+    }
     dispatch({
       type: 'ADD_SLIDE',
       payload: {
@@ -305,6 +310,7 @@ const CourseDetail: React.FC = () => {
     if (window.confirm('Delete this slide?')) {
       await deleteFile(slideId);
       await deleteSlideText(slideId);
+      await removeFromIndex(slideId);
       dispatch({ type: 'DELETE_SLIDE', payload: slideId });
     }
   };

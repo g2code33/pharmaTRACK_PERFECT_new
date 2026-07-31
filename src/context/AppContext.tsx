@@ -19,6 +19,7 @@ import {
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
 import { supabase, purgeStoredSession } from '../utils/supabase';
+import { loadSearchIndex } from '../utils/searchIndex';
 import { TimetableItem } from '../types';
 
 type Action =
@@ -410,6 +411,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       dispatch({ type: 'SET_LOGGED_IN', payload: false });
     }
   }, []);
+
+  // Warm the full-text search index from IndexedDB so global search can run
+  // synchronously against it.
+  useEffect(() => { void loadSearchIndex(); }, []);
 
   // Initial Load from IDB/LocalStorage
   useEffect(() => {

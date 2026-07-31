@@ -271,7 +271,17 @@ const SlideReader: React.FC = () => {
 
   // Study Bank links in as /read/:topicId?slide=N&page=M
   const deepLinkPage = parseInt(searchParams.get('page') || '0', 10) || undefined;
+  const deepLinkMaterial = searchParams.get('material') || undefined;
+  const deepLinkQuery = searchParams.get('q') || undefined;
   const focusHighlightId = searchParams.get('highlight') || undefined;
+
+  // A global-search hit links to a specific material; select it once loaded.
+  React.useEffect(() => {
+    if (!deepLinkMaterial || !materialList.length) return;
+    const idx = materialList.findIndex((m) => m.id === deepLinkMaterial);
+    if (idx >= 0 && idx !== currentSlideIndex) setCurrentSlideIndex(idx);
+  }, [deepLinkMaterial, materialList.length]);
+
 
   /** Highlights belonging to the material currently open. */
   const materialHighlights = React.useMemo(
@@ -454,6 +464,7 @@ const SlideReader: React.FC = () => {
           onDeleteHighlight={(id) => dispatch({ type: 'DELETE_HIGHLIGHT', payload: id })}
           onAskAi={handleAskAiAboutSelection}
           jumpToPage={deepLinkPage}
+          initialQuery={deepLinkQuery}
           focusHighlightId={focusHighlightId}
         />
       );

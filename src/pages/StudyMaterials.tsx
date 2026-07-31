@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
+import { indexDocument, removeFromIndex } from '../utils/searchIndex';
 import { processAnyFile } from '../utils/universalProcessor';
 import {
   Upload,
@@ -120,6 +121,7 @@ const StudyMaterials: React.FC = () => {
         if (slide.fileUrl) {
           await deleteFile(slide.id);
           await deleteSlideText(slide.id);
+          await removeFromIndex(slide.id);
         }
       }
       dispatch({ type: 'DELETE_TOPIC', payload: topicId });
@@ -257,6 +259,7 @@ const StudyMaterials: React.FC = () => {
     if (window.confirm('Delete this slide?')) {
       await deleteFile(slideId);
       await deleteSlideText(slideId);
+      await removeFromIndex(slideId);
       dispatch({ type: 'DELETE_SLIDE', payload: slideId });
     }
   };
@@ -375,6 +378,11 @@ const StudyMaterials: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
     dispatch({ type: 'ADD_SLIDE', payload: newSlide });
+    // Index the full per-page text so global search can find keywords deep
+    // inside the document, not just the 2000-char preview held in state.
+    if (m.pages?.length) {
+      void indexDocument({ materialId: m.id, topicId, title: m.title, pages: m.pages });
+    }
     addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, selectedCourse, topicId);
   };
 

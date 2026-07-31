@@ -29,6 +29,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 export type UploadKind = 'pdf' | 'docx' | 'pptx' | 'image' | 'text';
 
 export interface UploadedMaterial {
+  /** Per-page text, stored in the search index so deep keywords are findable. */
+  pages?: { page: number; text: string }[];
   id: string;
   title: string;
   kind: UploadKind;
@@ -123,7 +125,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
   /* ---------------- per-type processing ---------------- */
 
-  const processPdf = async (item: QueueItem, buffer: ArrayBuffer): Promise<{ text: string; pages: number; ocr: boolean }> => {
+  const processPdf = async (
+    item: QueueItem,
+    buffer: ArrayBuffer,
+  ): Promise<{ text: string; pages: number; ocr: boolean; pageTexts: { page: number; text: string }[] }> => {
     const bytes = new Uint8Array(buffer);
     const hasText = await pdfHasTextLayer(bytes);
 
@@ -140,16 +145,20 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         text: pages.map((p) => `--- Page ${p.page} ---\n${p.text}`).join('\n\n'),
         pages: pages.length,
         ocr: true,
+        pageTexts: pages,
       };
     }
 
     const pdf = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
     let text = '';
+    const pageTexts: { page: number; text: string }[] = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       if (item.controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += `--- Page ${i} ---\n${content.items.map((it: any) => it.str).join(' ')}\n\n`;
+      const pageText = content.items.map((it: any) => it.str).join(' ');
+      pageTexts.push({ page: i, text: pageText });
+      text += `--- Page ${i} ---\n${pageText}\n\n`;
       update(item.id, { progress: i / pdf.numPages, message: `Reading page ${i} of ${pdf.numPages}…` });
     }
     const pages = pdf.numPages;
@@ -157,7 +166,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
     // Flag it so the UI can suggest OCR, rather than silently storing nothing.
     if (!hasText) update(item.id, { looksScanned: true });
-    return { text, pages, ocr: false };
+    return { text, pages, ocr: false, pageTexts };
   };
 
   const processFile = async (item: QueueItem) => {
@@ -168,10 +177,12 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let text = '';
       let pages = 1;
       let usedOcr = false;
+      let pageTexts: { page: number; text: string }[] = [];
 
       if (item.kind === 'pdf') {
         const r = await processPdf(item, buffer);
         text = r.text; pages = r.pages; usedOcr = r.ocr;
+        pageTexts = r.pageTexts;
       } else if (item.kind === 'docx') {
         const r = await mammoth.extractRawText({ arrayBuffer: buffer });
         text = r.value;
@@ -179,6 +190,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         const deck = await renderPptx(item.file);
         text = deck.fullText;
         pages = deck.slides.length;
+        pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
         deck.dispose();
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
@@ -202,7 +214,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
       update(item.id, { status: 'done', progress: 1, message: usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`, usedOcr });
 
+      if (!pageTexts.length && text.trim()) pageTexts = [{ page: 1, text }];
+
       onCompleteRef.current({
+        pages: pageTexts,
         id: materialId,
         title: item.file.name.replace(/\.[^.]+$/, ''),
         kind: item.kind,

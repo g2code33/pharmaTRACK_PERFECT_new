@@ -34,7 +34,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 type ZoomPreset = 'auto' | 'actual' | 'fit' | 'width';
 type ScrollMode = 'vertical' | 'horizontal' | 'wrapped';
 type SpreadMode = 'none' | 'odd' | 'even';
-type SidebarTab = 'thumbnails' | 'outline' | 'attachments' | 'search';
+type SidebarTab = 'thumbnails' | 'outline' | 'attachments' | 'search' | 'highlights';
 type Tool = 'select' | 'hand';
 
 interface PdfViewerProps {
@@ -49,6 +49,8 @@ interface PdfViewerProps {
   jumpToPage?: number;
   /** Scroll to and flash this highlight after opening (Study Bank deep link). */
   focusHighlightId?: string;
+  /** Pre-fill the find bar, e.g. from a global-search "In document" hit. */
+  initialQuery?: string;
 }
 
 interface SearchHit {
@@ -82,7 +84,7 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const PdfViewer: React.FC<PdfViewerProps> = ({
   fileUrl, title, onPageChange, onTextExtracted,
   highlights = [], onCreateHighlight, onDeleteHighlight, onAskAi, jumpToPage,
-  focusHighlightId,
+  focusHighlightId, initialQuery,
 }) => {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
@@ -106,6 +108,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const [outline, setOutline] = useState<OutlineNode[]>([]);
   const [attachments, setAttachments] = useState<{ filename: string; content: Uint8Array }[]>([]);
   const [docInfo, setDocInfo] = useState<Record<string, unknown> | null>(null);
+  /**
+   * Publisher page labels, when the PDF declares them. Many lecture decks are
+   * numbered i, ii, 1, 2 or start at an offset, so the sheet index is not what
+   * the student sees printed on the page. Falls back to the index.
+   */
+  const [pageLabels, setPageLabels] = useState<string[] | null>(null);
   const [showProperties, setShowProperties] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showZoomMenu, setShowZoomMenu] = useState(false);
@@ -188,6 +196,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           setAttachments(Object.values(a) as { filename: string; content: Uint8Array }[]);
         }).catch(() => {});
         pdf.getMetadata().then(({ info }) => !cancelled && setDocInfo(info as Record<string, unknown>)).catch(() => {});
+        pdf.getPageLabels().then((labels) => {
+          if (cancelled || !labels) return;
+          // Ignore label sets that are just "1","2","3" - they add nothing.
+          const meaningful = labels.some((l, i) => l !== String(i + 1));
+          if (meaningful) setPageLabels(labels);
+        }).catch(() => {});
       },
       (err) => {
         if (cancelled) return;
@@ -463,6 +477,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     }
   }, [jumpToPage, numPages, baseSizes.length, goToPage]);
 
+  // Carry a global-search term into the document's own find bar, so the user
+  // arrives with the matches already highlighted.
+  useEffect(() => {
+    if (!initialQuery || !textReady) return;
+    setShowSearch(true);
+    setQuery(initialQuery);
+  }, [initialQuery, textReady]);
+
   // Land on the highlight itself, not just its page. Waits for the page to
   // paint, centres the first rect, then flashes it so it is obvious which one
   // was opened.
@@ -670,6 +692,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   }, [currentPage, numPages, hits, activeHit, goToPage]);
 
   const pageNumbers = useMemo(() => Array.from({ length: numPages }, (_, i) => i + 1), [numPages]);
+  /** What the student sees printed on the page, or the sheet number. */
+  const labelFor = useCallback(
+    (n: number) => pageLabels?.[n - 1] ?? String(n),
+    [pageLabels],
+  );
   const highlightsByPage = useMemo(() => {
     const map = new Map<number, Highlight[]>();
     for (const h of highlights) {
@@ -713,7 +740,12 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           onKeyDown={(e) => { if (e.key === 'Enter') goToPage(parseInt(pageInput, 10) || 1); }}
           className="w-12 px-1 py-1 text-center text-xs font-bold border border-slate-300 rounded-md outline-none focus:ring-2 focus:ring-[#2D6A4F]/20 bg-white"
         />
-        <span className="text-xs font-bold text-slate-500 px-1">of {numPages || '–'}</span>
+        <span className="text-xs font-bold text-slate-500 px-1">
+          of {numPages || '–'}
+          {pageLabels && labelFor(currentPage) !== String(currentPage) && (
+            <span className="ml-1 text-slate-400">({labelFor(currentPage)})</span>
+          )}
+        </span>
 
         <span className="w-px h-5 bg-slate-300 mx-1" />
 
@@ -751,9 +783,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         <div className="flex-1 min-w-[1rem]" />
 
         {highlights.length > 0 && (
-          <span title={`${highlights.length} highlight(s)`} className="flex items-center gap-1 text-[11px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md mr-1">
+          <button
+            onClick={() => { setSidebarOpen(true); setSidebarTab('highlights'); }}
+            title="Show all highlights in this document"
+            className="flex items-center gap-1 text-[11px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md mr-1 hover:bg-amber-100 transition-colors"
+          >
             <Highlighter className="w-3 h-3" /> {highlights.length}
-          </span>
+          </button>
         )}
 
         <button onClick={handlePrint} title="Print (Ctrl+P)" className={iconBtn}><Printer className="w-4 h-4" /></button>
@@ -823,12 +859,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         {sidebarOpen && (
           <div className="w-60 flex-shrink-0 bg-slate-100 border-r border-slate-300 flex flex-col min-h-0">
             <div className="flex border-b border-slate-300 flex-shrink-0">
-              {([['thumbnails', LayoutGrid], ['outline', List], ['search', Search], ['attachments', Paperclip]] as [SidebarTab, typeof List][]).map(([k, Icon]) => (
+              {([['thumbnails', LayoutGrid], ['outline', List], ['search', Search], ['highlights', Highlighter], ['attachments', Paperclip]] as [SidebarTab, typeof List][]).map(([k, Icon]) => (
                 <button key={k} onClick={() => setSidebarTab(k)} title={k} className={`flex-1 py-2 flex items-center justify-center relative ${sidebarTab === k ? 'bg-white text-[#2D6A4F] border-b-2 border-[#2D6A4F]' : 'text-slate-500 hover:bg-slate-200/60'}`}>
                   <Icon className="w-4 h-4" />
                   {k === 'search' && hits.length > 0 && (
                     <span className="absolute top-1 right-2 bg-[#FFB703] text-[#1B4332] text-[9px] font-black px-1 rounded-full leading-tight">
                       {hits.length > 99 ? '99+' : hits.length}
+                    </span>
+                  )}
+                  {k === 'highlights' && highlights.length > 0 && (
+                    <span className="absolute top-1 right-1.5 bg-amber-400 text-[#1B4332] text-[9px] font-black px-1 rounded-full leading-tight">
+                      {highlights.length > 99 ? '99+' : highlights.length}
                     </span>
                   )}
                 </button>
@@ -839,7 +880,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
               {sidebarTab === 'thumbnails' && pageNumbers.map((n) => (
                 <button key={n} onClick={() => goToPage(n)} className={`w-full mb-2 rounded-md overflow-hidden border-2 transition-all ${currentPage === n ? 'border-[#2D6A4F] shadow-md' : 'border-transparent hover:border-slate-400'}`}>
                   <Thumbnail doc={doc} pageNumber={n} />
-                  <span className={`block text-[10px] font-bold py-0.5 ${currentPage === n ? 'text-[#2D6A4F]' : 'text-slate-500'}`}>{n}</span>
+                  <span className={`block text-[10px] font-bold py-0.5 ${currentPage === n ? 'text-[#2D6A4F]' : 'text-slate-500'}`}>{labelFor(n)}</span>
                 </button>
               ))}
 
@@ -857,6 +898,50 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   onSelect={goToHit}
                   onFocusInput={() => { setShowSearch(true); setTimeout(() => searchInputRef.current?.focus(), 0); }}
                 />
+              )}
+
+              {sidebarTab === 'highlights' && (
+                highlights.length ? (
+                  <div className="space-y-1">
+                    {[...highlights]
+                      .sort((a, b) => (a.page ?? 0) - (b.page ?? 0))
+                      .map((h) => (
+                        <button
+                          key={h.id}
+                          onClick={() => {
+                            if (h.page) goToPage(h.page);
+                            setTimeout(() => {
+                              document
+                                .querySelector(`[data-highlight-id="${h.id}"]`)
+                                ?.scrollIntoView({ block: 'center', behavior: 'auto' });
+                              setFlashHighlight(h.id);
+                              setTimeout(() => setFlashHighlight(null), 2000);
+                            }, 140);
+                          }}
+                          className="w-full text-left p-2 rounded-md hover:bg-slate-200/70 transition-colors group/hl"
+                        >
+                          <span className="flex items-start gap-2">
+                            <span
+                              className="w-1.5 self-stretch rounded-full flex-shrink-0 mt-0.5"
+                              style={{ background: overlayFor(h.color) }}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[11px] text-slate-700 leading-snug line-clamp-3">{h.text}</span>
+                              {h.page && (
+                                <span className="block text-[9px] font-black uppercase tracking-widest text-slate-400 mt-0.5">
+                                  Page {labelFor(h.page)}
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400 text-center py-6 px-2">
+                    No highlights yet. Select text in the document to add one.
+                  </p>
+                )
               )}
 
               {sidebarTab === 'attachments' && (
@@ -886,7 +971,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           className={`flex-1 min-h-0 py-4 px-2 ${
             scrollMode === 'horizontal' ? 'overflow-x-auto overflow-y-hidden flex items-start gap-4'
               : scrollMode === 'wrapped' ? 'overflow-auto flex flex-wrap justify-center items-start gap-4 content-start'
-              : 'overflow-auto'
+              : 'overflow-y-scroll overflow-x-auto'
           } ${tool === 'hand' ? 'cursor-grab active:cursor-grabbing' : ''}`}
           style={spreadMode !== 'none' && scrollMode === 'vertical' ? { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '1rem', alignContent: 'flex-start' } : undefined}
         >
@@ -897,6 +982,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
             </div>
           )}
 
+          {/* Pages live in a fixed-width centred track. Without it each page
+              box was centred independently with mx-auto, so any width change
+              (zoom, fit recalculation, scrollbar appearing) shifted every page
+              horizontally and the document appeared to slide around. */}
           {pageNumbers.map((n) => {
             const size = scaledSize(n);
             const pageHighlights = highlightsByPage.get(n) ?? [];
@@ -906,10 +995,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 key={n}
                 data-page={n}
                 ref={(el) => { pageRefs.current[n - 1] = el; }}
-                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mx-auto mb-4'}`}
+                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mb-4'}`}
                 // Sized from the measured viewport before any pixels are drawn,
                 // so the scrollbar is correct and jumps land precisely.
-                style={{ width: size?.w ?? 'min(100%, 620px)', height: size?.h, flex: '0 0 auto' }}
+                // marginInline:auto rather than mx-auto so the value is stable
+                // even while the track width settles.
+                style={{
+                  width: size?.w ?? 'min(100%, 620px)',
+                  height: size?.h,
+                  flex: '0 0 auto',
+                  marginInline: inline ? undefined : 'auto',
+                }}
               >
                 <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="block rounded-sm" />
 
@@ -938,7 +1034,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   style={{ position: 'absolute', left: 0, top: 0, zIndex: 2, pointerEvents: tool === 'hand' ? 'none' : 'auto' }}
                 />
 
-                <span className="absolute bottom-2 right-2 text-[10px] font-black text-slate-400 bg-white/80 px-1.5 py-0.5 rounded pointer-events-none z-10">{n}</span>
+                <span className="absolute bottom-2 right-2 text-[10px] font-black text-slate-400 bg-white/80 px-1.5 py-0.5 rounded pointer-events-none z-10">{labelFor(n)}</span>
               </div>
             );
           })}

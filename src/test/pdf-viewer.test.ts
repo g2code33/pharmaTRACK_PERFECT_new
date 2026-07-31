@@ -141,7 +141,7 @@ describe('instant page navigation', () => {
     // Boxes get their real dimensions from the measured viewport, so the
     // scrollbar is correct from the first frame and jumps land in one go.
     expect(viewer).toMatch(/const scaledSize = useCallback/);
-    expect(viewer).toMatch(/style=\{\{ width: size\?\.w[\s\S]{0,40}height: size\?\.h/);
+    expect(viewer).toMatch(/width: size\?\.w[\s\S]{0,60}height: size\?\.h/);
   });
 
   it('pre-renders a window of pages around the viewport', () => {
@@ -210,5 +210,57 @@ describe('whole-document uploads', () => {
   it('always allows multiple files', () => {
     expect(uploader).toMatch(/^\s*multiple$/m);
     expect(uploader).not.toContain('multiple={!compact}');
+  });
+});
+
+describe('stable layout', () => {
+  it('keeps a permanent scrollbar gutter so pages cannot shift sideways', () => {
+    // An appearing/disappearing scrollbar changed the track width, which moved
+    // every centred page horizontally.
+    expect(viewer).toContain('overflow-y-scroll');
+  });
+
+  it('centres pages with a stable margin rather than a utility class', () => {
+    expect(viewer).toMatch(/marginInline: inline \? undefined : 'auto'/);
+  });
+});
+
+describe('page numbering', () => {
+  it('reads publisher page labels when present', () => {
+    // Lecture decks are often numbered i, ii, 1, 2 or start at an offset, so
+    // the sheet index is not what is printed on the page.
+    expect(viewer).toContain('getPageLabels()');
+    expect(viewer).toMatch(/const labelFor = useCallback/);
+  });
+
+  it('ignores label sets that just repeat the index', () => {
+    expect(viewer).toMatch(/labels\.some\(\(l, i\) => l !== String\(i \+ 1\)\)/);
+  });
+
+  it('falls back to the sheet number', () => {
+    expect(viewer).toMatch(/pageLabels\?\.\[n - 1\] \?\? String\(n\)/);
+  });
+});
+
+describe('highlights sidebar', () => {
+  it('the toolbar count opens the highlights panel', () => {
+    expect(viewer).toMatch(/setSidebarTab\('highlights'\)/);
+  });
+
+  it('lists every highlight with its page and jumps to it', () => {
+    expect(viewer).toMatch(/sidebarTab === 'highlights'/);
+    expect(viewer).toMatch(/data-highlight-id="\$\{h\.id\}"/);
+  });
+});
+
+describe('deep search hand-off', () => {
+  it('accepts a query from global search and pre-fills the find bar', () => {
+    expect(viewer).toContain('initialQuery');
+    expect(reader).toMatch(/searchParams\.get\('q'\)/);
+  });
+
+  it('opens the material the hit came from, not the first one', () => {
+    expect(reader).toMatch(/searchParams\.get\('material'\)/);
+    expect(reader).toMatch(/materialList\.findIndex\(\(m\) => m\.id === deepLinkMaterial\)/);
   });
 });

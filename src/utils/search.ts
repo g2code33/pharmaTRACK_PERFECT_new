@@ -12,6 +12,7 @@
  *    with no async lookup, which is the whole point of this app.
  */
 import type { AppState } from '../types';
+import { searchDeep } from './searchIndex';
 
 export type SearchCategory =
   | 'Course'
@@ -21,7 +22,8 @@ export type SearchCategory =
   | 'Question'
   | 'Objective'
   | 'Highlight'
-  | 'Page';
+  | 'Page'
+  | 'In document';
 
 export interface SearchResult {
   id: string;
@@ -191,6 +193,27 @@ export const searchAll = (state: AppState, rawQuery: string, limit = 20): Search
       link: '/highlights',
       snippet: makeSnippet(h.text, terms[0]),
       score: scoreField(h.text, terms, 40),
+    });
+  }
+
+  // Full-text hits from inside uploaded documents. state.slides only holds a
+  // 2000-char preview (localStorage quota), so without this a keyword deep in
+  // a lecture is unfindable even though the text was extracted at upload.
+  const seenDeep = new Set<string>();
+  for (const hit of searchDeep(query)) {
+    // Don't repeat a document already matched on its title above.
+    const key = `${hit.materialId}-${hit.page}`;
+    if (seenDeep.has(key)) continue;
+    seenDeep.add(key);
+    push({
+      id: `d-${key}`,
+      title: `${hit.title} — page ${hit.page}`,
+      category: 'In document',
+      link: `/read/${hit.topicId}?material=${hit.materialId}&page=${hit.page}&q=${encodeURIComponent(rawQuery.trim())}`,
+      snippet: hit.snippet,
+      // Sits just below a title match so named things still win, but above
+      // generic page shortcuts.
+      score: 46 + Math.min(hit.count, 8),
     });
   }
 

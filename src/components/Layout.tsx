@@ -214,7 +214,10 @@ const Layout: React.FC = () => {
         </aside>
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 flex-shrink-0 z-20">
+          {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
+              this element a stacking context, so the search dropdown inside it
+              can never escape — the header itself has to sit above them. */}
+          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 flex-shrink-0 relative z-[120]">
             <div className="flex items-center gap-4 lg:gap-6">
               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
               
