@@ -69,7 +69,13 @@ type Action =
 const appReducer = (state: AppState, action: Action): AppState => {
   switch (action.type) {
     case 'LOAD_STATE':
-      return action.payload;
+      // isLoggedIn is NOT restored from disk. saveState() persists the whole
+      // state object, so a stale `true` from a previous run would survive a
+      // restart and make the UI claim a cloud session that doesn't exist
+      // (e.g. showing "End Session" to a signed-out user). The real session
+      // lives in the Supabase token; checkSession() sets this flag from that,
+      // and that is the only thing allowed to turn it on.
+      return { ...action.payload, isLoggedIn: false };
 
     case 'SET_LOGGED_IN':
       return { ...state, isLoggedIn: action.payload };

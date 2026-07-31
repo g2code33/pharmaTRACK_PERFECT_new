@@ -130,6 +130,39 @@ describe('offline-first: no account required', () => {
   });
 });
 
+describe('stale session flag', () => {
+  it('does not trust isLoggedIn persisted from a previous run', async () => {
+    // saveState() writes the whole state object, so a logged-in run leaves
+    // isLoggedIn:true on disk. With no Supabase token present that flag is a
+    // lie, and the UI acted on it (showing "End Session" to a signed-out user).
+    localStorage.setItem('pharmatrack_state', JSON.stringify({
+      isLoggedIn: true,           // stale leftover
+      student: { id: 'local-1', name: 'Kwame', university: 'UCC', level: '200', program: 'Pharm.D', semester: '1st', createdAt: '2024-01-01' },
+      courses: [], topics: [], slides: [], learningObjectives: [], examQuestions: [],
+      quizHistory: [], studyPlans: [], notes: [], examDates: [], activities: [],
+      chatHistory: [], highlights: [], savedInsights: [], openAIKey: '',
+      timetables: { class: [], quiz: [], exam: [] }, timetablePdf: null,
+    }));
+    // Offline is the case that actually exposes this: the app cannot reach
+    // Supabase to disprove the flag, so if LOAD_STATE trusts it the user is
+    // shown a cloud session they do not have.
+    setOnline(false);
+    // No AUTH_KEY in localStorage => there is no real session.
+    renderApp();
+
+    await waitFor(() => expect(screen.getByTestId('has-student')).toHaveTextContent('true'));
+    expect(screen.getByTestId('logged-in')).toHaveTextContent('false');
+  });
+
+  it('still restores a session when a real token exists', async () => {
+    localStorage.setItem(AUTH_KEY, JSON.stringify({ user: { id: 'user-1' } }));
+    seedLocalOnlyUser();
+    renderApp();
+
+    await waitFor(() => expect(screen.getByTestId('logged-in')).toHaveTextContent('true'));
+  });
+});
+
 describe('cloud access gate', () => {
   it('reports offline when there is no connection', async () => {
     setOnline(false);
