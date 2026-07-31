@@ -15,21 +15,26 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 /**
  * Full-featured canvas PDF viewer.
  *
- * Replaced an <iframe> that clipped document bottoms and exposed nothing to the
- * app. Canvas alone loses text selection, so pdf.js's renderTextLayer draws
- * transparent, glyph-aligned spans over each page.
+ * Three things matter for it to feel instant, all handled below:
  *
- * Critical detail: pdf.js 3.x positions those spans with
- * `calc(var(--scale-factor) * ...)`. If that CSS variable is not set on the
- * text-layer container it logs "The `--scale-factor` CSS-variable must be set"
- * and every span collapses, which silently makes selection (and therefore
- * highlighting) impossible. It is set in renderPage below.
+ *  1. Page boxes are sized from pdf.js viewports before anything renders, so
+ *     the scroll height is correct immediately and jumping to page 90 lands in
+ *     one go instead of settling as pages appear.
+ *  2. Renders are cached per (page, scale, rotation). Scrolling back over a
+ *     page reuses the existing canvas instead of re-rasterising it.
+ *  3. A window of pages around the viewport is rendered ahead of time and
+ *     pages far outside it are evicted, which keeps memory bounded on long
+ *     documents without giving up the instant feel.
+ *
+ * pdf.js 3.x positions text-layer spans with `calc(var(--scale-factor) * ...)`.
+ * That variable must be set on the container or every span collapses and
+ * selection silently stops working.
  */
 
 type ZoomPreset = 'auto' | 'actual' | 'fit' | 'width';
 type ScrollMode = 'vertical' | 'horizontal' | 'wrapped';
 type SpreadMode = 'none' | 'odd' | 'even';
-type SidebarTab = 'thumbnails' | 'outline' | 'attachments';
+type SidebarTab = 'thumbnails' | 'outline' | 'attachments' | 'search';
 type Tool = 'select' | 'hand';
 
 interface PdfViewerProps {
@@ -46,21 +51,25 @@ interface PdfViewerProps {
 
 interface SearchHit {
   page: number;
-  /** Character offset of the match within that page's text. */
-  start: number;
-  length: number;
-  snippet: string;
+  /** Index of this hit within its page, used to target the right <mark>. */
+  indexOnPage: number;
+  before: string;
+  match: string;
+  after: string;
 }
 
-interface OutlineNode {
-  title: string;
-  dest: unknown;
-  items: OutlineNode[];
-}
+interface OutlineNode { title: string; dest: unknown; items: OutlineNode[] }
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 6;
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+
+/** Pages rendered around the viewport. Wide enough that scrolling feels instant. */
+const RENDER_WINDOW = 4;
+/** Beyond this, canvases are released so long documents stay within memory. */
+const KEEP_WINDOW = 10;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const PdfViewer: React.FC<PdfViewerProps> = ({
   fileUrl, title, onPageChange, onTextExtracted,
@@ -75,7 +84,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const [rotation, setRotation] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [pageSizes, setPageSizes] = useState<Record<number, { w: number; h: number }>>({});
+
+  /** Unscaled page dimensions, read once so boxes can be sized before render. */
+  const [baseSizes, setBaseSizes] = useState<{ w: number; h: number }[]>([]);
 
   const [scrollMode, setScrollMode] = useState<ScrollMode>('vertical');
   const [spreadMode, setSpreadMode] = useState<SpreadMode>('none');
@@ -98,6 +109,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [activeHit, setActiveHit] = useState(0);
   const [pageTexts, setPageTexts] = useState<string[]>([]);
+  const [textReady, setTextReady] = useState(false);
 
   const [selection, setSelection] = useState<{ anchor: { x: number; y: number }; text: string; page: number; rects: HighlightRect[] } | null>(null);
 
@@ -110,11 +122,32 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const panState = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
 
+  /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
+  const renderedKey = useRef<Map<number, string>>(new Map());
+  const inFlight = useRef<Set<number>>(new Set());
+
+  /** Search state read from inside async render callbacks. */
+  const searchRef = useRef({ query: '', matchCase: false, wholeWords: false, all: true });
+  useEffect(() => {
+    searchRef.current = { query, matchCase, wholeWords, all: highlightAllMatches };
+  }, [query, matchCase, wholeWords, highlightAllMatches]);
+
+  const scaledSize = useCallback((pageNum: number) => {
+    const base = baseSizes[pageNum - 1];
+    if (!base) return null;
+    const swap = rotation % 180 !== 0;
+    const w = (swap ? base.h : base.w) * scale;
+    const h = (swap ? base.w : base.h) * scale;
+    return { w: Math.floor(w), h: Math.floor(h) };
+  }, [baseSizes, scale, rotation]);
+
   /* ---------------- load ---------------- */
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError(null); setDoc(null); setPageSizes({});
-    setOutline([]); setAttachments([]); setDocInfo(null);
+    setLoading(true); setError(null); setDoc(null);
+    setBaseSizes([]); setOutline([]); setAttachments([]); setDocInfo(null);
+    setTextReady(false); setPageTexts([]);
+    renderedKey.current.clear();
 
     const task = pdfjs.getDocument(fileUrl);
     task.promise.then(
@@ -122,8 +155,24 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         if (cancelled) { pdf.destroy(); return; }
         setDoc(pdf); setNumPages(pdf.numPages); setCurrentPage(1); setLoading(false);
 
-        // Sidebar + properties data. Each is optional; a missing outline or
-        // attachment list must not break the viewer.
+        // Measure every page up front. getPage is cheap (no rasterising) and
+        // this is what lets the scrollbar be correct from the first frame.
+        const sizes: { w: number; h: number }[] = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          if (cancelled) return;
+          try {
+            const page = await pdf.getPage(i);
+            const vp = page.getViewport({ scale: 1, rotation: 0 });
+            sizes[i - 1] = { w: vp.width, h: vp.height };
+          } catch {
+            sizes[i - 1] = sizes[i - 2] ?? { w: 612, h: 792 };
+          }
+          // Publish early so the first screenful sizes immediately.
+          if (i === Math.min(4, pdf.numPages) || i === pdf.numPages) {
+            if (!cancelled) setBaseSizes([...sizes]);
+          }
+        }
+
         pdf.getOutline().then((o) => !cancelled && o && setOutline(o as OutlineNode[])).catch(() => {});
         pdf.getAttachments().then((a: any) => {
           if (cancelled || !a) return;
@@ -159,46 +208,93 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       }
       if (cancelled) return;
       setPageTexts(texts);
+      setTextReady(true);
       onTextExtracted?.(texts.map((text, i) => ({ page: i + 1, text })));
     })();
     return () => { cancelled = true; };
   }, [doc]);
 
-  /* ---------------- zoom presets ---------------- */
-  useEffect(() => {
-    if (!doc || zoomPreset === 'actual') return;
-    let cancelled = false;
+  /* ---------------- search mark painting ---------------- */
 
-    const apply = async () => {
-      const el = containerRef.current;
-      if (!el) return;
-      const page = await doc.getPage(currentPage || 1);
-      if (cancelled) return;
-      const base = page.getViewport({ scale: 1, rotation });
-      const availW = el.clientWidth - (spreadMode === 'none' ? 40 : 60);
-      const availH = el.clientHeight - 40;
+  /**
+   * Paints <mark> elements onto one page's already-rendered text spans.
+   *
+   * Called both when the query changes and immediately after a page's text
+   * layer is (re)built. That second call is what keeps marks visible while
+   * scrolling: renderTextLayer replaces the layer's children, which would
+   * otherwise wipe the marks on every revisit.
+   */
+  const paintMarks = useCallback((pageNum: number) => {
+    const layer = textLayerRefs.current[pageNum - 1];
+    if (!layer) return;
 
-      let next = scale;
-      if (zoomPreset === 'width') next = availW / base.width;
-      else if (zoomPreset === 'fit') next = Math.min(availW / base.width, availH / base.height);
-      else if (zoomPreset === 'auto') next = Math.min(1.5, availW / base.width);
+    // Clear existing marks on this page only.
+    layer.querySelectorAll('mark[data-find]').forEach((el) => {
+      const parent = el.parentNode;
+      if (!parent) return;
+      parent.replaceChild(document.createTextNode(el.textContent ?? ''), el);
+      parent.normalize();
+    });
 
-      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, next)));
-    };
+    const { query: q, matchCase: mc, wholeWords: ww } = searchRef.current;
+    const raw = q.trim();
+    if (raw.length < 2) return;
 
-    apply();
-    const ro = new ResizeObserver(apply);
-    if (containerRef.current) ro.observe(containerRef.current);
-    return () => { cancelled = true; ro.disconnect(); };
-  }, [doc, zoomPreset, rotation, spreadMode, currentPage]);
+    const pattern = ww ? `\\b${escapeRe(raw)}\\b` : escapeRe(raw);
+    let re: RegExp;
+    try { re = new RegExp(pattern, mc ? 'g' : 'gi'); } catch { return; }
+
+    let counter = 0;
+    layer.querySelectorAll('span').forEach((span) => {
+      const text = span.textContent ?? '';
+      if (!text) return;
+      re.lastIndex = 0;
+      if (!re.test(text)) return;
+      re.lastIndex = 0;
+
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(text))) {
+        if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+        const mark = document.createElement('mark');
+        mark.dataset.find = 'true';
+        mark.dataset.hitIndex = String(counter++);
+        mark.textContent = m[0];
+        frag.appendChild(mark);
+        last = m.index + m[0].length;
+        if (m.index === re.lastIndex) re.lastIndex++;
+      }
+      if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      span.replaceChildren(frag);
+    });
+  }, []);
+
+  /** Marks the active hit distinctly, so stepping through is obvious. */
+  const markActive = useCallback(() => {
+    document.querySelectorAll('mark[data-find][data-active]').forEach((el) => {
+      (el as HTMLElement).removeAttribute('data-active');
+    });
+    const hit = hits[activeHit];
+    if (!hit) return;
+    const layer = textLayerRefs.current[hit.page - 1];
+    const target = layer?.querySelector(`mark[data-find][data-hit-index="${hit.indexOnPage}"]`);
+    target?.setAttribute('data-active', 'true');
+  }, [hits, activeHit]);
 
   /* ---------------- render a page ---------------- */
-  const renderPage = useCallback(async (pageNum: number) => {
+  const renderPage = useCallback(async (pageNum: number, force = false) => {
     if (!doc) return;
     const canvas = canvasRefs.current[pageNum - 1];
     const textLayer = textLayerRefs.current[pageNum - 1];
     if (!canvas) return;
 
+    const key = `${scale.toFixed(3)}|${rotation}`;
+    // The cache is the whole point: revisiting a page must not re-rasterise it.
+    if (!force && renderedKey.current.get(pageNum) === key) { paintMarks(pageNum); return; }
+    if (inFlight.current.has(pageNum)) return;
+
+    inFlight.current.add(pageNum);
     renderTasks.current.get(pageNum)?.cancel();
     textTasks.current.get(pageNum)?.cancel();
 
@@ -206,18 +302,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       const page = await doc.getPage(pageNum);
       const viewport = page.getViewport({ scale, rotation });
 
-      setPageSizes((prev) =>
-        prev[pageNum]?.w === viewport.width && prev[pageNum]?.h === viewport.height
-          ? prev
-          : { ...prev, [pageNum]: { w: viewport.width, h: viewport.height } });
-
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
       canvas.style.height = `${Math.floor(viewport.height)}px`;
 
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -228,78 +319,132 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
       if (textLayer) {
         textLayer.replaceChildren();
-        // REQUIRED by pdf.js 3.x: spans are positioned with
-        // calc(var(--scale-factor) * ...). Without this they collapse and
-        // nothing can be selected or highlighted.
+        // Required by pdf.js 3.x, or every span collapses and selection breaks.
         textLayer.style.setProperty('--scale-factor', String(viewport.scale));
         textLayer.style.width = `${Math.floor(viewport.width)}px`;
         textLayer.style.height = `${Math.floor(viewport.height)}px`;
 
         const content = await page.getTextContent();
         const textTask = pdfjs.renderTextLayer({
-          textContentSource: content,
-          container: textLayer,
-          viewport,
+          textContentSource: content, container: textLayer, viewport,
         });
         textTasks.current.set(pageNum, textTask);
         await textTask.promise;
         textTasks.current.delete(pageNum);
+
+        // Re-apply search marks straight after rebuilding the layer.
+        paintMarks(pageNum);
       }
+
+      renderedKey.current.set(pageNum, key);
     } catch (err: any) {
       if (err?.name !== 'RenderingCancelledException' && !/cancelled/i.test(err?.message ?? '')) {
         console.error(`Failed to render page ${pageNum}:`, err);
       }
+    } finally {
+      inFlight.current.delete(pageNum);
     }
-  }, [doc, scale, rotation]);
+  }, [doc, scale, rotation, paintMarks]);
 
-  /* ---------------- lazy rendering ---------------- */
-  useEffect(() => {
+  /**
+   * Renders a window of pages around `centre` and releases distant canvases.
+   *
+   * Rendering everything would exhaust memory on a 100+ page document (a single
+   * page canvas at 2x DPR is ~20 MB), so pages outside KEEP_WINDOW have their
+   * backing store freed and their cache entry dropped.
+   */
+  const renderWindow = useCallback((centre: number) => {
     if (!doc || !numPages) return;
+
+    for (let d = 0; d <= RENDER_WINDOW; d++) {
+      for (const p of d === 0 ? [centre] : [centre - d, centre + d]) {
+        if (p >= 1 && p <= numPages) renderPage(p);
+      }
+    }
+
+    for (const [p] of renderedKey.current) {
+      if (Math.abs(p - centre) > KEEP_WINDOW) {
+        const c = canvasRefs.current[p - 1];
+        if (c) { c.width = 0; c.height = 0; }
+        textLayerRefs.current[p - 1]?.replaceChildren();
+        renderedKey.current.delete(p);
+      }
+    }
+  }, [doc, numPages, renderPage]);
+
+  /* ---------------- viewport tracking ---------------- */
+  useEffect(() => {
+    if (!doc || !numPages || !baseSizes.length) return;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          const pageNum = Number((entry.target as HTMLElement).dataset.page);
-          if (entry.isIntersecting) {
-            renderPage(pageNum);
-            if (entry.intersectionRatio > 0.5) {
-              setCurrentPage(pageNum);
-              setPageInput(String(pageNum));
-            }
+          if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
+            const pageNum = Number((entry.target as HTMLElement).dataset.page);
+            setCurrentPage(pageNum);
+            setPageInput(String(pageNum));
           }
         }
       },
-      { root: containerRef.current, rootMargin: '150% 0px', threshold: [0, 0.5] },
+      { root: containerRef.current, threshold: [0.5] },
     );
     pageRefs.current.slice(0, numPages).forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
-  }, [doc, numPages, renderPage, scrollMode, spreadMode]);
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode]);
 
+  // Keep the render window centred on wherever the user is.
+  useEffect(() => { renderWindow(currentPage); }, [currentPage, renderWindow]);
+
+  // Zoom or rotation invalidates every cached raster.
   useEffect(() => {
-    if (!doc) return;
-    pageRefs.current.slice(0, numPages).forEach((el, i) => {
-      if (!el || !containerRef.current) return;
-      const r = el.getBoundingClientRect();
-      const c = containerRef.current.getBoundingClientRect();
-      if (r.bottom > c.top - 500 && r.top < c.bottom + 500) renderPage(i + 1);
-    });
-  }, [scale, rotation, doc, numPages, renderPage]);
+    renderedKey.current.clear();
+    if (doc) renderWindow(currentPage);
+  }, [scale, rotation]);
 
   useEffect(() => { onPageChange?.(currentPage, numPages); }, [currentPage, numPages]);
+
+  /* ---------------- zoom presets ---------------- */
+  useEffect(() => {
+    if (!doc || zoomPreset === 'actual' || !baseSizes.length) return;
+    const apply = () => {
+      const el = containerRef.current;
+      const base = baseSizes[Math.max(0, currentPage - 1)] ?? baseSizes[0];
+      if (!el || !base) return;
+      const swap = rotation % 180 !== 0;
+      const bw = swap ? base.h : base.w;
+      const bh = swap ? base.w : base.h;
+      const availW = el.clientWidth - (spreadMode === 'none' ? 40 : 60);
+      const availH = el.clientHeight - 40;
+
+      let next = scale;
+      if (zoomPreset === 'width') next = availW / bw;
+      else if (zoomPreset === 'fit') next = Math.min(availW / bw, availH / bh);
+      else if (zoomPreset === 'auto') next = Math.min(1.5, availW / bw);
+
+      const clamped = Math.min(MAX_SCALE, Math.max(MIN_SCALE, next));
+      if (Math.abs(clamped - scale) > 0.005) setScale(clamped);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, [doc, zoomPreset, rotation, spreadMode, baseSizes, currentPage, scale]);
 
   /* ---------------- navigation ---------------- */
   const goToPage = useCallback((n: number) => {
     const clamped = Math.min(Math.max(1, n), numPages);
-    pageRefs.current[clamped - 1]?.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'center' });
     setCurrentPage(clamped);
     setPageInput(String(clamped));
-  }, [numPages]);
+    // Render before scrolling so the destination is already painted on arrival.
+    renderWindow(clamped);
+    pageRefs.current[clamped - 1]?.scrollIntoView({ behavior: 'auto', block: 'start', inline: 'center' });
+  }, [numPages, renderWindow]);
 
   useEffect(() => {
-    if (jumpToPage && numPages) {
-      const t = setTimeout(() => goToPage(jumpToPage), 350);
+    if (jumpToPage && numPages && baseSizes.length) {
+      const t = setTimeout(() => goToPage(jumpToPage), 120);
       return () => clearTimeout(t);
     }
-  }, [jumpToPage, numPages, goToPage]);
+  }, [jumpToPage, numPages, baseSizes.length, goToPage]);
 
   const goToDestination = async (dest: unknown) => {
     if (!doc || !dest) return;
@@ -308,7 +453,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       if (!Array.isArray(explicit)) return;
       const index = await doc.getPageIndex(explicit[0] as any);
       goToPage(index + 1);
-    } catch { /* broken outline entries are common; ignore */ }
+    } catch { /* broken outline entries are common */ }
   };
 
   const setZoom = (value: number | ZoomPreset) => {
@@ -321,7 +466,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, +(s + delta).toFixed(2))));
   };
 
-  /* ---------------- hand tool panning ---------------- */
+  /* ---------------- hand tool ---------------- */
   const onPanStart = (e: React.MouseEvent) => {
     if (tool !== 'hand' || !containerRef.current) return;
     panState.current = {
@@ -363,7 +508,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     const clientRects = Array.from(sel.getRangeAt(0).getClientRects()).filter((r) => r.width > 0 && r.height > 1);
     if (!clientRects.length) { setSelection(null); return; }
 
-    // Fractions of the page, so highlights survive zoom, rotation and resize.
     const rects: HighlightRect[] = clientRects.map((r) => ({
       x: (r.left - pageBox.left) / pageBox.width,
       y: (r.top - pageBox.top) / pageBox.height,
@@ -398,8 +542,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     const raw = query.trim();
     if (raw.length < 2 || !pageTexts.length) { setHits([]); return; }
 
-    const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = wholeWords ? `\\b${escaped}\\b` : escaped;
+    const pattern = wholeWords ? `\\b${escapeRe(raw)}\\b` : escapeRe(raw);
     let re: RegExp;
     try { re = new RegExp(pattern, matchCase ? 'g' : 'gi'); } catch { setHits([]); return; }
 
@@ -407,13 +550,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     pageTexts.forEach((text, i) => {
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
-      while ((m = re.exec(text)) && found.length < 1000) {
-        const start = Math.max(0, m.index - 40);
+      let onPage = 0;
+      while ((m = re.exec(text)) && found.length < 2000) {
         found.push({
           page: i + 1,
-          start: m.index,
-          length: m[0].length,
-          snippet: `${start > 0 ? '…' : ''}${text.slice(start, m.index + m[0].length + 60).trim()}…`,
+          indexOnPage: onPage++,
+          before: text.slice(Math.max(0, m.index - 45), m.index),
+          match: m[0],
+          after: text.slice(m.index + m[0].length, m.index + m[0].length + 55),
         });
         if (m.index === re.lastIndex) re.lastIndex++;
       }
@@ -421,78 +565,45 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
     setHits(found);
     setActiveHit(0);
-    if (found.length) goToPage(found[0].page);
-  }, [query, pageTexts, matchCase, wholeWords, goToPage]);
+    if (found.length) {
+      setSidebarOpen(true);
+      setSidebarTab('search');
+      goToPage(found[0].page);
+    }
+  }, [query, pageTexts, matchCase, wholeWords]);
+
+  // Repaint marks across loaded pages whenever the query or options change.
+  useEffect(() => {
+    for (let p = 1; p <= numPages; p++) {
+      if (renderedKey.current.has(p)) paintMarks(p);
+    }
+    markActive();
+  }, [query, matchCase, wholeWords, highlightAllMatches, hits, numPages, paintMarks, markActive]);
+
+  useEffect(() => { markActive(); }, [activeHit, currentPage, markActive]);
+
+  const goToHit = useCallback((index: number) => {
+    const hit = hits[index];
+    if (!hit) return;
+    setActiveHit(index);
+    goToPage(hit.page);
+    // Scroll the exact match into view once its page has painted.
+    setTimeout(() => {
+      const layer = textLayerRefs.current[hit.page - 1];
+      layer?.querySelector(`mark[data-find][data-hit-index="${hit.indexOnPage}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'auto' });
+      markActive();
+    }, 90);
+  }, [hits, goToPage, markActive]);
 
   const stepHit = (dir: 1 | -1) => {
     if (!hits.length) return;
-    const next = (activeHit + dir + hits.length) % hits.length;
-    setActiveHit(next);
-    goToPage(hits[next].page);
+    goToHit((activeHit + dir + hits.length) % hits.length);
   };
-
-  /**
-   * Paints search matches onto the text layer.
-   *
-   * Done by walking the rendered spans and wrapping matched substrings, rather
-   * than re-deriving geometry, so the marks line up exactly with the glyphs at
-   * any zoom. Re-runs whenever the layer is re-rendered.
-   */
-  useEffect(() => {
-    // Clear previous marks first.
-    for (const layer of textLayerRefs.current) {
-      layer?.querySelectorAll('mark[data-find]').forEach((el) => {
-        const parent = el.parentNode;
-        if (!parent) return;
-        parent.replaceChild(document.createTextNode(el.textContent ?? ''), el);
-        parent.normalize();
-      });
-    }
-    const raw = query.trim();
-    if (!raw || raw.length < 2 || !hits.length) return;
-
-    const pagesToMark = highlightAllMatches
-      ? new Set(hits.map((h) => h.page))
-      : new Set([hits[activeHit]?.page].filter(Boolean) as number[]);
-
-    const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = wholeWords ? `\\b${escaped}\\b` : escaped;
-
-    for (const page of pagesToMark) {
-      const layer = textLayerRefs.current[page - 1];
-      if (!layer) continue;
-      let re: RegExp;
-      try { re = new RegExp(pattern, matchCase ? 'g' : 'gi'); } catch { return; }
-
-      layer.querySelectorAll('span').forEach((span) => {
-        const text = span.textContent ?? '';
-        if (!text) return;
-        re.lastIndex = 0;
-        if (!re.test(text)) return;
-        re.lastIndex = 0;
-
-        const frag = document.createDocumentFragment();
-        let last = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text))) {
-          if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
-          const mark = document.createElement('mark');
-          mark.dataset.find = 'true';
-          mark.textContent = m[0];
-          frag.appendChild(mark);
-          last = m.index + m[0].length;
-          if (m.index === re.lastIndex) re.lastIndex++;
-        }
-        if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
-        span.replaceChildren(frag);
-      });
-    }
-  }, [query, hits, activeHit, highlightAllMatches, matchCase, wholeWords, scale, rotation, currentPage, pageSizes]);
 
   /* ---------------- print ---------------- */
   const handlePrint = () => {
     const w = window.open(fileUrl, '_blank');
-    // Some webviews block programmatic print; opening the file is the fallback.
     w?.addEventListener('load', () => { try { w.print(); } catch { /* ignore */ } });
   };
 
@@ -533,8 +644,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     return map;
   }, [highlights]);
 
-  const activeHitPage = hits[activeHit]?.page;
-
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-full w-full bg-slate-50 p-10 text-center">
@@ -553,7 +662,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
   return (
     <div className="flex flex-col h-full w-full bg-slate-300/40 min-h-0" onClick={() => { setShowMenu(false); setShowZoomMenu(false); }}>
-      {/* ---------------- toolbar ---------------- */}
+      {/* toolbar */}
       <div className="flex items-center gap-0.5 px-2 py-1.5 bg-slate-100 border-b border-slate-300 shadow-sm flex-shrink-0 flex-wrap relative z-30">
         <button onClick={() => setSidebarOpen((s) => !s)} title="Toggle sidebar" className={`${iconBtn} ${sidebarOpen ? activeBtn : ''}`}><PanelLeft className="w-4 h-4" /></button>
         <button onClick={() => { setShowSearch((s) => !s); setTimeout(() => searchInputRef.current?.focus(), 0); }} title="Find (Ctrl+F)" className={`${iconBtn} ${showSearch ? activeBtn : ''}`}><Search className="w-4 h-4" /></button>
@@ -593,9 +702,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
               ))}
               <div className="h-px bg-white/15 my-1" />
               {ZOOM_STEPS.map((z) => (
-                <button key={z} onClick={() => setZoom(z)} className="w-full text-left px-4 py-1.5 text-sm hover:bg-white/10">
-                  {Math.round(z * 100)}%
-                </button>
+                <button key={z} onClick={() => setZoom(z)} className="w-full text-left px-4 py-1.5 text-sm hover:bg-white/10">{Math.round(z * 100)}%</button>
               ))}
             </div>
           )}
@@ -645,7 +752,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         </div>
       </div>
 
-      {/* ---------------- find bar ---------------- */}
+      {/* find bar */}
       {showSearch && (
         <div className="flex items-center gap-2 px-3 py-2 bg-white border-b border-slate-200 flex-shrink-0 flex-wrap z-20">
           <Search className="w-4 h-4 text-slate-400 flex-shrink-0" />
@@ -653,7 +760,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
             ref={searchInputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={pageTexts.length ? 'Find in document…' : 'Reading document…'}
+            placeholder={textReady ? 'Find in document…' : 'Reading document…'}
             className="flex-1 min-w-[8rem] bg-transparent text-sm font-medium outline-none"
           />
           <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 cursor-pointer">
@@ -667,7 +774,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           </label>
           {query.trim().length >= 2 && (
             <span className="text-xs font-bold text-slate-500 tabular-nums">
-              {hits.length ? `${activeHit + 1} of ${hits.length}` : 'Not found'}
+              {hits.length ? `${activeHit + 1} of ${hits.length}` : textReady ? 'Not found' : 'Reading…'}
             </span>
           )}
           <button onClick={() => stepHit(-1)} disabled={!hits.length} className={iconBtn}><ChevronUp className="w-4 h-4" /></button>
@@ -677,13 +784,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       )}
 
       <div className="flex flex-1 min-h-0">
-        {/* ---------------- sidebar ---------------- */}
+        {/* sidebar */}
         {sidebarOpen && (
-          <div className="w-52 flex-shrink-0 bg-slate-100 border-r border-slate-300 flex flex-col min-h-0">
+          <div className="w-60 flex-shrink-0 bg-slate-100 border-r border-slate-300 flex flex-col min-h-0">
             <div className="flex border-b border-slate-300 flex-shrink-0">
-              {([['thumbnails', LayoutGrid], ['outline', List], ['attachments', Paperclip]] as [SidebarTab, typeof List][]).map(([k, Icon]) => (
-                <button key={k} onClick={() => setSidebarTab(k)} title={k} className={`flex-1 py-2 flex items-center justify-center ${sidebarTab === k ? 'bg-white text-[#2D6A4F] border-b-2 border-[#2D6A4F]' : 'text-slate-500 hover:bg-slate-200/60'}`}>
+              {([['thumbnails', LayoutGrid], ['outline', List], ['search', Search], ['attachments', Paperclip]] as [SidebarTab, typeof List][]).map(([k, Icon]) => (
+                <button key={k} onClick={() => setSidebarTab(k)} title={k} className={`flex-1 py-2 flex items-center justify-center relative ${sidebarTab === k ? 'bg-white text-[#2D6A4F] border-b-2 border-[#2D6A4F]' : 'text-slate-500 hover:bg-slate-200/60'}`}>
                   <Icon className="w-4 h-4" />
+                  {k === 'search' && hits.length > 0 && (
+                    <span className="absolute top-1 right-2 bg-[#FFB703] text-[#1B4332] text-[9px] font-black px-1 rounded-full leading-tight">
+                      {hits.length > 99 ? '99+' : hits.length}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -699,6 +811,17 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
               {sidebarTab === 'outline' && (
                 outline.length ? <OutlineTree nodes={outline} onSelect={goToDestination} />
                   : <p className="text-xs text-slate-400 text-center py-6 px-2">This document has no outline.</p>
+              )}
+
+              {sidebarTab === 'search' && (
+                <SearchResultsPanel
+                  hits={hits}
+                  activeHit={activeHit}
+                  query={query}
+                  textReady={textReady}
+                  onSelect={goToHit}
+                  onFocusInput={() => { setShowSearch(true); setTimeout(() => searchInputRef.current?.focus(), 0); }}
+                />
               )}
 
               {sidebarTab === 'attachments' && (
@@ -721,7 +844,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           </div>
         )}
 
-        {/* ---------------- pages ---------------- */}
+        {/* pages */}
         <div
           ref={containerRef}
           onMouseDown={onPanStart}
@@ -740,7 +863,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           )}
 
           {pageNumbers.map((n) => {
-            const size = pageSizes[n];
+            const size = scaledSize(n);
             const pageHighlights = highlightsByPage.get(n) ?? [];
             const inline = scrollMode !== 'vertical' || spreadMode !== 'none';
             return (
@@ -748,8 +871,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 key={n}
                 data-page={n}
                 ref={(el) => { pageRefs.current[n - 1] = el; }}
-                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mx-auto mb-4'} ${activeHitPage === n && hits.length ? 'ring-2 ring-[#FFB703]' : ''}`}
-                style={{ width: size ? size.w : 'fit-content', minHeight: size ? size.h : 140, flex: '0 0 auto' }}
+                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mx-auto mb-4'}`}
+                // Sized from the measured viewport before any pixels are drawn,
+                // so the scrollbar is correct and jumps land precisely.
+                style={{ width: size?.w ?? 'min(100%, 620px)', height: size?.h, flex: '0 0 auto' }}
               >
                 <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="block rounded-sm" />
 
@@ -772,7 +897,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
                 <div
                   ref={(el) => { textLayerRefs.current[n - 1] = el; }}
-                  className="pdf-text-layer"
+                  className={`pdf-text-layer ${highlightAllMatches ? '' : 'find-active-only'}`}
                   style={{ position: 'absolute', left: 0, top: 0, zIndex: 2, pointerEvents: tool === 'hand' ? 'none' : 'auto' }}
                 />
 
@@ -783,7 +908,6 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         </div>
       </div>
 
-      {/* ---------------- document properties ---------------- */}
       {showProperties && (
         <div className="fixed inset-0 bg-black/50 z-[300] flex items-center justify-center p-4" onClick={() => setShowProperties(false)}>
           <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-xl w-full max-w-md shadow-2xl overflow-hidden">
@@ -827,6 +951,67 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   );
 };
 
+/** Search results list, grouped by page. */
+const SearchResultsPanel: React.FC<{
+  hits: SearchHit[];
+  activeHit: number;
+  query: string;
+  textReady: boolean;
+  onSelect: (index: number) => void;
+  onFocusInput: () => void;
+}> = ({ hits, activeHit, query, textReady, onSelect, onFocusInput }) => {
+  const activeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [activeHit]);
+
+  if (!query.trim()) {
+    return (
+      <div className="text-center py-6 px-2">
+        <Search className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+        <p className="text-xs text-slate-400 mb-3">Search the document to see every match here.</p>
+        <button onClick={onFocusInput} className="text-[11px] font-black uppercase tracking-widest text-[#2D6A4F] hover:underline">Open find bar</button>
+      </div>
+    );
+  }
+  if (!textReady) return <p className="text-xs text-slate-400 text-center py-6 px-2">Reading document…</p>;
+  if (!hits.length) return <p className="text-xs text-slate-400 text-center py-6 px-2">No matches for “{query}”.</p>;
+
+  const groups = hits.reduce<Record<number, { hit: SearchHit; index: number }[]>>((acc, hit, index) => {
+    (acc[hit.page] ??= []).push({ hit, index });
+    return acc;
+  }, {});
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 px-1">
+        {hits.length} match{hits.length === 1 ? '' : 'es'} on {Object.keys(groups).length} page{Object.keys(groups).length === 1 ? '' : 's'}
+      </p>
+      {Object.entries(groups).map(([page, entries]) => (
+        <div key={page}>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 bg-slate-200/70 px-2 py-1 rounded-md sticky top-0">
+            Page {page} · {entries.length}
+          </p>
+          {entries.map(({ hit, index }) => (
+            <button
+              key={index}
+              ref={index === activeHit ? activeRef : undefined}
+              onClick={() => onSelect(index)}
+              className={`w-full text-left px-2 py-2 text-[11px] leading-snug rounded-md mt-1 transition-colors ${
+                index === activeHit ? 'bg-[#2D6A4F] text-white' : 'text-slate-600 hover:bg-slate-200/70'
+              }`}
+            >
+              <span className="opacity-70">…{hit.before}</span>
+              <span className={`font-black ${index === activeHit ? 'text-[#FFB703]' : 'bg-[#FFB703]/40 rounded px-0.5'}`}>{hit.match}</span>
+              <span className="opacity-70">{hit.after}…</span>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 /** Lazily-rendered sidebar thumbnail. */
 const Thumbnail: React.FC<{ doc: pdfjs.PDFDocumentProxy | null; pageNumber: number }> = ({ doc, pageNumber }) => {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -850,7 +1035,7 @@ const Thumbnail: React.FC<{ doc: pdfjs.PDFDocumentProxy | null; pageNumber: numb
         await page.render({ canvasContext: ctx, viewport }).promise;
         if (!cancelled) setDone(true);
       } catch { /* thumbnail failures are cosmetic */ }
-    }, { rootMargin: '200px' });
+    }, { rootMargin: '300px' });
 
     io.observe(el);
     return () => { cancelled = true; io.disconnect(); };

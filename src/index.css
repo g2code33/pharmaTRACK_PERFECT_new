@@ -116,11 +116,21 @@ html.dark input, html.dark select, html.dark textarea { background-color: #1E293
 /* Search matches. Painted onto the real text spans so they line up with the
    glyphs at any zoom, rather than being re-derived from geometry. */
 .pdf-text-layer mark[data-find] {
-  background: rgba(255, 183, 3, 0.55);
+  background: rgba(255, 183, 3, 0.5);
   color: transparent;
   border-radius: 2px;
   padding: 0;
-  box-shadow: 0 0 0 1px rgba(255, 143, 0, 0.55);
+}
+
+/* The match the user is currently stepping through. */
+.pdf-text-layer mark[data-find][data-active] {
+  background: rgba(255, 122, 0, 0.75);
+  box-shadow: 0 0 0 2px rgba(255, 87, 34, 0.9);
+}
+
+/* "Highlight all" off: keep only the active match visible. */
+.pdf-text-layer.find-active-only mark[data-find]:not([data-active]) {
+  background: transparent;
 }
 
 /* pdf.js emits this for the end-of-content marker. */
