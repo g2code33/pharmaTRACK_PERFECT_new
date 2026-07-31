@@ -25,6 +25,7 @@ import {
   Eye,
   EyeOff,
   LogOut,
+  Cloud,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
@@ -534,11 +535,16 @@ const Settings: React.FC = () => {
                   <LogOut className="w-5 h-5 text-slate-500" />
                   Cloud Account
                 </h3>
-                <p className="text-sm text-slate-500 mt-1">
-                  {state.isLoggedIn
-                    ? 'Signing out keeps your courses, slides and notes on this device.'
-                    : 'An account is optional — PharmaTRACK works fully offline. Sign in only if you want a cloud backup you can restore elsewhere.'}
-                </p>
+                {state.isLoggedIn ? (
+                  <p className="text-sm text-slate-500 mt-1">
+                    Signing out keeps your courses, slides and notes on this device.
+                  </p>
+                ) : (
+                  <p className="text-sm font-semibold text-red-700 mt-1">
+                    No cloud backup — your work exists only on this device. If it is lost or
+                    damaged, the data goes with it. The app works fully offline either way.
+                  </p>
+                )}
               </div>
               {state.isLoggedIn ? (
                 <button
@@ -552,8 +558,9 @@ const Settings: React.FC = () => {
               ) : (
                 <button
                   onClick={() => navigate('/login')}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] font-bold"
+                  className="flex items-center gap-2 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 font-bold shadow-sm"
                 >
+                  <Cloud className="w-4 h-4" />
                   Sign in to sync
                 </button>
               )}

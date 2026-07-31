@@ -153,9 +153,9 @@ const Layout: React.FC = () => {
               {state.isLoggedIn ? (
                 <button onClick={handleLogout} title="End Session" className={`text-gray-400 hover:text-red-400 p-2.5 rounded-xl hover:bg-red-500/10 transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest text-white/50'}`}><LogOut className="w-5 h-5" />{!sidebarCollapsed && <span>End Session</span>}</button>
               ) : (
-                // Signed out is a perfectly normal state here — the app works
-                // fully offline. Offer sync without nagging.
-                <Link to="/login" title="Sign in to sync" className={`text-gray-400 hover:text-[#4ADE80] p-2.5 rounded-xl hover:bg-[#4ADE80]/10 transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest text-white/50'}`}><Cloud className="w-5 h-5" />{!sidebarCollapsed && <span>Sign in to sync</span>}</Link>
+                // Red: signed out means the user's work exists in exactly one
+                // place, with no backup. Worth flagging, not whispering.
+                <Link to="/login" title="Not backed up — sign in to sync" className={`text-red-300 hover:text-white bg-red-600/20 hover:bg-red-600/40 border border-red-500/40 p-2.5 rounded-xl transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest'}`}><Cloud className="w-5 h-5" />{!sidebarCollapsed && <span>Sign in to sync</span>}</Link>
               )}
               <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:flex p-2.5 bg-white/5 text-gray-400 hover:text-[#FFB703] hover:bg-white/10 rounded-xl transition-all">{sidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}</button>
             </div>

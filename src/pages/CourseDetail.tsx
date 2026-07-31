@@ -5,7 +5,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
-import { saveFile, loadFile, deleteFile } from '../utils/storage';
+import { saveFile, loadFile, deleteFile, loadSlideText, deleteSlideText } from '../utils/storage';
 import {
   ArrowLeft,
   Plus,
@@ -43,6 +43,20 @@ const CourseDetail: React.FC = () => {
   const [selectedTopicId, setSelectedTopicId] = useState<string>('');
   const [viewingSlide, setViewingSlide] = useState<Slide | null>(null);
   const [viewingFileData, setViewingFileData] = useState<string | null>(null);
+  // Long slide text is offloaded to IndexedDB (see utils/storage), so the copy
+  // held in state may be truncated. Fetch the full version when a slide opens.
+  const [viewingFullText, setViewingFullText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setViewingFullText(null);
+    if (viewingSlide) {
+      loadSlideText(viewingSlide.id).then((text) => {
+        if (!cancelled && text) setViewingFullText(text);
+      });
+    }
+    return () => { cancelled = true; };
+  }, [viewingSlide?.id]);
 
   // Effect to load file data when viewingSlide changes
   useEffect(() => {
@@ -136,6 +150,7 @@ const CourseDetail: React.FC = () => {
       for (const slide of slides) {
         if (slide.fileUrl) {
           await deleteFile(slide.id);
+          await deleteSlideText(slide.id);
         }
       }
       dispatch({ type: 'DELETE_TOPIC', payload: topicId });
@@ -243,6 +258,7 @@ const CourseDetail: React.FC = () => {
   const handleDeleteSlide = async (slideId: string) => {
     if (window.confirm('Delete this slide?')) {
       await deleteFile(slideId);
+      await deleteSlideText(slideId);
       dispatch({ type: 'DELETE_SLIDE', payload: slideId });
     }
   };
@@ -749,7 +765,9 @@ const CourseDetail: React.FC = () => {
               {viewingSlide.contentText && (
                 <div className={viewingSlide.fileUrl ? 'mt-6 pt-6 border-t' : ''}>
                   <h3 className="font-semibold text-gray-800 mb-2">Notes</h3>
-                  <p className="text-gray-600 whitespace-pre-wrap">{viewingSlide.contentText}</p>
+                  <p className="text-gray-600 whitespace-pre-wrap">
+                    {viewingFullText ?? viewingSlide.contentText}
+                  </p>
                 </div>
               )}
             </div>

@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
-import { saveFile, loadFile, deleteFile } from '../utils/storage';
+import { saveFile, loadFile, deleteFile, deleteSlideText } from '../utils/storage';
 import { processAnyFile } from '../utils/universalProcessor';
 import {
   Upload,
@@ -118,6 +118,7 @@ const StudyMaterials: React.FC = () => {
       for (const slide of slides) {
         if (slide.fileUrl) {
           await deleteFile(slide.id);
+          await deleteSlideText(slide.id);
         }
       }
       dispatch({ type: 'DELETE_TOPIC', payload: topicId });
@@ -254,6 +255,7 @@ const StudyMaterials: React.FC = () => {
   const handleDeleteSlide = async (slideId: string) => {
     if (window.confirm('Delete this slide?')) {
       await deleteFile(slideId);
+      await deleteSlideText(slideId);
       dispatch({ type: 'DELETE_SLIDE', payload: slideId });
     }
   };

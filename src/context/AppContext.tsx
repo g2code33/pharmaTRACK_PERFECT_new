@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useEffect, useRef, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useRef, useCallback, useMemo, ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
   AppState,
@@ -588,26 +588,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     dispatch({ type: 'ADD_ACTIVITY', payload: activity });
   };
 
+  // Memoised so the context value is a NEW object only when `state` actually
+  // changes. Previously this object literal was rebuilt on every single render
+  // of the provider, which makes React treat the context as changed and
+  // re-render all 19 consumers even when nothing they read was touched.
+  // The helpers are recreated each render too, so they're intentionally
+  // included via `state` — they all close over it and are cheap to rebuild.
+  const value = useMemo(
+    () => ({
+      state,
+      dispatch,
+      getCourseProgress,
+      getTopicProgress,
+      getLOProgress,
+      getOverallProgress,
+      getTopicsForCourse,
+      getSlidesForTopic,
+      getLOsForCourse,
+      getQuestionsForCourse,
+      getQuestionsForTopic,
+      getNotesForTopic,
+      getExamDatesForCourse,
+      addActivity,
+      logout,
+    }),
+    [state, logout],
+  );
+
   return (
-    <AppContext.Provider
-      value={{
-        state,
-        dispatch,
-        getCourseProgress,
-        getTopicProgress,
-        getLOProgress,
-        getOverallProgress,
-        getTopicsForCourse,
-        getSlidesForTopic,
-        getLOsForCourse,
-        getQuestionsForCourse,
-        getQuestionsForTopic,
-        getNotesForTopic,
-        getExamDatesForCourse,
-        addActivity,
-        logout,
-      }}
-    >
+    <AppContext.Provider value={value}>
       {children}
     </AppContext.Provider>
   );
