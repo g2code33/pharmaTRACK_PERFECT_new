@@ -26,13 +26,13 @@ const QuestionBank = () => {
 
   const toggleCourse = (id: string) => {
     const next = new Set(expandedCourses);
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id); else next.add(id);
     setExpandedCourses(next);
   };
 
   const toggleTopic = (id: string) => {
     const next = new Set(expandedTopics);
-    next.has(id) ? next.delete(id) : next.add(id);
+    if (next.has(id)) next.delete(id); else next.add(id);
     setExpandedTopics(next);
   };
 

@@ -34,7 +34,7 @@ const Notes: React.FC = () => {
 
   const toggleNote = (id: string) => {
     const newExpanded = new Set(expandedNotes);
-    newExpanded.has(id) ? newExpanded.delete(id) : newExpanded.add(id);
+    if (newExpanded.has(id)) newExpanded.delete(id); else newExpanded.add(id);
     setExpandedNotes(newExpanded);
   };
 

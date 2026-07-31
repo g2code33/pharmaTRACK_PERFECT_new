@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { searchAll, type SearchResult } from '../utils/search';
+import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
@@ -347,7 +348,14 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 relative"><Outlet /></main>
+          <main className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 relative">
+            {/* Scoped to the page area so a crashing route leaves the sidebar,
+                search and navigation usable. resetKey clears the error when the
+                user navigates away. */}
+            <ErrorBoundary resetKey={location.pathname}>
+              <Outlet />
+            </ErrorBoundary>
+          </main>
         </div>
       </div>
     </div>

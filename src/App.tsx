@@ -19,6 +19,7 @@ import SlideReader from './pages/SlideReader';
 import Timetable from './pages/Timetable';
 import Profile from './pages/Profile';
 import Onboarding from './pages/Onboarding';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const App = () => {
   const { state } = useApp();
@@ -30,6 +31,9 @@ const App = () => {
   const needsOnboarding = state.student === null;
 
   return (
+    // Outer boundary catches anything outside the Layout (Login, Onboarding)
+    // and any crash in the router itself.
+    <ErrorBoundary>
     <HashRouter>
       <Routes>
         {needsOnboarding ? (
@@ -61,6 +65,7 @@ const App = () => {
         )}
       </Routes>
     </HashRouter>
+    </ErrorBoundary>
   );
 };
 

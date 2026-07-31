@@ -114,7 +114,7 @@ export const wordToCleanHTML = async (file: File): Promise<string> => {
   const result = await parseWordDocument(file);
   
   // Clean up the HTML for better display
-  let html = result.html
+  const html = result.html
     .replace(/<p>\s*<\/p>/g, '') // Remove empty paragraphs
     .replace(/<br\s*\/?>/g, '<br />') // Normalize line breaks
     .replace(/<div/g, '<p') // Convert divs to paragraphs

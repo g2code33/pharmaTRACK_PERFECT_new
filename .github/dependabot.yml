@@ -1,0 +1,53 @@
+# Automated dependency updates.
+#
+# This app ships a Supabase anon key and renders untrusted PDFs, so pdf.js,
+# Supabase and the Tauri crates are the ones that matter most for security.
+# Updates are grouped so a normal week produces two reviewable PRs rather than
+# fifteen, and majors are separated because they need real testing.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'deps'
+      prefix-development: 'deps-dev'
+    groups:
+      # Patch/minor bumps are usually safe to merge once CI is green.
+      safe-updates:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+      # Majors get their own PR - React 19 or Tauri 3 will need manual work.
+      major-updates:
+        patterns: ['*']
+        update-types: ['major']
+    ignore:
+      # pdfjs-dist 4.x switched to ESM-only and changed the text-layer API the
+      # viewer depends on (renderTextLayer + --scale-factor). Pin to 3.x until
+      # that migration is done deliberately.
+      - dependency-name: pdfjs-dist
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'deps(rust)'
+    groups:
+      safe-updates:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: 'ci'
