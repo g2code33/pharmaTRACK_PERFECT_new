@@ -2,6 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { v4 as uuidv4 } from 'uuid';
 import { ExamDate } from '../types';
@@ -23,6 +24,7 @@ import {
   Key,
   Eye,
   EyeOff,
+  LogOut,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
@@ -30,7 +32,23 @@ import { supabase } from '../utils/supabase';
 import { clear } from 'idb-keyval';
 
 const Settings: React.FC = () => {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, logout } = useApp();
+  const navigate = useNavigate();
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  // Signs out via the shared logout() so the Supabase session is actually
+  // cleared. Locally cached study data is intentionally kept — use
+  // "Clear ALL Data" below to wipe content.
+  const handleSignOut = async () => {
+    if (!window.confirm('Sign out of PharmaTRACK?\n\nYour courses, slides and notes stay saved on this device.')) return;
+    setIsSigningOut(true);
+    try {
+      await logout();
+      navigate('/', { replace: true });
+    } finally {
+      setIsSigningOut(false);
+    }
+  };
   const [showExamModal, setShowExamModal] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamDate | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -507,7 +525,29 @@ const Settings: React.FC = () => {
             </label>
           </div>
 
+          {/* Account / Session */}
           <div className="pt-4 border-t border-gray-200">
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                  <LogOut className="w-5 h-5 text-slate-500" />
+                  Account Session
+                </h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  {state.student?.name ? `Signed in as ${state.student.name}. ` : ''}
+                  Signing out keeps your courses, slides and notes on this device.
+                </p>
+              </div>
+              <button
+                onClick={handleSignOut}
+                disabled={isSigningOut}
+                className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 text-white rounded-lg hover:bg-slate-900 font-bold disabled:opacity-50"
+              >
+                <LogOut className="w-4 h-4" />
+                {isSigningOut ? 'Signing out…' : 'Sign Out'}
+              </button>
+            </div>
+
             {/* Emergency Fix Section */}
             <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 mb-4">
               <h3 className="font-bold text-red-800 mb-2 flex items-center gap-2">

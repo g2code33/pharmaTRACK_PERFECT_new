@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "version:set": "node scripts/set-version.mjs",
+    "version:check": "node scripts/set-version.mjs check",
     "tauri": "tauri",
     "tauri:dev": "env -u LD_LIBRARY_PATH WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 tauri dev",
     "tauri:build": "env -u LD_LIBRARY_PATH tauri build"

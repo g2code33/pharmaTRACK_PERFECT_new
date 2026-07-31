@@ -43,6 +43,7 @@ const App = () => {
             <Route path="/notes" element={<Notes />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/profile" element={<Profile />} />
             <Route path="/timetable" element={<Timetable />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Route>
