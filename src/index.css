@@ -81,3 +81,47 @@ html.dark .text-gray-500, html.dark .text-gray-600 { color: #94a3b8 !important; 
 html.dark .border-gray-100, html.dark .border-gray-200, html.dark .border-slate-100, html.dark .border-slate-200 { border-color: #334155 !important; }
 html.dark header, html.dark aside { background-color: #0B1120 !important; border-color: #1E293B !important; }
 html.dark input, html.dark select, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
+
+/* ---------------------------------------------------------------------------
+   pdf.js text layer
+   Transparent, absolutely-positioned spans sitting exactly over the rendered
+   canvas. This is what makes a canvas-rendered PDF selectable, copyable and
+   highlightable; without it the page is just pixels.
+   --------------------------------------------------------------------------- */
+.pdf-text-layer {
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: transparent;
+}
+
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+/* Keep the selection visible even though the glyphs themselves are invisible. */
+.pdf-text-layer ::selection {
+  background: rgba(45, 106, 79, 0.35);
+}
+
+/* pdf.js emits this for the end-of-content marker. */
+.pdf-text-layer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  user-select: none;
+}
+.pdf-text-layer .endOfContent.active {
+  top: 0;
+}

@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { renderPptx, type PptxDocument } from '../utils/pptxRenderer';
+import SelectionPopup from './SelectionPopup';
+import type { HighlightColor } from '../types';
 import {
   ChevronUp, ChevronDown, Search, X, Loader2, AlertTriangle, Download,
   StickyNote, LayoutGrid, Rows,
@@ -18,9 +20,13 @@ interface PptxViewerProps {
   fileUrl: string;
   title?: string;
   onTextExtracted?: (pages: { page: number; text: string }[]) => void;
+  /** Slide text is ordinary DOM text, so selection works without a text layer. */
+  onCreateHighlight?: (h: { page: number; text: string; color: HighlightColor }) => void;
+  onAskAi?: (text: string) => void;
 }
 
-const PptxViewer: React.FC<PptxViewerProps> = ({ fileUrl, title, onTextExtracted }) => {
+const PptxViewer: React.FC<PptxViewerProps> = ({ fileUrl, title, onTextExtracted, onCreateHighlight, onAskAi }) => {
+  const [selection, setSelection] = useState<{ anchor: { x: number; y: number }; text: string; page: number } | null>(null);
   const [docData, setDocData] = useState<PptxDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -95,6 +101,39 @@ const PptxViewer: React.FC<PptxViewerProps> = ({ fileUrl, title, onTextExtracted
     slideRefs.current.forEach((el) => el && obs.observe(el));
     return () => obs.disconnect();
   }, [docData, layout]);
+
+  // Capture selections so the same highlight toolbar works here as in the PDF.
+  useEffect(() => {
+    const onUp = () => setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) { setSelection(null); return; }
+      const text = sel.toString().trim();
+      if (!text) { setSelection(null); return; }
+
+      let node: Node | null = sel.getRangeAt(0).startContainer;
+      let slideEl: HTMLElement | null = null;
+      while (node) {
+        if (node instanceof HTMLElement && node.dataset.slide) { slideEl = node; break; }
+        node = node.parentNode;
+      }
+      if (!slideEl) { setSelection(null); return; }
+
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      setSelection({
+        anchor: { x: rect.left + rect.width / 2, y: rect.top },
+        text,
+        page: Number(slideEl.dataset.slide),
+      });
+    }, 10);
+
+    const onDown = (e: MouseEvent) => {
+      if ((e.target as HTMLElement)?.closest?.('[data-selection-popup]')) return;
+      setSelection(null);
+    };
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousedown', onDown);
+    return () => { document.removeEventListener('mouseup', onUp); document.removeEventListener('mousedown', onDown); };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -206,6 +245,20 @@ const PptxViewer: React.FC<PptxViewerProps> = ({ fileUrl, title, onTextExtracted
             </div>
           );
         })}
+      </div>
+
+      <div data-selection-popup>
+        <SelectionPopup
+          anchor={selection?.anchor ?? null}
+          onHighlight={(color) => {
+            if (selection) onCreateHighlight?.({ page: selection.page, text: selection.text, color });
+            window.getSelection()?.removeAllRanges();
+            setSelection(null);
+          }}
+          onCopy={() => { if (selection) navigator.clipboard?.writeText(selection.text); }}
+          onAskAi={onAskAi && selection ? () => { onAskAi(selection.text); setSelection(null); } : undefined}
+          onDismiss={() => { window.getSelection()?.removeAllRanges(); setSelection(null); }}
+        />
       </div>
     </div>
   );

@@ -511,9 +511,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      if (state.student !== null || state.courses.length > 0) {
-        saveState(state);
-      }
+      // Guard only against the very first render, before LOAD_STATE has run —
+      // writing then would clobber saved data with an empty state.
+      //
+      // This used to require `student !== null || courses.length > 0`, which
+      // silently dropped everything else: a user with highlights, notes or
+      // timetable entries but no course yet had their work discarded on
+      // reload. Save whenever there is anything worth saving.
+      const hasContent =
+        state.student !== null ||
+        state.courses.length > 0 ||
+        state.topics.length > 0 ||
+        state.slides.length > 0 ||
+        state.notes.length > 0 ||
+        state.highlights.length > 0 ||
+        state.savedInsights.length > 0 ||
+        state.examQuestions.length > 0 ||
+        state.quizHistory.length > 0 ||
+        state.studyPlans.length > 0 ||
+        state.examDates.length > 0 ||
+        state.learningObjectives.length > 0 ||
+        state.activities.length > 0 ||
+        state.timetablePdf !== null ||
+        state.timetables.class.length > 0 ||
+        state.timetables.quiz.length > 0 ||
+        state.timetables.exam.length > 0;
+
+      if (hasContent) saveState(state);
     }, 1000); // Debounce saves by 1 second to prevent UI freezing
     return () => clearTimeout(timeoutId);
   }, [state]);

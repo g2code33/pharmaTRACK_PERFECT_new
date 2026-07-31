@@ -269,6 +269,40 @@ const SlideReader: React.FC = () => {
   const materialList = topicId ? getSlidesForTopic(topicId) : [];
   const currentMaterial = materialList[currentSlideIndex];
 
+  // Study Bank links in as /read/:topicId?slide=N&page=M
+  const deepLinkPage = parseInt(searchParams.get('page') || '0', 10) || undefined;
+
+  /** Highlights belonging to the material currently open. */
+  const materialHighlights = React.useMemo(
+    () => state.highlights.filter((h) => h.materialId === currentMaterial?.id),
+    [state.highlights, currentMaterial?.id],
+  );
+
+  const handleCreateHighlight = (h: { page: number; text: string; color: string; rects: any[] }) => {
+    if (!topicId || !currentMaterial) return;
+    dispatch({
+      type: 'ADD_HIGHLIGHT',
+      payload: {
+        topicId,
+        slideIndex: currentSlideIndex,
+        materialId: currentMaterial.id,
+        page: h.page,
+        text: h.text,
+        color: h.color,
+        rects: h.rects,
+      },
+    });
+  };
+
+  /** Puts the selected passage into the AI panel with context. */
+  const handleAskAiAboutSelection = (text: string) => {
+    setShowAIPanel(true);
+    setShowBrowserPanel(false);
+    setActivePanel('ai');
+    const trimmed = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
+    setChatInput(`Explain this from my notes:\n\n"${trimmed}"`);
+  };
+
   const chatMessages = state.chatHistory
     .filter((m) => m.topicId === topicId)
     .map((m) => ({
@@ -410,12 +444,29 @@ const SlideReader: React.FC = () => {
     // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
     // iframe) and exposed no page count, search or navigation.
     if (currentMaterial?.fileType === 'pdf') {
-      return <PdfViewer fileUrl={fileUrl} title={currentMaterial.title} />;
+      return (
+        <PdfViewer
+          fileUrl={fileUrl}
+          title={currentMaterial.title}
+          highlights={materialHighlights}
+          onCreateHighlight={handleCreateHighlight}
+          onDeleteHighlight={(id) => dispatch({ type: 'DELETE_HIGHLIGHT', payload: id })}
+          onAskAi={handleAskAiAboutSelection}
+          jumpToPage={deepLinkPage}
+        />
+      );
     }
 
     const nameHint = (currentMaterial?.title || '').toLowerCase();
     if (currentMaterial?.fileType === 'text' && /\.pptx?$/.test(nameHint)) {
-      return <PptxViewer fileUrl={fileUrl} title={currentMaterial.title} />;
+      return (
+        <PptxViewer
+          fileUrl={fileUrl}
+          title={currentMaterial.title}
+          onCreateHighlight={(h) => handleCreateHighlight({ ...h, rects: [] })}
+          onAskAi={handleAskAiAboutSelection}
+        />
+      );
     }
 
     if (currentMaterial?.fileType === 'text') {

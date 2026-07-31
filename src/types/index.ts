@@ -135,13 +135,36 @@ export interface ChatMessageStore {
   timestamp: string;
 }
 
+export type HighlightColor = 'yellow' | 'green' | 'blue' | 'pink';
+
+/**
+ * A rectangle on a page, stored as fractions (0-1) of page width/height rather
+ * than pixels. Zoom, rotation and window size all change the pixel geometry,
+ * so absolute coordinates would drift; fractions stay correct at any scale.
+ */
+export interface HighlightRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface Highlight {
   id: string;
   topicId: string;
+  /** Index of the material within the topic. */
   slideIndex: number;
   text: string;
   color: string;
   timestamp: string;
+  /** Material (Slide) this belongs to; lets us jump straight back to it. */
+  materialId?: string;
+  /** 1-based page within that material. */
+  page?: number;
+  /** Geometry for re-drawing the highlight over the page. */
+  rects?: HighlightRect[];
+  /** Optional user annotation attached to the highlight. */
+  note?: string;
 }
 
 export interface SavedInsight {
