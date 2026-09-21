@@ -27,12 +27,21 @@ import type {
   SemesterSnapshot,
   SemesterArchiveCounts,
   BackupManifest,
-  BackupManifestFile,
   StagedBackup,
   Student,
 } from '../types';
 import { initialState, saveState } from './storage';
 import { getSearchIndexRaw, setSearchIndexRaw, clearSearchIndex, type IndexShape } from './searchIndex';
+import type {
+  PharmaTrackBackupManifest,
+  BackupSummary,
+  StagedDegreeBackup,
+  ImportDiagnostic,
+} from '../types';
+import pkg from '../../package.json';
+
+/** App version embedded in every backup manifest (cross-device provenance). */
+export const APP_VERSION: string = String((pkg as { version?: string }).version || '0.0.0');
 
 // ---------------------------------------------------------------------------
 // Key layout
@@ -82,6 +91,8 @@ export interface ArchiveProgress {
   current?: number;
   total?: number;
   copiedBytes?: number;
+  /** 0..100 — set while packaging a backup (JSZip compress). */
+  percent?: number;
   message?: string;
 }
 type ProgressFn = (p: ArchiveProgress) => void;
@@ -598,163 +609,395 @@ export const completeSemester = async (
 };
 
 // ---------------------------------------------------------------------------
-// Portable backup export (ZIP)
+// Portable backup — the `pharmatrack-semester-backup` format (v1)
 //
-//   PharmaTRACK_Backup/
-//     manifest.json       version + integrity checksum + file list
-//     semester.json       identity & academic position at completion
-//     courses.json topics.json slides.json objectives.json notes.json
-//     questions.json quizzes.json studyPlans.json examDates.json
-//     activities.json chatHistory.json highlights.json insights.json
-//     timetable.json      class/quiz/exam entries + timetable PDF
-//     searchIndex.json    full per-page text index (when present)
-//     files/<fileId>      uploaded binaries, verbatim
-//     slideText/<slideId>.txt
+//   PharmaTRACK_Level-200_Semester-2_2025-2026.pharmatrack   (ZIP inside)
+//     manifest.json              versioned manifest + integrity checksum
+//     semester/
+//       student.json  courses.json  topics.json  slides.json
+//       learning-objectives.json  exam-questions.json  quiz-history.json
+//       study-plans.json  notes.json  exam-dates.json  activities.json
+//       chat-history.json  highlights.json  saved-insights.json
+//       timetable.json  search-index.json (when present)
+//     materials/<fileId>.json    material metadata (which slide owns the file)
+//     files/<fileId>.<ext>       the ACTUAL uploaded binaries (PDF/PPTX/…)
+//     text/<slideId>.txt         offloaded slide / OCR text (verbatim)
+//     metadata/checksums.json    per-entry size + content hash (FNV-1a 32)
+//
+// Degree bundle:
+//   PharmaTRACK_Full-Academic-Record_<date>.pharmatrack
+//     manifest.json (format: pharmatrack-degree-backup)
+//     semesters/*.pharmatrack    one full semester package per archive
+//
+// Everything needed to reconstruct a semester ships inside the package —
+// application state AND IndexedDB data. Nothing is keyed to a device path,
+// browser profile or machine, and nothing is uploaded anywhere.
 // ---------------------------------------------------------------------------
 
+export const BACKUP_FORMAT = 'pharmatrack-semester-backup';
+export const DEGREE_BACKUP_FORMAT = 'pharmatrack-degree-backup';
+/** Format versions this build can read. Future versions fail safe. */
 export const SUPPORTED_BACKUP_VERSIONS: number[] = [1];
-const BACKUP_APP = 'pharmatrack';
-const BACKUP_FORMAT = 'semester-backup';
 
-const canonicalForBackup = (counts: { itemCount: number; fileCount: number; totalBytes: number }, files: BackupManifestFile[]): string =>
-  JSON.stringify({
-    counts,
-    files: files.map((f) => [f.name, f.size, f.type]).sort(),
+/**
+ * Migration handlers for older format versions. Today only v1 exists; when
+ * v2 ships, add e.g. `1: migrateBackupV1ToV2` so old backups still import.
+ */
+const SEMESTER_FORMAT_MIGRATORS: Record<number, (m: PharmaTrackBackupManifest) => PharmaTrackBackupManifest> = {
+  1: (m) => m,
+};
+
+/** Legacy export format (kept importable for backups made before v1). */
+const LEGACY_BACKUP_FORMAT = 'semester-backup';
+const LEGACY_APP = 'pharmatrack';
+
+/** FNV-1a 32-bit over raw bytes — used for per-entry content hashes. */
+const fnv1aBytes = (seed: number, bytes: Uint8Array): string => {
+  let h = seed;
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+};
+
+/** jsdom's Blob lacks arrayBuffer(); FileReader works everywhere. */
+const readBlobBytes = (blob: Blob): Promise<Uint8Array> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsArrayBuffer(blob);
   });
+
+/** Maps a MIME type (or slide.fileType) to a file extension. */
+export const extForMime = (mime: string, fallbackType?: string): string => {
+  const m = (mime || '').toLowerCase();
+  if (m.includes('pdf')) return 'pdf';
+  if (m.includes('presentationml')) return 'pptx';
+  if (m.includes('wordprocessingml')) return 'docx';
+  if (m.includes('png')) return 'png';
+  if (m.includes('jpeg')) return 'jpg';
+  if (m.includes('gif')) return 'gif';
+  if (m.includes('webp')) return 'webp';
+  if (m.startsWith('image/')) return 'img';
+  const f = (fallbackType || '').toLowerCase();
+  return ['pdf', 'pptx', 'docx', 'png', 'jpg', 'jpeg', 'gif', 'webp'].includes(f) ? f : 'bin';
+};
+
+/** "2025/2026" → "2025-2026"; anything unsafe becomes a dash-run. */
+const fileNameSafe = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+/**
+ * PharmaTRACK-specific backup filename, e.g.
+ * PharmaTRACK_Level-200_Semester-2_2025-2026.pharmatrack
+ * Pass `suffix` (e.g. today's date) to disambiguate repeated exports.
+ */
+export const semesterBackupFileName = (level: string, semester: string, academicYear?: string, suffix?: string): string => {
+  const L = parseLevel(level);
+  const S = parseSemester(semester);
+  const year = academicYear ? `_${fileNameSafe(academicYear)}` : '';
+  const extra = suffix ? `_${suffix}` : '';
+  return `PharmaTRACK_Level-${L || '000'}_Semester-${S || 1}${year}${extra}.pharmatrack`;
+};
+
+export const degreeBackupFileName = (date: Date = new Date()): string =>
+  `PharmaTRACK_Full-Academic-Record_${date.toISOString().slice(0, 10)}.pharmatrack`;
+
+interface PackedFile {
+  /** Stable app id: fileId for binaries, slideId for offloaded text. */
+  key: string;
+  kind: 'file' | 'slidetext';
+  value: Blob | string;
+  type: string;
+  /** For kind 'file': the slide that owns this binary. */
+  slide?: { id: string; title: string; fileType?: string };
+}
 
 /** Collects snapshot + binary refs from either an archive or the live state. */
 const collectBackupSource = async (
   source: { kind: 'archive'; archiveId: string } | { kind: 'live'; state: AppState },
 ): Promise<{
-  meta: Pick<SemesterArchiveMeta, 'id' | 'level' | 'semester' | 'title' | 'academicYear' | 'completedAt' | 'counts'>;
+  meta: { archiveId?: string; level: string; semester: string; title: string; academicYear?: string; completedAt?: string; source: 'archive' | 'live' };
   snapshot: SemesterSnapshot;
   index: IndexShape | null;
-  files: { key: string; zipName: string; value: Blob | string; type: string }[];
+  files: PackedFile[];
 }> => {
+  let snapshot: SemesterSnapshot;
+  let index: IndexShape | null;
+  let meta: { archiveId?: string; level: string; semester: string; title: string; academicYear?: string; completedAt?: string; source: 'archive' | 'live' };
+
   if (source.kind === 'archive') {
     const rec = await loadArchive(source.archiveId);
     if (!rec) throw new ArchiveError('Archive not found.');
-    const files: { key: string; zipName: string; value: Blob | string; type: string }[] = [];
-    for (const entry of rec.manifest) {
-      const value = await idb.get(entry.archiveKey);
-      if (value === undefined || value === null) continue;
-      files.push({
-        key: entry.sourceKey,
-        zipName: entry.kind === 'file' ? `files/${entry.archiveKey.slice(META_FILE_PREFIX.length + source.archiveId.length + 1)}` : `slideText/${entry.archiveKey.slice(META_TEXT_PREFIX.length + source.archiveId.length + 1)}.txt`,
-        value,
-        type: typeof value === 'string' ? 'text/plain' : value instanceof Blob ? value.type || 'application/octet-stream' : 'application/octet-stream',
-      });
-    }
-    return { meta: rec.meta, snapshot: rec.snapshot, index: rec.index, files };
-  }
-
-  const { state } = source;
-  const files: { key: string; zipName: string; value: Blob | string; type: string }[] = [];
-  for (const ref of collectFileRefs(state)) {
-    const value = await idb.get(ref.sourceKey);
-    if (value === undefined || value === null) continue;
-    files.push({
-      key: ref.sourceKey,
-      zipName: ref.kind === 'file' ? `files/${ref.id}` : `slideText/${ref.id}.txt`,
-      value,
-      type: typeof value === 'string' ? 'text/plain' : value instanceof Blob ? value.type || 'application/octet-stream' : 'application/octet-stream',
-    });
-  }
-  return {
-    meta: {
-      id: 'live',
-      level: String(parseLevel(state.student?.level || '')),
-      semester: String(parseSemester(state.student?.semester || '')),
+    snapshot = rec.snapshot;
+    index = rec.index;
+    meta = {
+      archiveId: rec.meta.id,
+      level: rec.meta.level,
+      semester: rec.meta.semester,
+      title: rec.meta.title,
+      academicYear: rec.meta.academicYear,
+      completedAt: rec.meta.completedAt,
+      source: 'archive',
+    };
+  } else {
+    const { state } = source;
+    snapshot = buildSnapshot(state);
+    index = await getSearchIndexRaw();
+    meta = {
+      archiveId: undefined,
+      level: String(parseLevel(state.student?.level || '') || 0),
+      semester: String(parseSemester(state.student?.semester || '') || 1),
       title: `Level ${parseLevel(state.student?.level || '')} — Semester ${parseSemester(state.student?.semester || '')} (current)`,
       academicYear: defaultAcademicYear(),
-      completedAt: undefined as unknown as string,
-      counts: collectionCounts(state),
-    },
-    snapshot: buildSnapshot(state),
-    index: await getSearchIndexRaw(),
-    files,
-  };
+      completedAt: undefined,
+      source: 'live',
+    };
+  }
+
+  const valueType = (v: unknown): string =>
+    typeof v === 'string' ? 'text/plain' : v instanceof Blob ? v.type || 'application/octet-stream' : 'application/octet-stream';
+
+  const files: PackedFile[] = [];
+  const slideForFile = (fileId: string) =>
+    snapshot.slides.find((s) => (s.fileUrl || '').replace(/^local:/, '') === fileId);
+
+  if (source.kind === 'archive') {
+    for (const entry of (await loadArchive(source.archiveId))!.manifest) {
+      const value = await idb.get(entry.archiveKey);
+      if (value === undefined || value === null) continue;
+      files.push(entry.kind === 'file'
+        ? { key: entry.archiveKey.slice(META_FILE_PREFIX.length + source.archiveId.length + 1), kind: 'file', value, type: valueType(value), slide: slideForFile(entry.sourceKey.slice('file_'.length)) }
+        : { key: entry.archiveKey.slice(META_TEXT_PREFIX.length + source.archiveId.length + 1), kind: 'slidetext', value: value as string, type: 'text/plain' });
+    }
+  } else {
+    for (const ref of collectFileRefs(snapshot as unknown as AppState)) {
+      const value = await idb.get(ref.sourceKey);
+      if (value === undefined || value === null) continue;
+      files.push(ref.kind === 'file'
+        ? { key: ref.id, kind: 'file', value, type: valueType(value), slide: slideForFile(ref.id) }
+        : { key: ref.id, kind: 'slidetext', value: value as string, type: 'text/plain' });
+    }
+  }
+  return { meta, snapshot, index, files };
+};
+
+/** Every entry that ships inside a semester package (name + value + kind). */
+interface PackageEntry {
+  name: string;
+  value: Blob | string;
+  type: string;
+}
+
+const buildPackageEntries = (
+  meta: Awaited<ReturnType<typeof collectBackupSource>>['meta'],
+  snapshot: SemesterSnapshot,
+  index: IndexShape | null,
+  files: PackedFile[],
+): PackageEntry[] => {
+  const sem = (name: string, value: unknown): PackageEntry => ({ name: `semester/${name}`, value: JSON.stringify(value, null, 2), type: 'application/json' });
+  const entries: PackageEntry[] = [
+    sem('student.json', snapshot.student),
+    sem('courses.json', snapshot.courses),
+    sem('topics.json', snapshot.topics),
+    sem('slides.json', snapshot.slides),
+    sem('learning-objectives.json', snapshot.learningObjectives),
+    sem('exam-questions.json', snapshot.examQuestions),
+    sem('quiz-history.json', snapshot.quizHistory),
+    sem('study-plans.json', snapshot.studyPlans),
+    sem('notes.json', snapshot.notes),
+    sem('exam-dates.json', snapshot.examDates),
+    sem('activities.json', snapshot.activities),
+    sem('chat-history.json', snapshot.chatHistory),
+    sem('highlights.json', snapshot.highlights),
+    sem('saved-insights.json', snapshot.savedInsights),
+    sem('timetable.json', { timetables: snapshot.timetables, timetablePdf: snapshot.timetablePdf }),
+  ];
+  if (index && Object.keys(index).length) entries.push(sem('search-index.json', index));
+
+  for (const f of files) {
+    if (f.kind === 'file') {
+      const ext = extForMime(f.type, f.slide?.fileType);
+      entries.push({
+        name: `files/${f.key}.${ext}`,
+        value: f.value,
+        type: f.type,
+      });
+      entries.push({
+        name: `materials/${f.key}.json`,
+        value: JSON.stringify({
+          fileId: f.key,
+          slideId: f.slide?.id,
+          materialTitle: f.slide?.title,
+          slideFileType: f.slide?.fileType,
+          mimeType: f.type,
+        }, null, 2),
+        type: 'application/json',
+      });
+    } else {
+      entries.push({ name: `text/${f.key}.txt`, value: f.value, type: 'text/plain' });
+    }
+  }
+  void meta;
+  return entries;
+};
+
+const entrySize = (v: Blob | string): number =>
+  typeof v === 'string' ? new TextEncoder().encode(v).length : v.size;
+
+const canonicalForBackupV1 = (
+  m: { formatVersion: number; title: string; level?: string; semester?: string; archiveId?: string },
+  totalBytes: number,
+  entries: { name: string; size: number; hash: string }[],
+): string =>
+  JSON.stringify({
+    formatVersion: m.formatVersion,
+    title: m.title,
+    level: m.level,
+    semester: m.semester,
+    archiveId: m.archiveId,
+    totalBytes,
+    entries: entries.map((e) => [e.name, e.size, e.hash]).sort(),
+  });
+
+const hashEntry = async (name: string, value: Blob | string): Promise<string> => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  const size = entrySize(value);
+  for (let i = 0; i < String(size).length; i++) { h ^= String(size).charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  if (typeof value === 'string') {
+    for (let i = 0; i < value.length; i++) { h ^= value.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  } else if (value instanceof Blob) {
+    h = parseInt(fnv1aBytes(h, await readBlobBytes(value)), 16);
+  }
+  return h.toString(16).padStart(8, '0');
 };
 
 /**
- * Builds a portable ZIP backup. Returns a Blob ready to download; nothing is
- * modified. `source` is either an archive or the live workspace (the latter
- * is the escape hatch when device storage is too full to archive).
+ * Builds a portable semester backup (format v1). Pure: reads local storage,
+ * writes nothing, returns a Blob ready to download.
  */
 export const exportBackup = async (
   source: { kind: 'archive'; archiveId: string } | { kind: 'live'; state: AppState },
   onProgress?: ProgressFn,
 ): Promise<Blob> => {
-  onProgress?.({ phase: 'snapshot', message: 'Packaging backup…' });
+  onProgress?.({ phase: 'snapshot', message: 'Preparing backup…' });
   const { meta, snapshot, index, files } = await collectBackupSource(source);
 
-  const totalBytes = files.reduce((sum, f) => sum + sizeOf(f.value), 0);
-  const manifestFiles: BackupManifestFile[] = files.map((f) => ({
-    name: f.zipName,
-    size: sizeOf(f.value),
-    type: f.type,
-  }));
-  const manifest: BackupManifest = {
-    app: BACKUP_APP,
+  onProgress?.({ phase: 'files', current: 0, total: files.length, message: 'Hashing files…' });
+  const entries = buildPackageEntries(meta, snapshot, index, files);
+
+  // Per-entry content hashes (files + text + every JSON).
+  const hashed: { name: string; size: number; hash: string }[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    hashed.push({ name: e.name, size: entrySize(e.value), hash: await hashEntry(e.name, e.value) });
+    if (i % 10 === 9 || i === entries.length - 1) {
+      onProgress?.({ phase: 'files', current: i + 1, total: entries.length, percent: Math.round(((i + 1) / entries.length) * 30), message: `Preparing backup… ${i + 1}/${entries.length}` });
+    }
+  }
+
+  const totalBytes = hashed.reduce((s, e) => s + e.size, 0);
+  const materialIds = new Set(snapshot.slides.map((s) => (s.fileUrl || '').replace(/^local:/, '')).filter(Boolean));
+  const manifest: PharmaTrackBackupManifest = {
+    app: 'pharmatrack',
     format: BACKUP_FORMAT,
-    backupVersion: 1,
-    created: new Date().toISOString(),
-    source: source.kind,
-    archiveId: source.kind === 'archive' ? source.archiveId : undefined,
-    title: meta.title,
+    formatVersion: 1,
+    appVersion: APP_VERSION,
+    archiveId: meta.archiveId,
+    academicYear: meta.academicYear,
     level: meta.level,
     semester: meta.semester,
-    academicYear: meta.academicYear,
+    title: meta.title,
+    createdAt: new Date().toISOString(),
     completedAt: meta.completedAt,
-    checksum: '',
-    itemCount: itemCountOf(snapshot as unknown as AppState),
-    fileCount: files.length,
+    source: meta.source,
+    recordCounts: {
+      courses: snapshot.courses.length,
+      topics: snapshot.topics.length,
+      slides: snapshot.slides.length,
+      notes: snapshot.notes.length,
+      questions: snapshot.examQuestions.length,
+      quizzes: snapshot.quizHistory.length,
+      studyPlans: snapshot.studyPlans.length,
+      examDates: snapshot.examDates.length,
+      activities: snapshot.activities.length,
+      materials: materialIds.size,
+      files: files.length,
+    },
     totalBytes,
-    counts: meta.counts,
-    files: manifestFiles,
+    integrity: {
+      algorithm: 'fnv1a-32',
+      checksum: '',
+    },
   };
-  manifest.checksum = checksumOf(canonicalForBackup(
-    { itemCount: manifest.itemCount, fileCount: manifest.fileCount, totalBytes: manifest.totalBytes },
-    manifestFiles,
+  manifest.integrity.checksum = checksumOf(canonicalForBackupV1(
+    { formatVersion: 1, title: manifest.title, level: manifest.level, semester: manifest.semester, archiveId: manifest.archiveId },
+    totalBytes,
+    hashed,
   ));
 
   const zip = new JSZip();
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
-  zip.file('semester.json', JSON.stringify({
-    student: snapshot.student,
-    level: meta.level,
-    semester: meta.semester,
-    academicYear: meta.academicYear,
-    title: meta.title,
-    completedAt: meta.completedAt,
+  for (const e of entries) zip.file(e.name, e.value);
+  zip.file('metadata/checksums.json', JSON.stringify({
+    algorithm: 'fnv1a-32',
+    totalBytes,
+    entries: hashed,
   }, null, 2));
-  zip.file('courses.json', JSON.stringify(snapshot.courses));
-  zip.file('topics.json', JSON.stringify(snapshot.topics));
-  zip.file('slides.json', JSON.stringify(snapshot.slides));
-  zip.file('objectives.json', JSON.stringify(snapshot.learningObjectives));
-  zip.file('notes.json', JSON.stringify(snapshot.notes));
-  zip.file('questions.json', JSON.stringify(snapshot.examQuestions));
-  zip.file('quizzes.json', JSON.stringify(snapshot.quizHistory));
-  zip.file('studyPlans.json', JSON.stringify(snapshot.studyPlans));
-  zip.file('examDates.json', JSON.stringify(snapshot.examDates));
-  zip.file('activities.json', JSON.stringify(snapshot.activities));
-  zip.file('chatHistory.json', JSON.stringify(snapshot.chatHistory));
-  zip.file('highlights.json', JSON.stringify(snapshot.highlights));
-  zip.file('insights.json', JSON.stringify(snapshot.savedInsights));
-  zip.file('timetable.json', JSON.stringify({ timetables: snapshot.timetables, timetablePdf: snapshot.timetablePdf }));
-  if (index && Object.keys(index).length) zip.file('searchIndex.json', JSON.stringify(index));
 
-  onProgress?.({ phase: 'files', current: 0, total: files.length, message: 'Writing files…' });
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i];
-    zip.file(f.zipName, f.value);
-    if (files.length > 0 && (i + 1) % 5 === 0) {
-      onProgress?.({ phase: 'files', current: i + 1, total: files.length, message: `Writing files… ${i + 1}/${files.length}` });
-    }
+  onProgress?.({ phase: 'verify', message: 'Packaging…' });
+  return zip.generateAsync({ type: 'blob' }, (m) => {
+    onProgress?.({ phase: 'verify', percent: 30 + Math.round(m.percent * 0.7), message: `Packaging… ${Math.round(m.percent)}%` });
+  });
+};
+
+/**
+ * Bundles every completed semester into one degree archive — a ZIP of
+ * individual `.pharmatrack` semester packages (each independently importable).
+ */
+export const exportDegreeBackup = async (onProgress?: ProgressFn): Promise<Blob> => {
+  const archives = await listArchives();
+  if (archives.length === 0) throw new ArchiveError('No completed semesters to export yet.');
+
+  const outer = new JSZip();
+  const semesters: { name: string; title: string; archiveId?: string; size: number }[] = [];
+  for (let i = 0; i < archives.length; i++) {
+    const meta = archives[i];
+    const name = semesterBackupFileName(meta.level, meta.semester, meta.academicYear);
+    onProgress?.({ phase: 'files', current: i, total: archives.length, message: `Packaging ${meta.title} (${i + 1}/${archives.length})…` });
+    const inner = await exportBackup({ kind: 'archive', archiveId: meta.id });
+    outer.file(`semesters/${name}`, await new Promise<ArrayBuffer>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result as ArrayBuffer);
+      r.onerror = () => reject(r.error);
+      r.readAsArrayBuffer(inner);
+    }));
+    semesters.push({ name, title: meta.title, archiveId: meta.id, size: inner.size });
+    onProgress?.({ phase: 'files', current: i + 1, total: archives.length, message: `Packaged ${meta.title} (${i + 1}/${archives.length})` });
   }
 
-  onProgress?.({ phase: 'done', message: 'Backup ready' });
-  return zip.generateAsync({ type: 'blob' });
+  const manifest: PharmaTrackBackupManifest = {
+    app: 'pharmatrack',
+    format: DEGREE_BACKUP_FORMAT,
+    formatVersion: 1,
+    appVersion: APP_VERSION,
+    title: 'Full Academic Record',
+    createdAt: new Date().toISOString(),
+    source: 'archive',
+    totalBytes: semesters.reduce((s, x) => s + x.size, 0),
+    integrity: {
+      algorithm: 'fnv1a-32',
+      checksum: checksumOf(JSON.stringify({ semesters: semesters.map((x) => [x.name, x.size]).sort() })),
+    },
+    semesters,
+  };
+  outer.file('manifest.json', JSON.stringify(manifest, null, 2));
+  onProgress?.({ phase: 'verify', message: 'Packaging…' });
+  return outer.generateAsync({ type: 'blob' }, (m) => {
+    onProgress?.({ phase: 'verify', percent: Math.round(m.percent), message: `Packaging… ${Math.round(m.percent)}%` });
+  });
 };
 
 /** Triggers a browser download of `blob` with `name`. */
@@ -769,16 +1012,30 @@ export const downloadBlob = (blob: Blob, name: string): void => {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 };
 
-export const backupFileName = (meta: { title: string; level: string; semester: string; academicYear?: string }): string => {
-  const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'semester';
-  return `PharmaTRACK_${slug(meta.title)}_${slug(meta.academicYear || meta.level + '-' + meta.semester)}.zip`;
+/** Downloads the validation log after a failed import (local only). */
+export const exportDiagnostic = (reason: string, diagnostics: ImportDiagnostic[]): void => {
+  const blob = new Blob([JSON.stringify({
+    app: 'pharmatrack',
+    appVersion: APP_VERSION,
+    event: 'import-failed',
+    reason,
+    diagnostics,
+    generatedAt: new Date().toISOString(),
+  }, null, 2)], { type: 'application/json' });
+  downloadBlob(blob, `pharmatrack-import-diagnostic_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`);
 };
 
 // ---------------------------------------------------------------------------
-// Import (stage + validate) and restore
+// Import (stage + validate) — supports the v1 format AND the legacy format
 // ---------------------------------------------------------------------------
 
-export type ParseResult = { ok: true; staged: StagedBackup } | { ok: false; reason: string };
+export type ParsedBackup =
+  | { kind: 'semester'; staged: StagedBackup }
+  | { kind: 'degree'; degree: StagedDegreeBackup };
+
+export type ParseResult =
+  | { ok: true; parsed: ParsedBackup }
+  | { ok: false; reason: string; diagnostics: ImportDiagnostic[] };
 
 const readZipJson = async (zip: JSZip, name: string): Promise<unknown> => {
   const entry = zip.file(name);
@@ -786,145 +1043,583 @@ const readZipJson = async (zip: JSZip, name: string): Promise<unknown> => {
   return JSON.parse(await entry.async('string'));
 };
 
+const REQUIRED_SEMESTER_PARTS = [
+  'semester/student.json', 'semester/courses.json', 'semester/topics.json',
+  'semester/slides.json', 'semester/learning-objectives.json',
+  'semester/exam-questions.json', 'semester/quiz-history.json',
+  'semester/study-plans.json', 'semester/notes.json', 'semester/exam-dates.json',
+  'semester/activities.json', 'semester/chat-history.json',
+  'semester/highlights.json', 'semester/saved-insights.json', 'semester/timetable.json',
+] as const;
+
+const LEGACY_SEMESTER_PARTS = [
+  'semester.json', 'courses.json', 'topics.json', 'slides.json',
+  'objectives.json', 'notes.json', 'questions.json', 'quizzes.json',
+  'studyPlans.json', 'examDates.json', 'activities.json',
+  'chatHistory.json', 'highlights.json', 'insights.json', 'timetable.json',
+] as const;
+
+const checkRelationships = (snapshot: SemesterSnapshot): string | null => {
+  const courseIds = new Set(snapshot.courses.map((c) => c.id));
+  const topicIds = new Set(snapshot.topics.map((t) => t.id));
+  const slideIds = new Set(snapshot.slides.map((s) => s.id));
+  if (snapshot.topics.some((t) => !courseIds.has(t.courseId))) return 'Topic references a missing course.';
+  if (snapshot.slides.some((s) => !topicIds.has(s.topicId))) return 'Material references a missing topic.';
+  if (snapshot.notes.some((n) => !topicIds.has(n.topicId))) return 'Note references a missing topic.';
+  if (snapshot.examQuestions.some((q) => !courseIds.has(q.courseId) || !topicIds.has(q.topicId))) {
+    return 'Question references a missing course or topic.';
+  }
+  if (snapshot.quizHistory.some((q) => !courseIds.has(q.courseId))) return 'Quiz history references a missing course.';
+  if (snapshot.studyPlans.some((p) => !courseIds.has(p.courseId))) return 'Study plan references a missing course.';
+  if (snapshot.examDates.some((d) => !courseIds.has(d.courseId))) return 'Exam date references a missing course.';
+  if (snapshot.highlights.some((h) => h.materialId && !slideIds.has(h.materialId))) {
+    return 'Highlight references a missing material.';
+  }
+  return null;
+};
+
+/** Validates the relationships inside a freshly parsed snapshot. */
+const validatedSnapshot = (snapshot: SemesterSnapshot): { ok: true } | { ok: false; reason: string } => {
+  if (!snapshot.student?.id || !snapshot.student.name) return { ok: false, reason: 'The backup has no student profile.' };
+  for (const name of ['courses', 'topics', 'slides', 'notes', 'examQuestions', 'quizHistory', 'studyPlans', 'examDates', 'activities', 'chatHistory', 'highlights', 'savedInsights', 'learningObjectives'] as const) {
+    if (!Array.isArray(snapshot[name])) return { ok: false, reason: `Corrupt backup: "${name}" is not a list.` };
+  }
+  if (snapshot.slides.some((s) => !s.id || !s.topicId)) return { ok: false, reason: 'Corrupt backup: slides reference missing ids.' };
+  const rel = checkRelationships(snapshot);
+  if (rel) return { ok: false, reason: `Corrupt backup: ${rel}` };
+  return { ok: true };
+};
+
 /**
- * Parses and fully validates a backup ZIP. Returns a STAGED backup — nothing
- * is applied until applyStagedBackup() runs, and only after the current
- * workspace has been protected by its own verified archive.
+ * Parses and fully validates a backup file. Returns a STAGED result — nothing
+ * is applied until an explicit import action runs.
+ *
+ * Validation order (each failure short-circuits with diagnostics):
+ *   ZIP readable → manifest present → format known → version supported (or
+ *   migratable) → required parts present → JSON structure → relationships →
+ *   per-entry size + content hash → manifest checksum.
  */
 export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<ParseResult> => {
+  const diagnostics: ImportDiagnostic[] = [];
+  const fail = (reason: string): ParseResult => { diagnostics.push({ check: 'result', ok: false, detail: reason }); return { ok: false, reason, diagnostics }; };
+
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
+    diagnostics.push({ check: 'zip-readable', ok: true });
   } catch {
-    return { ok: false, reason: 'This file is not a valid backup archive (could not open it as a ZIP).' };
+    return fail('This file is not a valid backup (could not open it as a ZIP package).');
   }
 
-  let manifest: BackupManifest;
+  let manifestRaw: unknown;
   try {
-    manifest = (await readZipJson(zip, 'manifest.json')) as BackupManifest;
+    manifestRaw = await readZipJson(zip, 'manifest.json');
+    diagnostics.push({ check: 'manifest-present', ok: true });
   } catch (err) {
-    return { ok: false, reason: `Invalid backup: ${(err as Error).message}` };
+    return fail(`Invalid backup: ${(err as Error).message}`);
+  }
+  const manifest = manifestRaw as (PharmaTrackBackupManifest | BackupManifest);
+  if (!manifest || manifest.app !== 'pharmatrack') {
+    return fail('Not a PharmaTRACK backup file (manifest is missing or not from PharmaTRACK).');
+  }
+  const fmt = manifest.format;
+  if (fmt !== BACKUP_FORMAT && fmt !== DEGREE_BACKUP_FORMAT && fmt !== LEGACY_BACKUP_FORMAT) {
+    return fail(`Unrecognised backup format: "${fmt}".`);
   }
 
-  if (manifest.app !== BACKUP_APP) return { ok: false, reason: 'Not a PharmaTRACK backup file.' };
-  if (manifest.format !== BACKUP_FORMAT) return { ok: false, reason: 'Unrecognised backup format.' };
-  if (!SUPPORTED_BACKUP_VERSIONS.includes(manifest.backupVersion)) {
+  // ---- Degree bundle -------------------------------------------------------
+  if (fmt === DEGREE_BACKUP_FORMAT) {
+    if (!SUPPORTED_BACKUP_VERSIONS.includes(manifest.formatVersion)) {
+      return fail(`Unsupported degree-backup version ${manifest.formatVersion} (supported: ${SUPPORTED_BACKUP_VERSIONS.join(', ')}).`);
+    }
+    const semesters: StagedBackup[] = [];
+    for (const entry of manifest.semesters || []) {
+      const inner = zip.file(`semesters/${entry.name}`);
+      if (!inner) return fail(`Corrupt degree backup: missing semester package "${entry.name}".`);
+      const innerResult = await parseBackup(await inner.async('arraybuffer'));
+      if (!innerResult.ok) return fail(`Corrupt degree backup: ${innerResult.reason}`);
+      if (innerResult.parsed.kind !== 'semester') return fail(`Corrupt degree backup: "${entry.name}" is not a semester package.`);
+      semesters.push(innerResult.parsed.staged);
+    }
+    if (semesters.length === 0) return fail('This degree backup contains no semesters.');
+    diagnostics.push({ check: 'degree-verified', ok: true, detail: `${semesters.length} semesters` });
     return {
-      ok: false,
-      reason: `Unsupported backup version ${manifest.backupVersion} (this app supports: ${SUPPORTED_BACKUP_VERSIONS.join(', ')}).`,
+      ok: true,
+      parsed: {
+        kind: 'degree',
+        degree: { title: manifest.title || 'Full Academic Record', totalBytes: manifest.totalBytes || 0, semesters },
+      },
     };
   }
-  for (const field of ['title', 'level', 'semester', 'checksum'] as const) {
-    if (!manifest[field]) return { ok: false, reason: `Invalid backup: manifest is missing "${field}".` };
-  }
 
-  // JSON parts.
-  let semester: { student: Student };
-  let courses: AppState['courses'];
-  let topics: AppState['topics'];
-  let slides: AppState['slides'];
-  let notes: AppState['notes'];
-  let questions: AppState['examQuestions'];
-  let quizzes: AppState['quizHistory'];
-  let objectives: AppState['learningObjectives'];
-  let studyPlans: AppState['studyPlans'];
-  let examDates: AppState['examDates'];
-  let activities: AppState['activities'];
-  let chatHistory: AppState['chatHistory'];
-  let highlights: AppState['highlights'];
-  let insights: AppState['savedInsights'];
-  let timetable: { timetables: AppState['timetables']; timetablePdf: string | null };
-  let index: StagedBackup['index'] = null;
-
-  try {
-    semester = (await readZipJson(zip, 'semester.json')) as { student: Student };
-    courses = (await readZipJson(zip, 'courses.json')) as AppState['courses'];
-    topics = (await readZipJson(zip, 'topics.json')) as AppState['topics'];
-    slides = (await readZipJson(zip, 'slides.json')) as AppState['slides'];
-    notes = (await readZipJson(zip, 'notes.json')) as AppState['notes'];
-    questions = (await readZipJson(zip, 'questions.json')) as AppState['examQuestions'];
-    quizzes = (await readZipJson(zip, 'quizzes.json')) as AppState['quizHistory'];
-    objectives = (await readZipJson(zip, 'objectives.json')) as AppState['learningObjectives'];
-    studyPlans = (await readZipJson(zip, 'studyPlans.json')) as AppState['studyPlans'];
-    examDates = (await readZipJson(zip, 'examDates.json')) as AppState['examDates'];
-    activities = (await readZipJson(zip, 'activities.json')) as AppState['activities'];
-    chatHistory = (await readZipJson(zip, 'chatHistory.json')) as AppState['chatHistory'];
-    highlights = (await readZipJson(zip, 'highlights.json')) as AppState['highlights'];
-    insights = (await readZipJson(zip, 'insights.json')) as AppState['savedInsights'];
-    timetable = (await readZipJson(zip, 'timetable.json')) as { timetables: AppState['timetables']; timetablePdf: string | null };
-    if (zip.file('searchIndex.json')) index = (await readZipJson(zip, 'searchIndex.json')) as StagedBackup['index'];
-  } catch (err) {
-    return { ok: false, reason: `Corrupt backup: ${(err as Error).message}` };
-  }
-
-  // Structural checks.
-  const arrays = [courses, topics, slides, notes, questions, quizzes, objectives, studyPlans, examDates, activities, chatHistory, highlights, insights];
-  if (arrays.some((a) => !Array.isArray(a))) return { ok: false, reason: 'Corrupt backup: a collection is not a list.' };
-  if (!semester?.student?.id || !semester.student.name) return { ok: false, reason: 'Corrupt backup: semester.json has no student profile.' };
-  if (slides.some((s) => !s.id || !s.topicId)) return { ok: false, reason: 'Corrupt backup: slides reference missing ids.' };
-
-  const snapshot: SemesterSnapshot = {
-    student: semester.student,
-    courses, topics, slides,
-    learningObjectives: objectives,
-    examQuestions: questions,
-    quizHistory: quizzes,
-    studyPlans,
-    notes,
-    examDates,
-    activities,
-    chatHistory,
-    highlights,
-    savedInsights: insights,
-    timetables: timetable.timetables ?? { class: [], quiz: [], exam: [] },
-    timetablePdf: timetable.timetablePdf ?? null,
-    capturedAt: manifest.completedAt || manifest.created,
-  };
-
-  // Files: read the declared entries into memory (still staged — nothing
-  // applied), verifying each one's ACTUAL size against the manifest.
-  const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
-  const actual: { name: string; size: number; type: string }[] = [];
-  for (const declared of manifest.files) {
-    const entry = zip.file(declared.name);
-    if (!entry) return { ok: false, reason: `Corrupt backup: missing file "${declared.name}".` };
-    const value = declared.name.startsWith('slideText/')
-      ? await entry.async('string')
-      : await entry.async('blob');
-    const actualSize = typeof value === 'string'
-      ? new TextEncoder().encode(value).length
-      : value.size;
-    if (actualSize !== declared.size) {
-      return { ok: false, reason: `Corrupt backup: file "${declared.name}" has the wrong size.` };
+  // ---- Legacy format (kept importable) -------------------------------------
+  if (fmt === LEGACY_BACKUP_FORMAT) {
+    const legacy = manifest as unknown as BackupManifest;
+    if (legacy.app !== LEGACY_APP) return fail('Not a PharmaTRACK backup file.');
+    if (!SUPPORTED_BACKUP_VERSIONS.includes(legacy.backupVersion)) {
+      return fail(`Unsupported backup version ${legacy.backupVersion} (supported: ${SUPPORTED_BACKUP_VERSIONS.join(', ')}).`);
     }
-    actual.push({ name: declared.name, size: actualSize, type: declared.type });
-    const key = declared.name.startsWith('slideText/')
-      ? declared.name.slice('slideText/'.length).replace(/\.txt$/, '')
-      : declared.name.slice('files/'.length);
-    files.set(key, { value, kind: declared.name.startsWith('slideText/') ? 'slidetext' : 'file' });
+    for (const field of ['title', 'level', 'semester', 'checksum'] as const) {
+      if (!legacy[field]) return fail(`Invalid backup: manifest is missing "${field}".`);
+    }
+    for (const part of LEGACY_SEMESTER_PARTS) {
+      if (!zip.file(part)) return fail(`Corrupt backup: missing ${part}.`);
+    }
+    let snapshot: SemesterSnapshot;
+    try {
+      const semester = (await readZipJson(zip, 'semester.json')) as { student: Student };
+      const timetable = (await readZipJson(zip, 'timetable.json')) as { timetables: AppState['timetables']; timetablePdf: string | null };
+      snapshot = {
+        student: semester.student,
+        courses: (await readZipJson(zip, 'courses.json')) as AppState['courses'],
+        topics: (await readZipJson(zip, 'topics.json')) as AppState['topics'],
+        slides: (await readZipJson(zip, 'slides.json')) as AppState['slides'],
+        learningObjectives: (await readZipJson(zip, 'objectives.json')) as AppState['learningObjectives'],
+        examQuestions: (await readZipJson(zip, 'questions.json')) as AppState['examQuestions'],
+        quizHistory: (await readZipJson(zip, 'quizzes.json')) as AppState['quizHistory'],
+        studyPlans: (await readZipJson(zip, 'studyPlans.json')) as AppState['studyPlans'],
+        notes: (await readZipJson(zip, 'notes.json')) as AppState['notes'],
+        examDates: (await readZipJson(zip, 'examDates.json')) as AppState['examDates'],
+        activities: (await readZipJson(zip, 'activities.json')) as AppState['activities'],
+        chatHistory: (await readZipJson(zip, 'chatHistory.json')) as AppState['chatHistory'],
+        highlights: (await readZipJson(zip, 'highlights.json')) as AppState['highlights'],
+        savedInsights: (await readZipJson(zip, 'insights.json')) as AppState['savedInsights'],
+        timetables: timetable.timetables ?? { class: [], quiz: [], exam: [] },
+        timetablePdf: timetable.timetablePdf ?? null,
+        capturedAt: legacy.completedAt || legacy.created,
+      };
+    } catch (err) {
+      return fail(`Corrupt backup: ${(err as Error).message}`);
+    }
+    const struct = validatedSnapshot(snapshot);
+    if (!struct.ok) return fail(struct.reason);
+
+    let legacyIndex: StagedBackup['index'] = null;
+    if (zip.file('searchIndex.json')) {
+      try { legacyIndex = JSON.parse(await zip.file('searchIndex.json')!.async('string')); } catch { legacyIndex = null; }
+    }
+
+    const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
+    const actual: { name: string; size: number; type: string }[] = [];
+    for (const declared of legacy.files) {
+      const entry = zip.file(declared.name);
+      if (!entry) return fail(`Corrupt backup: missing file "${declared.name}".`);
+      const value = declared.name.startsWith('slideText/')
+        ? await entry.async('string')
+        : await entry.async('blob');
+      const actualSize = typeof value === 'string' ? new TextEncoder().encode(value).length : value.size;
+      if (actualSize !== declared.size) return fail(`Corrupt backup: file "${declared.name}" has the wrong size.`);
+      actual.push({ name: declared.name, size: actualSize, type: declared.type });
+      const key = declared.name.startsWith('slideText/')
+        ? declared.name.slice('slideText/'.length).replace(/\.txt$/, '')
+        : declared.name.slice('files/'.length);
+      files.set(key, { value, kind: declared.name.startsWith('slideText/') ? 'slidetext' : 'file' });
+    }
+    const recomputed = checksumOf(JSON.stringify({
+      counts: { itemCount: legacy.itemCount, fileCount: legacy.fileCount, totalBytes: legacy.totalBytes },
+      files: actual.map((f) => [f.name, f.size, f.type]).sort(),
+    }));
+    if (recomputed !== legacy.checksum) {
+      return fail('Corrupt backup: file integrity check failed (checksum mismatch).');
+    }
+    diagnostics.push({ check: 'legacy-verified', ok: true });
+    return { ok: true, parsed: { kind: 'semester', staged: { manifest: legacy, snapshot, index: legacyIndex, files } } };
   }
 
-  // Integrity: the checksum recomputed from the ACTUAL entries must match the
-  // manifest — this is what rejects corrupted or tampered backups.
-  const recomputed = checksumOf(canonicalForBackup(
-    { itemCount: manifest.itemCount, fileCount: manifest.fileCount, totalBytes: manifest.totalBytes },
-    actual,
+  // ---- Current format (pharmatrack-semester-backup) -------------------------
+  let current = manifest as PharmaTrackBackupManifest;
+  const migrator = SEMESTER_FORMAT_MIGRATORS[current.formatVersion];
+  if (!migrator) {
+    return fail(`Unsupported backup format version ${current.formatVersion} (supported: ${SUPPORTED_BACKUP_VERSIONS.join(', ')}). A newer PharmaTRACK may be required.`);
+  }
+  current = migrator(current);
+  diagnostics.push({ check: `format-version-${current.formatVersion}`, ok: true });
+
+  for (const field of ['title', 'level', 'semester', 'integrity'] as const) {
+    if (!current[field]) return fail(`Invalid backup: manifest is missing "${field}".`);
+  }
+  if (!current.integrity?.checksum || !current.integrity.algorithm) {
+    return fail('Invalid backup: manifest integrity block is incomplete.');
+  }
+  for (const part of REQUIRED_SEMESTER_PARTS) {
+    if (!zip.file(part)) {
+      diagnostics.push({ check: `part:${part}`, ok: false });
+      return fail(`Corrupt backup: missing ${part}.`);
+    }
+  }
+
+  let snapshot: SemesterSnapshot;
+  let index: StagedBackup['index'] = null;
+  try {
+    const timetable = (await readZipJson(zip, 'semester/timetable.json')) as { timetables: AppState['timetables']; timetablePdf: string | null };
+    const indexEntry = zip.file('semester/search-index.json');
+    if (indexEntry) {
+      const raw = await indexEntry.async('string');
+      if (raw.trim()) index = JSON.parse(raw);
+    }
+    snapshot = {
+      student: (await readZipJson(zip, 'semester/student.json')) as Student,
+      courses: (await readZipJson(zip, 'semester/courses.json')) as AppState['courses'],
+      topics: (await readZipJson(zip, 'semester/topics.json')) as AppState['topics'],
+      slides: (await readZipJson(zip, 'semester/slides.json')) as AppState['slides'],
+      learningObjectives: (await readZipJson(zip, 'semester/learning-objectives.json')) as AppState['learningObjectives'],
+      examQuestions: (await readZipJson(zip, 'semester/exam-questions.json')) as AppState['examQuestions'],
+      quizHistory: (await readZipJson(zip, 'semester/quiz-history.json')) as AppState['quizHistory'],
+      studyPlans: (await readZipJson(zip, 'semester/study-plans.json')) as AppState['studyPlans'],
+      notes: (await readZipJson(zip, 'semester/notes.json')) as AppState['notes'],
+      examDates: (await readZipJson(zip, 'semester/exam-dates.json')) as AppState['examDates'],
+      activities: (await readZipJson(zip, 'semester/activities.json')) as AppState['activities'],
+      chatHistory: (await readZipJson(zip, 'semester/chat-history.json')) as AppState['chatHistory'],
+      highlights: (await readZipJson(zip, 'semester/highlights.json')) as AppState['highlights'],
+      savedInsights: (await readZipJson(zip, 'semester/saved-insights.json')) as AppState['savedInsights'],
+      timetables: timetable.timetables ?? { class: [], quiz: [], exam: [] },
+      timetablePdf: timetable.timetablePdf ?? null,
+      capturedAt: current.completedAt || current.createdAt,
+    };
+  } catch (err) {
+    return fail(`Corrupt backup: ${(err as Error).message}`);
+  }
+  diagnostics.push({ check: 'json-structure', ok: true });
+
+  const struct = validatedSnapshot(snapshot);
+  if (!struct.ok) return fail(struct.reason);
+  diagnostics.push({ check: 'relationships', ok: true });
+
+  // Record counts vs manifest.
+  const actualCounts = {
+    courses: snapshot.courses.length,
+    topics: snapshot.topics.length,
+    slides: snapshot.slides.length,
+    notes: snapshot.notes.length,
+    questions: snapshot.examQuestions.length,
+    quizzes: snapshot.quizHistory.length,
+    studyPlans: snapshot.studyPlans.length,
+    examDates: snapshot.examDates.length,
+    activities: snapshot.activities.length,
+  };
+  if (current.recordCounts) {
+    for (const [k, v] of Object.entries(actualCounts) as [keyof typeof actualCounts, number][]) {
+      if (current.recordCounts[k] !== v) {
+        return fail(`Corrupt backup: manifest declares ${current.recordCounts[k]} ${k}, but the package contains ${v}.`);
+      }
+    }
+  }
+  diagnostics.push({ check: 'record-counts', ok: true });
+
+  // Per-entry size + content hash (from metadata/checksums.json when present,
+  // otherwise straight from the zip listing).
+  interface ChecksumsFile { algorithm: string; totalBytes?: number; entries: { name: string; size: number; hash: string }[] }
+  let checksums: ChecksumsFile | null = null;
+  try {
+    checksums = (await readZipJson(zip, 'metadata/checksums.json')) as ChecksumsFile;
+  } catch {
+    checksums = null;
+  }
+
+  const zipNames = new Set<string>();
+  zip.forEach((path) => { if (!path.endsWith('/')) zipNames.add(path); });
+  const declaredNames = new Set(checksums?.entries.map((e) => e.name) ?? []);
+  const expectedNames = declaredNames.size > 0 ? [...declaredNames] : [...zipNames];
+  for (const name of expectedNames) {
+    if (!zipNames.has(name)) {
+      diagnostics.push({ check: `entry:${name}`, ok: false });
+      return fail(`Corrupt backup: missing entry "${name}".`);
+    }
+  }
+  // Any extra, undeclared entry means the package was tampered with.
+  if (declaredNames.size > 0) {
+    for (const name of zipNames) {
+      if (name === 'manifest.json' || name === 'metadata/checksums.json') continue;
+      if (!declaredNames.has(name)) {
+        return fail(`Corrupt backup: package contains an undeclared entry "${name}".`);
+      }
+    }
+  }
+
+  const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
+  const verified: { name: string; size: number; hash: string }[] = [];
+  let materialCount = 0;
+  try {
+    for (const name of expectedNames) {
+      if (name === 'manifest.json' || name === 'metadata/checksums.json') continue;
+      const declared = checksums?.entries.find((e) => e.name === name);
+      if (name.startsWith('materials/')) {
+        // Material metadata: must parse, and counts toward integrity like any entry.
+        const raw = await zip.file(name)!.async('string');
+        JSON.parse(raw);
+        materialCount++;
+        const size = new TextEncoder().encode(raw).length;
+        if (declared && declared.size !== size) return fail(`Corrupt backup: entry "${name}" has the wrong size.`);
+        const hash = await hashEntry(name, raw);
+        if (declared && declared.hash !== hash) return fail(`Corrupt backup: entry "${name}" failed its content check.`);
+        verified.push({ name, size, hash });
+        continue;
+      }
+      const entry = zip.file(name)!;
+      if (name.startsWith('text/')) {
+        const value = await entry.async('string');
+        if (declared && declared.size !== new TextEncoder().encode(value).length) {
+          return fail(`Corrupt backup: entry "${name}" has the wrong size.`);
+        }
+        const hash = await hashEntry(name, value);
+        if (declared && declared.hash !== hash) return fail(`Corrupt backup: entry "${name}" failed its content check.`);
+        verified.push({ name, size: new TextEncoder().encode(value).length, hash });
+        files.set(name.slice('text/'.length).replace(/\.txt$/, ''), { value, kind: 'slidetext' });
+      } else if (name.startsWith('files/')) {
+        const value: Blob = await entry.async('blob');
+        if (declared && declared.size !== value.size) return fail(`Corrupt backup: entry "${name}" has the wrong size.`);
+        const hash = await hashEntry(name, value);
+        if (declared && declared.hash !== hash) return fail(`Corrupt backup: entry "${name}" failed its content check.`);
+        verified.push({ name, size: value.size, hash });
+        const key = name.slice('files/'.length).replace(/\.(pdf|pptx|docx|png|jpe?g|gif|webp|img|bin)$/i, '');
+        files.set(key, { value, kind: 'file' });
+      } else {
+        const value = await entry.async('string');
+        if (declared && declared.size !== new TextEncoder().encode(value).length) {
+          return fail(`Corrupt backup: entry "${name}" has the wrong size.`);
+        }
+        const hash = await hashEntry(name, value);
+        if (declared && declared.hash !== hash) return fail(`Corrupt backup: entry "${name}" failed its content check.`);
+        verified.push({ name, size: new TextEncoder().encode(value).length, hash });
+      }
+    }
+  } catch (err) {
+    return fail(`Corrupt backup: ${(err as Error).message}`);
+  }
+  diagnostics.push({ check: 'entry-sizes-and-hashes', ok: true, detail: `${verified.length} entries, ${materialCount} material records` });
+
+  // Manifest checksum over the verified entries. (The export canonical sums
+  // the package entries only — the manifest itself is not in that list.)
+  const totalBytes = verified.reduce((s, e) => s + e.size, 0);
+  const recomputed = checksumOf(canonicalForBackupV1(
+    { formatVersion: current.formatVersion, title: current.title, level: current.level, semester: current.semester, archiveId: current.archiveId },
+    totalBytes,
+    verified,
   ));
-  if (recomputed !== manifest.checksum) {
-    return { ok: false, reason: 'Corrupt backup: file integrity check failed (checksum mismatch).' };
+  if (recomputed !== current.integrity.checksum) {
+    return fail('Corrupt backup: integrity check failed (checksum mismatch — the file may be incomplete or tampered with).');
   }
+  diagnostics.push({ check: 'manifest-checksum', ok: true });
 
-  const totalBytes = manifest.files.reduce((s, f) => s + f.size, 0);
   return {
     ok: true,
-    staged: {
-      manifest: { ...manifest, totalBytes },
-      snapshot,
-      index,
-      files,
-    },
+    parsed: { kind: 'semester', staged: { manifest: current, snapshot, index, files } },
   };
 };
+
+/** Normalised, display-ready summary of a staged backup (either format). */
+export const stagedSummary = (staged: StagedBackup): BackupSummary => {
+  const snap = staged.snapshot;
+  if (staged.manifest.format === BACKUP_FORMAT) {
+    const m = staged.manifest as PharmaTrackBackupManifest;
+    const rc = m.recordCounts;
+    return {
+      title: m.title,
+      level: m.level,
+      semester: m.semester,
+      academicYear: m.academicYear,
+      completedAt: m.completedAt,
+      createdAt: m.createdAt,
+      source: m.source,
+      versionLabel: `format v${m.formatVersion}`,
+      archiveId: m.archiveId,
+      counts: {
+        courses: rc?.courses ?? snap.courses.length,
+        topics: rc?.topics ?? snap.topics.length,
+        slides: rc?.slides ?? snap.slides.length,
+        notes: rc?.notes ?? snap.notes.length,
+        questions: rc?.questions ?? snap.examQuestions.length,
+        quizzes: rc?.quizzes ?? snap.quizHistory.length,
+        studyPlans: rc?.studyPlans ?? snap.studyPlans.length,
+        examDates: rc?.examDates ?? snap.examDates.length,
+        activities: rc?.activities ?? snap.activities.length,
+        files: rc?.files ?? staged.files.size,
+      },
+      totalBytes: m.totalBytes ?? 0,
+      integrityAlgorithm: m.integrity?.algorithm,
+      integrityVerified: true, // only validated backups reach the UI
+    };
+  }
+  const m = staged.manifest as BackupManifest;
+  const lc = m.counts;
+  return {
+    title: m.title,
+    level: m.level,
+    semester: m.semester,
+    academicYear: m.academicYear,
+    completedAt: m.completedAt,
+    createdAt: m.created,
+    source: m.source,
+    versionLabel: `legacy format v${m.backupVersion}`,
+    archiveId: m.archiveId,
+    counts: {
+      courses: lc?.courses ?? snap.courses.length,
+      topics: lc?.topics ?? snap.topics.length,
+      slides: lc?.slides ?? snap.slides.length,
+      notes: lc?.notes ?? snap.notes.length,
+      questions: lc?.questions ?? snap.examQuestions.length,
+      quizzes: lc?.quizzes ?? snap.quizHistory.length,
+      studyPlans: snap.studyPlans.length,
+      examDates: snap.examDates.length,
+      activities: snap.activities.length,
+      files: m.fileCount ?? staged.files.size,
+    },
+    totalBytes: m.totalBytes ?? 0,
+    integrityAlgorithm: 'fnv1a-32 (size + list checksum)',
+    integrityVerified: true,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Import actions — the staged backup only touches this device here
+// ---------------------------------------------------------------------------
+
+export type ImportArchiveMode = 'archive' | 'copy' | 'replace';
+
+/**
+ * Collision detection: is this semester already on this device?
+ *  - byId: the backup carries the exact archiveId of an existing archive
+ *  - byPosition: same level + semester (+ academic year when both known)
+ */
+export const findCollidingArchives = async (staged: StagedBackup): Promise<{ byId: SemesterArchiveMeta | null; byPosition: SemesterArchiveMeta | null }> => {
+  const m = staged.manifest as PharmaTrackBackupManifest;
+  const archives = await listArchives();
+  const byId = m.archiveId ? archives.find((a) => a.id === m.archiveId) ?? null : null;
+  const byPosition = byId ?? (m.level && m.semester
+    ? archives.find((a) =>
+        String(parseLevel(a.level)) === String(parseLevel(m.level || '')) &&
+        String(parseSemester(a.semester)) === String(parseSemester(m.semester || '')) &&
+        (!m.academicYear || !a.academicYear || a.academicYear === m.academicYear)) ?? null
+    : null);
+  return { byId, byPosition };
+};
+
+/**
+ * Imports a validated, staged backup INTO THE ACADEMIC ARCHIVE (the safe
+ * default — never touches the current workspace).
+ *
+ *  mode 'archive'  — keep the backup's identity; a live export gets a fresh id
+ *  mode 'copy'     — always a fresh id + " (Copy)" title
+ *  mode 'replace'  — overwrite `existingId` in place (explicit user choice)
+ *
+ * The archive is only committed after its own verification passes; on any
+ * failure every partial record is removed and the error is thrown.
+ */
+export const importBackupIntoArchive = async (
+  staged: StagedBackup,
+  mode: ImportArchiveMode,
+  existingId?: string,
+  onProgress?: ProgressFn,
+): Promise<SemesterArchiveMeta> => {
+  const m = staged.manifest as PharmaTrackBackupManifest;
+  const snapshot = staged.snapshot;
+  const L = parseLevel(m.level || '') || 100;
+  const S = parseSemester(m.semester || '') || 1;
+  const year = m.academicYear || defaultAcademicYear();
+  const [y1, y2] = year.split('/');
+  const freshId = () => `archive_${L}_${S}_${y1}_${y2}_${uuidv4().slice(0, 8)}`;
+
+  const id = mode === 'replace' && existingId ? existingId
+    : mode === 'copy' ? freshId()
+    : (m.archiveId && m.archiveId !== 'live' ? m.archiveId : freshId());
+  const title = mode === 'copy' ? `${m.title || `Level ${L} — Semester ${S}`} (Copy)` : (m.title || `Level ${L} — Semester ${S}`);
+  const baseMeta: SemesterArchiveMeta = {
+    id,
+    level: String(L),
+    semester: String(S),
+    title,
+    academicYear: year,
+    completedAt: m.completedAt || m.createdAt,
+    createdAt: m.createdAt || new Date().toISOString(),
+    status: 'creating',
+    version: ARCHIVE_VERSION,
+    itemCount: itemCountOf(snapshot as unknown as AppState),
+    fileCount: staged.files.size,
+    totalBytes: 0,
+    counts: collectionCounts(snapshot as unknown as AppState),
+  };
+
+  const cleanup = async (): Promise<void> => {
+    try {
+      const keys = await idb.keys<string>();
+      const partial = keys.filter(
+        (k) => k === META_PREFIX + id || k.startsWith(META_FILE_PREFIX + id) || k.startsWith(META_TEXT_PREFIX + id),
+      );
+      if (partial.length) await idb.delMany(partial);
+    } catch (err) {
+      console.error('Import cleanup failed (safe to ignore):', err);
+    }
+  };
+
+  try {
+    // Replace mode: clear the old archive's namespace before writing new data.
+    if (mode === 'replace') await cleanup();
+
+    const manifest: ArchiveRecord['manifest'] = [];
+    let totalBytes = 0;
+    const marker: ArchiveRecord = { meta: baseMeta, snapshot, index: staged.index ?? null, manifest };
+    await idb.set(META_PREFIX + id, marker);
+
+    onProgress?.({ phase: 'files', current: 0, total: staged.files.size, copiedBytes: 0, message: 'Copying files into the archive…' });
+    let i = 0;
+    for (const [key, entry] of staged.files) {
+      const targetKey = entry.kind === 'file' ? archiveFileKey(id, key) : archiveTextKey(id, key);
+      await idb.set(targetKey, entry.value);
+      const size = sizeOf(entry.value);
+      totalBytes += size;
+      manifest.push({ sourceKey: entry.kind === 'file' ? `file_${key}` : `slidetext_${key}`, archiveKey: targetKey, kind: entry.kind, size });
+      i++;
+      onProgress?.({ phase: 'files', current: i, total: staged.files.size, copiedBytes: totalBytes, message: `Copying files into the archive… ${i}/${staged.files.size}` });
+    }
+
+    const meta: SemesterArchiveMeta = { ...baseMeta, fileCount: manifest.length, totalBytes };
+    meta.checksum = checksumOf(canonicalForArchive(meta, manifest));
+    const record: ArchiveRecord = { meta, snapshot, index: staged.index ?? null, manifest };
+    await idb.set(META_PREFIX + id, record);
+
+    onProgress?.({ phase: 'verify', message: 'Verifying the imported archive…' });
+    const verified = await verifySemesterArchive(id);
+    if (verified.status !== 'verified') {
+      await cleanup();
+      throw new ArchiveError(`The imported archive did not verify (${verified.error || 'unknown reason'}). Nothing was added.`);
+    }
+    onProgress?.({ phase: 'done', message: 'Imported into Academic Archive ✓' });
+    return verified;
+  } catch (err) {
+    await cleanup();
+    throw err instanceof ArchiveError ? err : toArchiveError(err, `The backup could not be imported: ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`);
+  }
+};
+
+/**
+ * Restores a validated, staged backup AS THE CURRENT WORKSPACE (explicit,
+ * protected choice):
+ *   1. if the current workspace has content → it is archived first and the
+ *      guard archive must verify, otherwise the import aborts with nothing
+ *      changed;
+ *   2. only then is the imported semester staged in as the live workspace;
+ *   3. the previous semester stays available in the Academic Archive.
+ */
+export const importBackupAsWorkspace = async (
+  staged: StagedBackup,
+  current: AppState,
+  onProgress?: ProgressFn,
+): Promise<RestoreResult> => {
+  let guardArchive: SemesterArchiveMeta | null = null;
+  if (hasWorkspaceContent(current)) {
+    onProgress?.({ phase: 'protect', message: 'Backing up your current semester first…' });
+    const guard = await createSemesterArchive(current, {
+      level: current.student?.level || '100',
+      semester: current.student?.semester || '1',
+      title: (current.student ? `Level ${parseLevel(current.student.level)} — Semester ${parseSemester(current.student.semester)}` : 'Current') + ' (auto-backup before import)',
+      onProgress: (p) => onProgress?.({ ...p, phase: p.phase === 'done' ? 'protect' : p.phase, message: `Backing up current semester: ${p.message || ''}` }),
+    });
+    guardArchive = guard;
+  }
+  const fresh = await applyWorkspaceSource(staged, current, onProgress);
+  return { fresh, guardArchive, restoredFrom: (staged.manifest as PharmaTrackBackupManifest).archiveId || 'import' };
+};
+
 
 /**
  * Applies a staged backup (or restored archive) as the new live workspace.
@@ -1044,12 +1739,14 @@ export const restoreArchive = async (
     files.set(key, { value, kind: entry.kind });
   }
 
+  // Internal staged manifest (new format) — only the snapshot/index/files are
+  // consumed downstream; the manifest documents provenance.
   const staged: StagedBackup = {
     manifest: {
-      app: BACKUP_APP,
+      app: 'pharmatrack',
       format: BACKUP_FORMAT,
-      backupVersion: 1,
-      created: new Date().toISOString(),
+      formatVersion: 1,
+      appVersion: APP_VERSION,
       source: 'archive',
       archiveId,
       title: record.meta.title,
@@ -1057,12 +1754,22 @@ export const restoreArchive = async (
       semester: record.meta.semester,
       academicYear: record.meta.academicYear,
       completedAt: record.meta.completedAt,
-      checksum: record.meta.checksum || '',
-      itemCount: record.meta.itemCount,
-      fileCount: record.meta.fileCount,
+      createdAt: record.meta.createdAt,
+      recordCounts: {
+        courses: record.meta.counts?.courses ?? record.snapshot.courses.length,
+        topics: record.meta.counts?.topics ?? record.snapshot.topics.length,
+        slides: record.meta.counts?.slides ?? record.snapshot.slides.length,
+        notes: record.meta.counts?.notes ?? record.snapshot.notes.length,
+        questions: record.meta.counts?.questions ?? record.snapshot.examQuestions.length,
+        quizzes: record.meta.counts?.quizzes ?? record.snapshot.quizHistory.length,
+        studyPlans: record.snapshot.studyPlans.length,
+        examDates: record.snapshot.examDates.length,
+        activities: record.snapshot.activities.length,
+        materials: 0,
+        files: record.meta.fileCount,
+      },
       totalBytes: record.meta.totalBytes,
-      counts: record.meta.counts,
-      files: record.manifest.map((e) => ({ name: e.archiveKey, size: e.size, type: e.kind === 'file' ? 'application/octet-stream' : 'text/plain' })),
+      integrity: { algorithm: 'fnv1a-32', checksum: record.meta.checksum || '' },
     },
     snapshot: record.snapshot,
     index: record.index,

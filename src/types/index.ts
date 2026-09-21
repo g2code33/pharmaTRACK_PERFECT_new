@@ -306,10 +306,106 @@ export interface BackupManifest {
 
 /** A parsed, integrity-checked backup that has NOT been applied yet. */
 export interface StagedBackup {
-  manifest: BackupManifest;
+  /** New-version manifest, or the legacy one when importing an old export. */
+  manifest: PharmaTrackBackupManifest | BackupManifest;
   snapshot: SemesterSnapshot;
   /** Per-page full-text search index captured with the semester, if any. */
   index: Record<string, { materialId: string; topicId: string; title: string; pages: { page: number; text: string }[] }> | null;
   /** key = fileId (kind 'file') or slideId (kind 'slidetext'). */
   files: Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>;
 }
+
+/**
+ * Portable backup manifest — the `pharmatrack-semester-backup` format.
+ *
+ * Versioned from day one: `formatVersion` is what import uses to decide
+ * whether a backup can be read, and unknown future versions fail safely
+ * (never partial-imported). Migration handlers for old versions live in
+ * `src/utils/semesterArchive.ts` (`SEMESTER_FORMAT_MIGRATORS`).
+ */
+export interface PharmaTrackBackupManifest {
+  app: 'pharmatrack';
+  format: 'pharmatrack-semester-backup' | 'pharmatrack-degree-backup';
+  formatVersion: number;
+  appVersion: string;
+  /** Present when the backup was made from a local archive. */
+  archiveId?: string;
+  academicYear?: string;
+  level?: string;
+  semester?: string;
+  title: string;
+  createdAt: string;
+  completedAt?: string;
+  source: 'archive' | 'live';
+  recordCounts?: {
+    courses: number;
+    topics: number;
+    slides: number;
+    notes: number;
+    questions: number;
+    quizzes: number;
+    studyPlans: number;
+    examDates: number;
+    activities: number;
+    /** Slides that reference an uploaded binary. */
+    materials: number;
+    /** Total packaged files (binaries + offloaded slide text). */
+    files: number;
+  };
+  totalBytes: number;
+  integrity: {
+    algorithm: string;
+    /** Checksum over every packaged entry (name + size + content hash). */
+    checksum: string;
+    /** Checksum over the manifest itself (defense in depth, optional). */
+    manifestChecksum?: string;
+  };
+  /** Degree backups: the per-semester packages inside this bundle. */
+  semesters?: { name: string; title: string; archiveId?: string; size: number }[];
+}
+
+/** Normalised, format-agnostic view of a staged backup (for UI display). */
+export interface BackupSummary {
+  title: string;
+  level?: string;
+  semester?: string;
+  academicYear?: string;
+  completedAt?: string;
+  createdAt: string;
+  source: 'archive' | 'live';
+  /** e.g. "v1" — the backup format version the UI can show the user. */
+  versionLabel: string;
+  archiveId?: string;
+  counts: {
+    courses: number;
+    topics: number;
+    slides: number;
+    notes: number;
+    questions: number;
+    quizzes: number;
+    studyPlans: number;
+    examDates: number;
+    activities: number;
+    files: number;
+  };
+  totalBytes: number;
+  /** Human-readable integrity algorithm, when the backup carries one. */
+  integrityAlgorithm?: string;
+  /** True when the checksum was recomputed and matched during validation. */
+  integrityVerified: boolean;
+}
+
+/** A degree bundle: many semester packages in one file. */
+export interface StagedDegreeBackup {
+  title: string;
+  totalBytes: number;
+  semesters: StagedBackup[];
+}
+
+/** Detailed check log attached to a failed import (for diagnostics). */
+export interface ImportDiagnostic {
+  check: string;
+  ok: boolean;
+  detail?: string;
+}
+

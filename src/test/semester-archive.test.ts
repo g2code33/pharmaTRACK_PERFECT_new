@@ -400,15 +400,18 @@ describe('export & import round-trip', () => {
     const result = await parseBackup(buffer);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const { staged } = result;
+    expect(result.parsed.kind).toBe('semester');
+    const { staged } = result.parsed.kind === 'semester' ? result.parsed : ({} as never);
     expect(staged.manifest.app).toBe('pharmatrack');
-    expect(staged.manifest.format).toBe('semester-backup');
-    expect(staged.manifest.backupVersion).toBe(1);
+    expect(staged.manifest.format).toBe('pharmatrack-semester-backup');
+    expect((staged.manifest as any).formatVersion).toBe(1);
     expect(staged.manifest.source).toBe('archive');
     expect(staged.manifest.archiveId).toBe(meta.id);
-    expect(staged.manifest.counts?.courses).toBe(2);
-    expect(staged.manifest.counts?.slides).toBe(4);
-    expect(staged.manifest.fileCount).toBe(3);
+    const rc = (staged.manifest as any).recordCounts;
+    expect(rc.courses).toBe(2);
+    expect(rc.slides).toBe(4);
+    expect(rc.files).toBe(3);
+    expect((staged.manifest as any).integrity.algorithm).toBe('fnv1a-32');
     expect(staged.snapshot.courses).toHaveLength(2);
     expect(staged.snapshot.notes[0].attachedFiles?.[0].data).toContain('base64');
     expect(staged.files.size).toBe(3);
@@ -423,9 +426,9 @@ describe('export & import round-trip', () => {
     const blob = await exportBackup({ kind: 'live', state });
     const result = await parseBackup(await blobToBuffer(blob));
     expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.staged.manifest.source).toBe('live');
-    expect(result.staged.manifest.fileCount).toBe(3);
+    if (!result.ok || result.parsed.kind !== 'semester') return;
+    expect(result.parsed.staged.manifest.source).toBe('live');
+    expect(result.parsed.staged.files.size).toBe(3);
   });
 
   it('rejects a non-zip file', async () => {
@@ -439,16 +442,18 @@ describe('export & import round-trip', () => {
     const meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' });
     const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
 
-    // Rebuild the zip with one file's content altered.
+    // Rebuild the zip with the ACTUAL file entry's content altered.
     const JSZip = (await import('jszip')).default;
     const zip = await JSZip.loadAsync(blob);
-    zip.file('files/file2', new Blob(['tampered-content'], { type: 'image/png' }));
+    const realName = Object.keys(zip.files).find((n) => n.startsWith('files/') && n.includes('file2'))!;
+    zip.file(realName, new Blob(['tampered-content'], { type: 'image/png' }));
     const tampered = await zip.generateAsync({ type: 'arraybuffer' });
 
     const result = await parseBackup(tampered);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/wrong size|checksum|corrupt/i);
+    expect(result.reason).toMatch(/wrong size|content check|checksum|corrupt/i);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
   });
 
   it('rejects unsupported backup versions', async () => {
@@ -460,14 +465,14 @@ describe('export & import round-trip', () => {
     const JSZip = (await import('jszip')).default;
     const zip = await JSZip.loadAsync(blob);
     const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'));
-    manifest.backupVersion = 99;
+    manifest.formatVersion = 99;
     zip.file('manifest.json', JSON.stringify(manifest));
     const future = await zip.generateAsync({ type: 'arraybuffer' });
 
     const result = await parseBackup(future);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toMatch(/unsupported backup version/i);
+    expect(result.reason).toMatch(/unsupported backup format version 99/i);
   });
 });
 
@@ -554,10 +559,10 @@ describe('restore (always protected)', () => {
     const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
     const parsed = await parseBackup(await blobToBuffer(blob));
     expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
+    if (!parsed.ok || parsed.parsed.kind !== 'semester') return;
 
     const current = makeState(); // different semester, same person id u1
-    const fresh = await applyWorkspaceSource(parsed.staged, current);
+    const fresh = await applyWorkspaceSource(parsed.parsed.staged, current);
 
     expect(fresh.courses).toHaveLength(2);
     expect(fresh.student?.id).toBe('u1');          // identity from the CURRENT student
