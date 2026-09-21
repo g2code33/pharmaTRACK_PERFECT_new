@@ -3,7 +3,9 @@ import * as idb from 'idb-keyval';
 
 const STORAGE_KEY = 'pharmatrack_state';
 
-const initialState: AppState = {
+// Exported so the semester-archive system can build a genuinely empty fresh
+// workspace from the same single source of truth (no second copy to drift).
+export const initialState: AppState = {
   isLoggedIn: false,
   student: null,
   courses: [],

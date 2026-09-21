@@ -204,3 +204,112 @@ export type TimetableItem = {
   location: string;
   type: 'class' | 'quiz' | 'exam';
 };
+
+// ---------------------------------------------------------------------------
+// Semester archives & portable backups
+//
+// A completed semester becomes an independent academic workspace: the whole
+// live state (AppState collections) is snapshotted, every binary the semester
+// references (uploaded PDFs/PPTX/images and offloaded slide text) is COPIED
+// into the archive namespace in IndexedDB, the archive is verified, and only
+// then is the live workspace reset. Archives never share records with the
+// live workspace, so resetting the current semester cannot touch them.
+// ---------------------------------------------------------------------------
+
+export interface SemesterArchiveCounts {
+  courses: number;
+  topics: number;
+  slides: number;
+  notes: number;
+  questions: number;
+  quizzes: number;
+}
+
+export interface SemesterArchiveMeta {
+  id: string;
+  /** Normalised level, e.g. "300". */
+  level: string;
+  /** Normalised semester number, e.g. "1" | "2". */
+  semester: string;
+  /** Human title, e.g. "Level 300 — Semester 1". */
+  title: string;
+  academicYear?: string;
+  completedAt: string;
+  createdAt: string;
+  status: 'creating' | 'verified' | 'failed';
+  /** Archive record format version (independent of backupVersion). */
+  version: number;
+  /** Total records captured across all collections. */
+  itemCount: number;
+  /** Number of binary/text records copied into the archive. */
+  fileCount: number;
+  totalBytes: number;
+  checksum?: string;
+  counts?: SemesterArchiveCounts;
+  /** Set when status === 'failed'. */
+  error?: string;
+}
+
+/**
+ * The complete snapshot of a semester workspace. Everything that makes the
+ * semester restorable: identity at the time of completion plus every
+ * semester-specific collection.
+ */
+export interface SemesterSnapshot {
+  student: Student;
+  courses: Course[];
+  topics: Topic[];
+  slides: Slide[];
+  learningObjectives: LearningObjective[];
+  examQuestions: ExamQuestion[];
+  quizHistory: QuizHistory[];
+  studyPlans: StudyPlan[];
+  notes: Note[];
+  examDates: ExamDate[];
+  activities: Activity[];
+  chatHistory: ChatMessageStore[];
+  highlights: Highlight[];
+  savedInsights: SavedInsight[];
+  timetables: AppState['timetables'];
+  timetablePdf: string | null;
+  capturedAt: string;
+}
+
+export interface BackupManifestFile {
+  /** Zip entry name, e.g. "files/<fileId>" or "slideText/<slideId>.txt". */
+  name: string;
+  size: number;
+  type: string;
+}
+
+export interface BackupManifest {
+  app: 'pharmatrack';
+  format: 'semester-backup';
+  /** Portable backup format version. Import supports a fixed list of versions. */
+  backupVersion: number;
+  created: string;
+  source: 'archive' | 'live';
+  archiveId?: string;
+  title: string;
+  level: string;
+  semester: string;
+  academicYear?: string;
+  completedAt?: string;
+  /** Integrity checksum over the manifest's declared file list. */
+  checksum: string;
+  itemCount: number;
+  fileCount: number;
+  totalBytes: number;
+  counts?: SemesterArchiveCounts;
+  files: BackupManifestFile[];
+}
+
+/** A parsed, integrity-checked backup that has NOT been applied yet. */
+export interface StagedBackup {
+  manifest: BackupManifest;
+  snapshot: SemesterSnapshot;
+  /** Per-page full-text search index captured with the semester, if any. */
+  index: Record<string, { materialId: string; topicId: string; title: string; pages: { page: number; text: string }[] }> | null;
+  /** key = fileId (kind 'file') or slideId (kind 'slidetext'). */
+  files: Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>;
+}

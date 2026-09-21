@@ -35,7 +35,7 @@ export interface IndexedDoc {
   pages: IndexedPage[];
 }
 
-type IndexShape = Record<string, IndexedDoc>;
+export type IndexShape = Record<string, IndexedDoc>;
 
 /** In-memory mirror so lookups are synchronous. */
 let memoryIndex: IndexShape = {};
@@ -80,6 +80,42 @@ export const removeFromIndex = async (materialId: string): Promise<void> => {
   if (!memoryIndex[materialId]) return;
   delete memoryIndex[materialId];
   await persist();
+};
+
+// --- Raw accessors used by the semester-archive system ---------------------
+// The index holds the ONLY full copy of offloaded per-page text, so an archive
+// must carry it, a restore must put it back, and a semester reset must clear
+// it (stale entries would point search at materials that no longer exist).
+
+/** The persisted index, or null when there is none. */
+export const getSearchIndexRaw = async (): Promise<IndexShape | null> => {
+  try {
+    return (await idb.get<IndexShape>(INDEX_KEY)) ?? null;
+  } catch (err) {
+    console.error('Could not read search index for archival:', err);
+    return null;
+  }
+};
+
+/** Replaces both the persisted and in-memory index (null clears it). */
+export const setSearchIndexRaw = async (index: IndexShape | null): Promise<void> => {
+  memoryIndex = index ?? {};
+  loaded = true;
+  try {
+    if (index === null) {
+      await idb.del(INDEX_KEY);
+    } else {
+      await idb.set(INDEX_KEY, index);
+    }
+  } catch (err) {
+    console.error('Could not write search index:', err);
+    throw err;
+  }
+};
+
+/** Drops the persisted index and its in-memory mirror. */
+export const clearSearchIndex = async (): Promise<void> => {
+  await setSearchIndexRaw(null);
 };
 
 export interface DeepHit {

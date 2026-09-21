@@ -2,7 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { v4 as uuidv4 } from 'uuid';
 import { ExamDate } from '../types';
@@ -26,17 +26,21 @@ import {
   EyeOff,
   LogOut,
   Cloud,
+  GraduationCap,
+  Archive,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
 import { supabase } from '../utils/supabase';
 import { withCloudAccess } from '../utils/requireAuth';
 import { clear } from 'idb-keyval';
+import CompleteSemesterModal from '../components/CompleteSemesterModal';
 
 const Settings: React.FC = () => {
   const { state, dispatch, logout } = useApp();
   const navigate = useNavigate();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [showCompleteSemester, setShowCompleteSemester] = useState(false);
 
   // Signs out via the shared logout() so the Supabase session is actually
   // cleared. Locally cached study data is intentionally kept — use
@@ -336,6 +340,46 @@ const Settings: React.FC = () => {
               </>
             )}
           </button>
+        </div>
+      </div>
+
+      {/* Semester Section */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="p-4 bg-gray-50 border-b border-gray-100">
+          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-[#2D6A4F]" />
+            Semester
+          </h2>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-gray-700">
+                Currently studying: <strong>{state.student?.level || '—'} · {state.student?.semester || '—'}</strong>
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                When a semester ends, complete it to archive everything locally —
+                courses, slides, files, notes and quizzes — then start a fresh workspace.
+                Past semesters stay in the Academic Archive.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Link
+                to="/archive"
+                className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium"
+              >
+                <Archive className="w-4 h-4" />
+                Academic Archive
+              </Link>
+              <button
+                onClick={() => setShowCompleteSemester(true)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] text-sm font-bold shadow-sm"
+              >
+                <GraduationCap className="w-4 h-4 text-[#FFB703]" />
+                Complete Semester…
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -655,6 +699,9 @@ const Settings: React.FC = () => {
           <span>Data stored locally in your browser</span>
         </div>
       </div>
+
+      {/* Complete Semester Modal */}
+      <CompleteSemesterModal open={showCompleteSemester} onClose={() => setShowCompleteSemester(false)} />
 
       {/* Exam Modal */}
       {showExamModal && (

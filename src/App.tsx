@@ -19,6 +19,8 @@ import SlideReader from './pages/SlideReader';
 import Timetable from './pages/Timetable';
 import Profile from './pages/Profile';
 import Onboarding from './pages/Onboarding';
+import AcademicArchive from './pages/AcademicArchive';
+import ArchiveViewer from './pages/ArchiveViewer';
 import ErrorBoundary from './components/ErrorBoundary';
 
 const App = () => {
@@ -60,6 +62,8 @@ const App = () => {
             {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
             <Route path="/login" element={<Login />} />
             <Route path="/timetable" element={<Timetable />} />
+            <Route path="/archive" element={<AcademicArchive />} />
+            <Route path="/archive/:id" element={<ArchiveViewer />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Route>
         )}

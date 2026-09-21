@@ -6,7 +6,7 @@ import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud } from 'lucide-react';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive } from 'lucide-react';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -20,6 +20,7 @@ const navItems = [
   { path: '/notes', icon: StickyNote, label: 'My Notes' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/timetable', icon: Calendar, label: 'Offline Timetable' },
+  { path: '/archive', icon: Archive, label: 'Academic Archive' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
