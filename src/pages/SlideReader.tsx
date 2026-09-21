@@ -476,6 +476,10 @@ const SlideReader: React.FC = () => {
         <PptxViewer
           fileUrl={fileUrl}
           title={currentMaterial.title}
+          extractedText={currentMaterial.contentText}
+          uploadDate={currentMaterial.createdAt}
+          jumpToPage={deepLinkPage}
+          initialQuery={deepLinkQuery}
           onCreateHighlight={(h) => handleCreateHighlight({ ...h, rects: [] })}
           onAskAi={handleAskAiAboutSelection}
         />
