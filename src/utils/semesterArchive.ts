@@ -3,14 +3,15 @@
  *
  * Completing a semester is a two-phase, failure-safe operation:
  *
- *   1. ARCHIVE  — snapshot the whole workspace, COPY every binary it
- *      references (uploaded files + offloaded slide text + the full-text
- *      search index) into the archive's own IndexedDB namespace, verify the
- *      archive (records, file presence, sizes, checksum, relationships),
- *      and only then mark it `verified`.
- *   2. RESET    — persist a genuinely fresh workspace (identity + preferences
- *      only), prune the old workspace's IndexedDB records (now safe: the
- *      archive owns its own copies), and clear the search index.
+ *   1. ARCHIVE  — snapshot the whole workspace (every semester field, not a
+ *      hand-maintained list), COPY every semester-owned IndexedDB record
+ *      (uploaded files, offloaded/OCR text, AI conversations, the search
+ *      index, and any future store) into the archive's own namespace, verify
+ *      it, and only then mark it `verified`. Credentials are never copied.
+ *   2. RESET    — persist a genuinely fresh workspace (identity only), release
+ *      the old workspace's IndexedDB records (now safe: the archive owns its
+ *      own copies). The archive is labelled with the semester that just
+ *      ended — never the one that is about to start.
  *
  * The reset is strictly ordered AFTER verification. Any failure in phase 1
  * leaves the live workspace byte-for-byte untouched and marks the partial
@@ -59,9 +60,50 @@ export const ARCHIVE_VERSION = 1;
 const META_PREFIX = 'semester_archive_';
 const META_FILE_PREFIX = 'semester_archive_file_';
 const META_TEXT_PREFIX = 'semester_archive_text_';
+const META_RECORD_PREFIX = 'semester_archive_record_';
 
 export const archiveFileKey = (archiveId: string, fileId: string) => `${META_FILE_PREFIX}${archiveId}_${fileId}`;
 export const archiveTextKey = (archiveId: string, slideId: string) => `${META_TEXT_PREFIX}${archiveId}_${slideId}`;
+/** Other semester-owned IndexedDB records (AI conversations, future stores). */
+export const archiveRecordKey = (archiveId: string, sourceKey: string) => `${META_RECORD_PREFIX}${archiveId}__${sourceKey}`;
+
+/**
+ * IndexedDB keys that are app infrastructure, not semester academic data.
+ * Never copied into an archive, never deleted when a semester rolls over,
+ * and never written into a `.pharmatrack` backup.
+ */
+export const PROTECTED_IDB_KEYS = new Set<string>([
+  'pharmatrack_ai_credentials',
+  'pharmatrack_ai_settings',
+]);
+
+/** True for the archive namespace itself — listing/cleanup must not treat these as live data. */
+export const isArchiveNamespaceKey = (key: string): boolean => key.startsWith(META_PREFIX);
+
+/**
+ * A live IndexedDB key that belongs to the current semester. This is a
+ * denylist (archives + secrets), not an allowlist, so a store added later is
+ * captured without a code change.
+ */
+export const isSemesterOwnedIdbKey = (key: string): boolean =>
+  Boolean(key) && !PROTECTED_IDB_KEYS.has(key) && !isArchiveNamespaceKey(key);
+
+const isArchiveMetaKey = (key: string): boolean =>
+  key.startsWith(META_PREFIX) &&
+  !key.startsWith(META_FILE_PREFIX) &&
+  !key.startsWith(META_TEXT_PREFIX) &&
+  !key.startsWith(META_RECORD_PREFIX);
+
+const keysBelongingToArchive = (keys: string[], archiveId: string): string[] =>
+  keys.filter((k) =>
+    k === META_PREFIX + archiveId ||
+    k.startsWith(META_FILE_PREFIX + archiveId) ||
+    k.startsWith(META_TEXT_PREFIX + archiveId) ||
+    k.startsWith(META_RECORD_PREFIX + archiveId),
+  );
+
+/** Session flags and secrets — not academic data, so a snapshot never carries them. */
+const NON_SEMESTER_STATE_KEYS = new Set(['isLoggedIn', 'openAIKey']);
 
 export interface ArchiveRecord {
   meta: SemesterArchiveMeta;
@@ -69,7 +111,7 @@ export interface ArchiveRecord {
   /** The full-text search index at capture time (null when empty). */
   index: IndexShape | null;
   /** Copied records: source key, archive key, kind, byte size. */
-  manifest: { sourceKey: string; archiveKey: string; kind: 'file' | 'slidetext'; size: number }[];
+  manifest: { sourceKey: string; archiveKey: string; kind: 'file' | 'slidetext' | 'record'; size: number }[];
 }
 
 export class ArchiveError extends Error {
@@ -176,56 +218,78 @@ export const collectFileRefs = (state: AppState): ArchiveFileRef[] => {
 };
 
 const collectionCounts = (state: AppState): SemesterArchiveCounts => ({
-  courses: state.courses.length,
-  topics: state.topics.length,
-  slides: state.slides.length,
-  notes: state.notes.length,
-  questions: state.examQuestions.length,
-  quizzes: state.quizHistory.length,
+  courses: state.courses?.length ?? 0,
+  topics: state.topics?.length ?? 0,
+  slides: state.slides?.length ?? 0,
+  notes: state.notes?.length ?? 0,
+  questions: state.examQuestions?.length ?? 0,
+  quizzes: state.quizHistory?.length ?? 0,
 });
 
-export const itemCountOf = (state: AppState): number => {
-  const c = collectionCounts(state);
-  return (
-    c.courses + c.topics + c.slides + c.notes + c.questions + c.quizzes +
-    state.learningObjectives.length + state.studyPlans.length + state.examDates.length +
-    state.activities.length + state.chatHistory.length + state.highlights.length +
-    state.savedInsights.length + state.timetables.class.length + state.timetables.quiz.length + state.timetables.exam.length
-  );
+/**
+ * Counts every collection on the snapshot, including ones this file does not
+ * name. Nested timetable buckets are counted the same way they always were,
+ * so archives written before this change still verify.
+ */
+export const itemCountOf = (state: AppState | SemesterSnapshot): number => {
+  let n = 0;
+  for (const [key, value] of Object.entries(state)) {
+    if (key === 'student' || key === 'capturedAt' || key === 'timetablePdf') continue;
+    if (NON_SEMESTER_STATE_KEYS.has(key)) continue;
+    if (Array.isArray(value)) {
+      n += value.length;
+      continue;
+    }
+    if (key === 'timetables' && value && typeof value === 'object') {
+      for (const bucket of Object.values(value as Record<string, unknown>)) {
+        if (Array.isArray(bucket)) n += bucket.length;
+      }
+    }
+  }
+  return n;
 };
 
-export const buildSnapshot = (state: AppState): SemesterSnapshot => ({
-  student: state.student as Student,
-  courses: state.courses,
-  topics: state.topics,
-  slides: state.slides,
-  learningObjectives: state.learningObjectives,
-  examQuestions: state.examQuestions,
-  quizHistory: state.quizHistory,
-  studyPlans: state.studyPlans,
-  notes: state.notes,
-  examDates: state.examDates,
-  activities: state.activities,
-  chatHistory: state.chatHistory,
-  highlights: state.highlights,
-  savedInsights: state.savedInsights,
-  timetables: state.timetables,
-  timetablePdf: state.timetablePdf,
-  capturedAt: new Date().toISOString(),
-});
+/**
+ * The whole semester, minus session flags and secrets. Future AppState fields
+ * are copied automatically — there is no collection allowlist to go stale.
+ * The result is scrubbed so a pasted API key inside a note cannot ride along.
+ */
+export const buildSnapshot = (state: AppState): SemesterSnapshot => {
+  const raw: Record<string, unknown> = { capturedAt: new Date().toISOString() };
+  for (const [key, value] of Object.entries(state)) {
+    if (NON_SEMESTER_STATE_KEYS.has(key)) continue;
+    raw[key] = value;
+  }
+  return scrubSecretsDeep(raw) as SemesterSnapshot;
+};
+
+/** Fields the app has always had. Anything else on the object is semester data too. */
+const KNOWN_STATE_KEYS = new Set([
+  'isLoggedIn', 'student', 'courses', 'topics', 'slides', 'learningObjectives',
+  'examQuestions', 'quizHistory', 'studyPlans', 'notes', 'examDates', 'activities',
+  'chatHistory', 'highlights', 'savedInsights', 'openAIKey', 'timetables', 'timetablePdf',
+]);
 
 /** Does this workspace hold anything a user would care to keep? */
-export const hasWorkspaceContent = (state: AppState): boolean =>
-  state.courses.length > 0 || state.topics.length > 0 || state.slides.length > 0 ||
-  state.notes.length > 0 || state.examQuestions.length > 0 || state.quizHistory.length > 0 ||
-  state.studyPlans.length > 0 || state.examDates.length > 0 || state.highlights.length > 0 ||
-  state.savedInsights.length > 0 || state.learningObjectives.length > 0 || state.chatHistory.length > 0 ||
-  state.timetables.class.length > 0 || state.timetables.quiz.length > 0 || state.timetables.exam.length > 0 ||
-  state.timetablePdf !== null;
+export const hasWorkspaceContent = (state: AppState): boolean => {
+  if (itemCountOf(state) > 0 || state.timetablePdf) return true;
+  for (const [key, value] of Object.entries(state)) {
+    if (KNOWN_STATE_KEYS.has(key) || NON_SEMESTER_STATE_KEYS.has(key)) continue;
+    if (value == null || value === '') continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    return true;
+  }
+  return false;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const isBinaryValue = (value: unknown): boolean =>
+  (typeof Blob !== 'undefined' && value instanceof Blob) ||
+  value instanceof Uint8Array ||
+  (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer);
 
 const sizeOf = (value: unknown): number => {
   if (typeof Blob !== 'undefined' && value instanceof Blob) return value.size;
@@ -318,6 +382,23 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
 
   const manifest: ArchiveRecord['manifest'] = [];
   let totalBytes = 0;
+  const copiedSources = new Set<string>();
+
+  const remember = async (
+    sourceKey: string,
+    targetKey: string,
+    kind: ArchiveRecord['manifest'][number]['kind'],
+    value: unknown,
+  ): Promise<void> => {
+    // Binaries are copied as-is. Structured records are scrubbed so a pasted
+    // key cannot land in the archive. The live value is never mutated.
+    const stored = kind === 'record' && !isBinaryValue(value) ? scrubSecretsDeep(value) : value;
+    await idb.set(targetKey, stored);
+    const size = sizeOf(stored);
+    totalBytes += size;
+    manifest.push({ sourceKey, archiveKey: targetKey, kind, size });
+    copiedSources.add(sourceKey);
+  };
 
   try {
     onProgress?.({ phase: 'files', current: 0, total: refs.length, copiedBytes: 0, message: 'Copying files…' });
@@ -326,11 +407,25 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
       const value = await idb.get(ref.sourceKey);
       if (value === undefined || value === null) continue; // never offloaded — nothing to copy
       const targetKey = ref.kind === 'file' ? archiveFileKey(id, ref.id) : archiveTextKey(id, ref.id);
-      await idb.set(targetKey, value); // structured clone — the archive owns its copy
-      const size = sizeOf(value);
-      totalBytes += size;
-      manifest.push({ sourceKey: ref.sourceKey, archiveKey: targetKey, kind: ref.kind, size });
+      await remember(ref.sourceKey, targetKey, ref.kind, value);
       onProgress?.({ phase: 'files', current: i + 1, total: refs.length, copiedBytes: totalBytes, message: `Copying files… ${i + 1}/${refs.length}` });
+    }
+
+    // Everything else the semester owns in IndexedDB: unreferenced uploads,
+    // AI conversations, the search index, and any store added later. Secrets
+    // and the archive namespace itself are excluded by isSemesterOwnedIdbKey.
+    const allKeys = await idb.keys<string>();
+    for (const key of allKeys) {
+      if (!isSemesterOwnedIdbKey(key) || copiedSources.has(key)) continue;
+      const value = await idb.get(key);
+      if (value === undefined || value === null) continue;
+      if (key.startsWith('file_')) {
+        await remember(key, archiveFileKey(id, key.slice('file_'.length)), 'file', value);
+      } else if (key.startsWith('slidetext_')) {
+        await remember(key, archiveTextKey(id, key.slice('slidetext_'.length)), 'slidetext', value);
+      } else {
+        await remember(key, archiveRecordKey(id, key), 'record', value);
+      }
     }
 
     onProgress?.({ phase: 'verify', message: 'Verifying archive…' });
@@ -372,11 +467,7 @@ const failArchive = async (id: string, err: unknown): Promise<void> => {
     }
     // Best-effort cleanup of the partial copy so retries don't pile up.
     const keys = await idb.keys<string>();
-    const partial = keys.filter(
-      (k) => k === META_PREFIX + id ||
-        k.startsWith(META_FILE_PREFIX + id) ||
-        k.startsWith(META_TEXT_PREFIX + id),
-    );
+    const partial = keysBelongingToArchive(keys, id);
     if (partial.length) await idb.delMany(partial);
   } catch (cleanupErr) {
     console.error('Failed-archive cleanup failed (safe to ignore):', cleanupErr);
@@ -471,9 +562,7 @@ export const verifySemesterArchive = async (archiveId: string): Promise<Semester
 
 export const listArchives = async (): Promise<SemesterArchiveMeta[]> => {
   const allKeys = await idb.keys<string>();
-  const metaKeys = allKeys.filter(
-    (k) => k.startsWith(META_PREFIX) && !k.startsWith(META_FILE_PREFIX) && !k.startsWith(META_TEXT_PREFIX),
-  );
+  const metaKeys = allKeys.filter(isArchiveMetaKey);
   const records = await Promise.all(metaKeys.map((k) => idb.get<ArchiveRecord>(k)));
   return records
     .map((r) => r?.meta)
@@ -510,14 +599,28 @@ export const loadArchivedSlideText = async (archiveId: string, slideId: string):
   }
 };
 
+/** Other semester-owned IndexedDB records captured with the archive (AI chats, future stores). */
+export const loadArchivedRecords = async (
+  archiveId: string,
+): Promise<{ sourceKey: string; value: unknown }[]> => {
+  const record = await loadArchive(archiveId);
+  if (!record) return [];
+  const out: { sourceKey: string; value: unknown }[] = [];
+  for (const entry of record.manifest) {
+    if (entry.kind !== 'record') continue;
+    try {
+      out.push({ sourceKey: entry.sourceKey, value: (await idb.get(entry.archiveKey)) ?? null });
+    } catch (err) {
+      console.error(`Error loading archived record ${entry.sourceKey}:`, err);
+    }
+  }
+  return out;
+};
+
 /** Deletes an archive and all its records. Only for verified/failed archives the user asked to remove. */
 export const deleteArchive = async (archiveId: string): Promise<void> => {
   const keys = await idb.keys<string>();
-  const toDelete = keys.filter(
-    (k) => k === META_PREFIX + archiveId ||
-      k.startsWith(META_FILE_PREFIX + archiveId) ||
-      k.startsWith(META_TEXT_PREFIX + archiveId),
-  );
+  const toDelete = keysBelongingToArchive(keys, archiveId);
   if (toDelete.length) await idb.delMany(toDelete);
 };
 
@@ -554,9 +657,9 @@ export const pruneWorkspaceFiles = async (state: AppState): Promise<void> => {
     keep.add(`slidetext_${slide.id}`);
   }
   const allKeys = await idb.keys<string>();
-  const orphans = allKeys.filter(
-    (k) => (k.startsWith('file_') || k.startsWith('slidetext_')) && !keep.has(k),
-  );
+  // Release every semester-owned record the fresh workspace does not reference.
+  // Archives and credentials are not semester-owned, so they stay.
+  const orphans = allKeys.filter((k) => isSemesterOwnedIdbKey(k) && !keep.has(k));
   if (orphans.length) await idb.delMany(orphans);
 };
 
@@ -579,18 +682,39 @@ export interface CompleteSemesterResult {
  *    record is deleted (a crash mid-prune can orphan bytes, never data);
  *  - any failure before that point throws without touching the workspace.
  */
+export interface CompleteSemesterOptions {
+  /** Academic position the NEW workspace starts at. Never used as the archive label. */
+  nextLevel: string;
+  nextSemester: string;
+  /**
+   * Academic year of the semester being closed. Stored on the archive only —
+   * the fresh workspace does not inherit a year, because Student has no year
+   * field and the next semester may fall in a different year.
+   */
+  academicYear?: string;
+  onProgress?: ProgressFn;
+}
+
 export const completeSemester = async (
   state: AppState,
-  next: { level: string; semester: string; academicYear?: string },
-  onProgress?: ProgressFn,
+  options: CompleteSemesterOptions,
 ): Promise<CompleteSemesterResult> => {
-  const archive = await createSemesterArchive(state, { ...next, onProgress });
+  if (!state.student) throw new ArchiveError('No student profile found — complete onboarding first.');
+
+  // The archive is the semester that just ended, read from the live profile.
+  // The caller's level/semester is where the student is going next.
+  const archive = await createSemesterArchive(state, {
+    level: state.student.level,
+    semester: state.student.semester,
+    academicYear: options.academicYear,
+    onProgress: options.onProgress,
+  });
   if (archive.status !== 'verified') {
     throw new ArchiveError('The archive did not reach verified status — nothing was changed.');
   }
 
-  onProgress?.({ phase: 'reset', message: 'Starting fresh workspace…' });
-  const fresh = buildFreshWorkspace(state, next);
+  options.onProgress?.({ phase: 'reset', message: 'Starting fresh workspace…' });
+  const fresh = buildFreshWorkspace(state, { level: options.nextLevel, semester: options.nextSemester });
 
   // Persist the new workspace first: from this instant the active semester is
   // the empty one on disk, and everything the old semester owned exists in
@@ -609,7 +733,7 @@ export const completeSemester = async (
     console.error('Search index reset failed (data is safe in the archive):', err);
   }
 
-  onProgress?.({ phase: 'done', message: 'Semester completed 🎓' });
+  options.onProgress?.({ phase: 'done', message: 'Semester completed 🎓' });
   return { archive, fresh };
 };
 
@@ -710,10 +834,10 @@ export const degreeBackupFileName = (date: Date = new Date()): string =>
   `PharmaTRACK_Full-Academic-Record_${date.toISOString().slice(0, 10)}.pharmatrack`;
 
 interface PackedFile {
-  /** Stable app id: fileId for binaries, slideId for offloaded text. */
+  /** fileId, slideId, or the original IndexedDB key for kind 'record'. */
   key: string;
-  kind: 'file' | 'slidetext';
-  value: Blob | string;
+  kind: 'file' | 'slidetext' | 'record';
+  value: Blob | string | unknown;
   type: string;
   /** For kind 'file': the slide that owns this binary. */
   slide?: { id: string; title: string; fileType?: string };
@@ -768,21 +892,40 @@ const collectBackupSource = async (
   const slideForFile = (fileId: string) =>
     snapshot.slides.find((s) => (s.fileUrl || '').replace(/^local:/, '') === fileId);
 
+  const pushLive = (key: string, kind: PackedFile['kind'], value: unknown, slide?: PackedFile['slide']) => {
+    files.push({ key, kind, value, type: kind === 'slidetext' ? 'text/plain' : valueType(value), slide });
+  };
+
   if (source.kind === 'archive') {
     for (const entry of (await loadArchive(source.archiveId))!.manifest) {
       const value = await idb.get(entry.archiveKey);
       if (value === undefined || value === null) continue;
-      files.push(entry.kind === 'file'
-        ? { key: entry.archiveKey.slice(META_FILE_PREFIX.length + source.archiveId.length + 1), kind: 'file', value, type: valueType(value), slide: slideForFile(entry.sourceKey.slice('file_'.length)) }
-        : { key: entry.archiveKey.slice(META_TEXT_PREFIX.length + source.archiveId.length + 1), kind: 'slidetext', value: value as string, type: 'text/plain' });
+      if (entry.kind === 'record') {
+        pushLive(entry.sourceKey, 'record', value);
+      } else if (entry.kind === 'file') {
+        const fileId = entry.sourceKey.startsWith('file_') ? entry.sourceKey.slice('file_'.length) : entry.archiveKey.slice(META_FILE_PREFIX.length + source.archiveId.length + 1);
+        pushLive(fileId, 'file', value, slideForFile(fileId));
+      } else {
+        const slideId = entry.sourceKey.startsWith('slidetext_') ? entry.sourceKey.slice('slidetext_'.length) : entry.archiveKey.slice(META_TEXT_PREFIX.length + source.archiveId.length + 1);
+        pushLive(slideId, 'slidetext', value);
+      }
     }
   } else {
+    const seen = new Set<string>();
     for (const ref of collectFileRefs(snapshot as unknown as AppState)) {
       const value = await idb.get(ref.sourceKey);
+      seen.add(ref.sourceKey);
       if (value === undefined || value === null) continue;
-      files.push(ref.kind === 'file'
-        ? { key: ref.id, kind: 'file', value, type: valueType(value), slide: slideForFile(ref.id) }
-        : { key: ref.id, kind: 'slidetext', value: value as string, type: 'text/plain' });
+      pushLive(ref.id, ref.kind, value, ref.kind === 'file' ? slideForFile(ref.id) : undefined);
+    }
+    const allKeys = await idb.keys<string>();
+    for (const key of allKeys) {
+      if (!isSemesterOwnedIdbKey(key) || seen.has(key)) continue;
+      const value = await idb.get(key);
+      if (value === undefined || value === null) continue;
+      if (key.startsWith('file_')) pushLive(key.slice('file_'.length), 'file', value, slideForFile(key.slice('file_'.length)));
+      else if (key.startsWith('slidetext_')) pushLive(key.slice('slidetext_'.length), 'slidetext', value);
+      else pushLive(key, 'record', value);
     }
   }
   return { meta, snapshot, index, files };
@@ -827,15 +970,23 @@ const buildPackageEntries = (
     sem('highlights.json', snapshot.highlights),
     sem('saved-insights.json', snapshot.savedInsights),
     sem('timetable.json', { timetables: snapshot.timetables, timetablePdf: snapshot.timetablePdf }),
+    // Full snapshot, including collections this build does not name. Importers
+    // keep reading the named files above; unknown keys are merged from here.
+    sem('workspace.json', snapshot),
   ];
   if (index && Object.keys(index).length) entries.push(sem('search-index.json', index));
 
   for (const f of files) {
+    if (f.kind === 'record') {
+      const text = JSON.stringify(scrubSecretsDeep(f.value));
+      entries.push({ name: `records/${encodeURIComponent(f.key)}.json`, value: text, type: 'application/json' });
+      continue;
+    }
     if (f.kind === 'file') {
       const ext = extForMime(f.type, f.slide?.fileType);
       entries.push({
         name: `files/${f.key}.${ext}`,
-        value: f.value,
+        value: f.value as Blob | string,
         type: f.type,
       });
       entries.push({
@@ -850,7 +1001,7 @@ const buildPackageEntries = (
         type: 'application/json',
       });
     } else {
-      entries.push({ name: `text/${f.key}.txt`, value: f.value, type: 'text/plain' });
+      entries.push({ name: `text/${f.key}.txt`, value: f.value as string, type: 'text/plain' });
     }
   }
   void meta;
@@ -1213,7 +1364,7 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
       try { legacyIndex = JSON.parse(await zip.file('searchIndex.json')!.async('string')); } catch { legacyIndex = null; }
     }
 
-    const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
+    const files = new Map<string, { value: Blob | string | unknown; kind: 'file' | 'slidetext' | 'record' }>();
     const actual: { name: string; size: number; type: string }[] = [];
     for (const declared of legacy.files) {
       const entry = zip.file(declared.name);
@@ -1290,6 +1441,16 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
       timetablePdf: timetable.timetablePdf ?? null,
       capturedAt: current.completedAt || current.createdAt,
     };
+    // Future collections travel in workspace.json. Named files above stay
+    // authoritative for the fields this build already knows.
+    const workspaceEntry = zip.file('semester/workspace.json');
+    if (workspaceEntry) {
+      const full = JSON.parse(await workspaceEntry.async('string')) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(full)) {
+        if (key in snapshot || NON_SEMESTER_STATE_KEYS.has(key)) continue;
+        (snapshot as Record<string, unknown>)[key] = value;
+      }
+    }
   } catch (err) {
     return fail(`Corrupt backup: ${(err as Error).message}`);
   }
@@ -1350,7 +1511,7 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
     }
   }
 
-  const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
+  const files = new Map<string, { value: Blob | string | unknown; kind: 'file' | 'slidetext' | 'record' }>();
   const verified: { name: string; size: number; hash: string }[] = [];
   let materialCount = 0;
   try {
@@ -1387,6 +1548,18 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
         verified.push({ name, size: value.size, hash });
         const key = name.slice('files/'.length).replace(/\.(pdf|pptx|docx|png|jpe?g|gif|webp|img|bin)$/i, '');
         files.set(key, { value, kind: 'file' });
+      } else if (name.startsWith('records/')) {
+        const raw = await entry.async('string');
+        if (declared && declared.size !== new TextEncoder().encode(raw).length) {
+          return fail(`Corrupt backup: entry "${name}" has the wrong size.`);
+        }
+        const hash = await hashEntry(name, raw);
+        if (declared && declared.hash !== hash) return fail(`Corrupt backup: entry "${name}" failed its content check.`);
+        verified.push({ name, size: new TextEncoder().encode(raw).length, hash });
+        const sourceKey = decodeURIComponent(name.slice('records/'.length).replace(/\.json$/, ''));
+        let parsed: unknown = raw;
+        try { parsed = JSON.parse(raw); } catch { /* keep the raw string */ }
+        files.set(sourceKey, { value: parsed, kind: 'record' });
       } else {
         const value = await entry.async('string');
         if (declared && declared.size !== new TextEncoder().encode(value).length) {
@@ -1556,9 +1729,7 @@ export const importBackupIntoArchive = async (
   const cleanup = async (): Promise<void> => {
     try {
       const keys = await idb.keys<string>();
-      const partial = keys.filter(
-        (k) => k === META_PREFIX + id || k.startsWith(META_FILE_PREFIX + id) || k.startsWith(META_TEXT_PREFIX + id),
-      );
+      const partial = keysBelongingToArchive(keys, id);
       if (partial.length) await idb.delMany(partial);
     } catch (err) {
       console.error('Import cleanup failed (safe to ignore):', err);
@@ -1577,11 +1748,16 @@ export const importBackupIntoArchive = async (
     onProgress?.({ phase: 'files', current: 0, total: staged.files.size, copiedBytes: 0, message: 'Copying files into the archive…' });
     let i = 0;
     for (const [key, entry] of staged.files) {
-      const targetKey = entry.kind === 'file' ? archiveFileKey(id, key) : archiveTextKey(id, key);
+      const targetKey = entry.kind === 'file'
+        ? archiveFileKey(id, key)
+        : entry.kind === 'slidetext'
+          ? archiveTextKey(id, key)
+          : archiveRecordKey(id, key);
       await idb.set(targetKey, entry.value);
       const size = sizeOf(entry.value);
       totalBytes += size;
-      manifest.push({ sourceKey: entry.kind === 'file' ? `file_${key}` : `slidetext_${key}`, archiveKey: targetKey, kind: entry.kind, size });
+      const sourceKey = entry.kind === 'file' ? `file_${key}` : entry.kind === 'slidetext' ? `slidetext_${key}` : key;
+      manifest.push({ sourceKey, archiveKey: targetKey, kind: entry.kind, size });
       i++;
       onProgress?.({ phase: 'files', current: i, total: staged.files.size, copiedBytes: totalBytes, message: `Copying files into the archive… ${i}/${staged.files.size}` });
     }
@@ -1646,13 +1822,13 @@ export const applyWorkspaceSource = async (staged: StagedBackup, current: AppSta
   // 1. Clear the current workspace's IndexedDB records (the caller already
   //    archived them — or the current workspace was empty).
   const currentKeys = await idb.keys<string>();
-  const currentRecords = currentKeys.filter((k) => k.startsWith('file_') || k.startsWith('slidetext_'));
+  const currentRecords = currentKeys.filter((k) => isSemesterOwnedIdbKey(k));
   if (currentRecords.length) await idb.delMany(currentRecords);
 
-  // 2. Materialise the incoming binaries.
+  // 2. Materialise the incoming binaries and any other captured records.
   let i = 0;
   for (const [key, entry] of staged.files) {
-    const targetKey = entry.kind === 'file' ? `file_${key}` : `slidetext_${key}`;
+    const targetKey = entry.kind === 'file' ? `file_${key}` : entry.kind === 'slidetext' ? `slidetext_${key}` : key;
     await idb.set(targetKey, entry.value);
     i++;
     if (staged.files.size > 0 && i % 5 === 0) {
@@ -1675,30 +1851,23 @@ export const applyWorkspaceSource = async (staged: StagedBackup, current: AppSta
       }
     : incoming.student;
 
+  // Every semester field on the snapshot, including ones added after this
+  // file was written. Session flags and secrets are never taken from an import.
+  const payload: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(incoming)) {
+    if (key === 'capturedAt' || key === 'student' || NON_SEMESTER_STATE_KEYS.has(key)) continue;
+    payload[key] = value;
+  }
   const fresh: AppState = {
     ...initialState,
+    ...payload,
     isLoggedIn: current.isLoggedIn,
     // The archive never carries credentials; this copies whatever the live
-  // workspace has (post-migration: an already-migrated empty string), never
-  // something that arrived inside the imported file.
-  openAIKey: current.openAIKey,
+    // workspace has (post-migration: an already-migrated empty string), never
+    // something that arrived inside the imported file.
+    openAIKey: current.openAIKey,
     student,
-    courses: incoming.courses,
-    topics: incoming.topics,
-    slides: incoming.slides,
-    learningObjectives: incoming.learningObjectives,
-    examQuestions: incoming.examQuestions,
-    quizHistory: incoming.quizHistory,
-    studyPlans: incoming.studyPlans,
-    notes: incoming.notes,
-    examDates: incoming.examDates,
-    activities: incoming.activities,
-    chatHistory: incoming.chatHistory,
-    highlights: incoming.highlights,
-    savedInsights: incoming.savedInsights,
-    timetables: incoming.timetables,
-    timetablePdf: incoming.timetablePdf,
-  };
+  } as AppState;
 
   saveState(fresh);
   onProgress?.({ phase: 'done', message: 'Workspace restored' });
@@ -1746,13 +1915,15 @@ export const restoreArchive = async (
   }
 
   // Archive record → staged shape (no ZIP round-trip).
-  const files = new Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>();
+  const files = new Map<string, { value: Blob | string | unknown; kind: 'file' | 'slidetext' | 'record' }>();
   for (const entry of record.manifest) {
     const value = await idb.get(entry.archiveKey);
     if (value === undefined || value === null) continue;
-    const key = entry.kind === 'file'
-      ? entry.archiveKey.slice(META_FILE_PREFIX.length + archiveId.length + 1)
-      : entry.archiveKey.slice(META_TEXT_PREFIX.length + archiveId.length + 1);
+    const key = entry.kind === 'record'
+      ? entry.sourceKey
+      : entry.kind === 'file'
+        ? (entry.sourceKey.startsWith('file_') ? entry.sourceKey.slice('file_'.length) : entry.archiveKey.slice(META_FILE_PREFIX.length + archiveId.length + 1))
+        : (entry.sourceKey.startsWith('slidetext_') ? entry.sourceKey.slice('slidetext_'.length) : entry.archiveKey.slice(META_TEXT_PREFIX.length + archiveId.length + 1));
     files.set(key, { value, kind: entry.kind });
   }
 

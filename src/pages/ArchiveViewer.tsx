@@ -13,7 +13,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { loadArchive, loadArchivedFile, loadArchivedSlideText, type ArchiveRecord } from '../utils/semesterArchive';
+import { loadArchive, loadArchivedFile, loadArchivedRecords, loadArchivedSlideText, type ArchiveRecord } from '../utils/semesterArchive';
 import { extractWordText } from '../utils/wordProcessor';
 import type { AppState, Slide } from '../types';
 import PdfViewer from '../components/PdfViewer';
@@ -67,14 +67,26 @@ const ArchiveViewer: React.FC = () => {
   const [selected, setSelected] = useState<string>('overview'); // 'overview' | course id
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [aiConversations, setAiConversations] = useState<Array<{ id: string; title?: string; messages?: Array<{ id?: string; role?: string; content?: string }> }>>([]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const rec = await loadArchive(id || '');
       if (cancelled) return;
-      if (!rec) setNotFound(true);
-      else setRecord(rec);
+      if (!rec) {
+        setNotFound(true);
+        return;
+      }
+      setRecord(rec);
+      const extras = await loadArchivedRecords(rec.meta.id);
+      if (cancelled) return;
+      const chats = extras
+        .filter((row) => row.sourceKey.startsWith('pharmatrack_ai_conversation_'))
+        .map((row) => row.value)
+        .filter((value): value is { id: string; title?: string; messages?: Array<{ id?: string; role?: string; content?: string }> } =>
+          Boolean(value) && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string');
+      setAiConversations(chats);
     })();
     return () => { cancelled = true; };
   }, [id]);
@@ -530,6 +542,25 @@ const ArchiveViewer: React.FC = () => {
                   </div>
                 </Section>
               )}
+              {aiConversations.length > 0 && (
+                <Section title="AI conversations" icon={MessageSquare}>
+                  <div className="space-y-4 max-h-96 overflow-y-auto pr-1" data-testid="archive-ai-conversations">
+                    {aiConversations.map((conv) => (
+                      <div key={conv.id}>
+                        <p className="text-xs font-bold text-gray-500 uppercase mb-2">{conv.title || 'Conversation'}</p>
+                        <div className="space-y-1.5">
+                          {(conv.messages || []).slice(-40).map((m, i) => (
+                            <div key={m.id || i} className={`text-sm rounded-xl px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-[#2D6A4F]/10 ml-auto text-gray-800' : 'bg-gray-100 text-gray-700'}`}>
+                              {m.content}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Section>
+              )}
+
             </>
           )}
 

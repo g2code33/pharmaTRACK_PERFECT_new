@@ -132,6 +132,7 @@ describe('Complete Semester dialog', () => {
     // Wait for the provider to load the seeded state.
     await waitFor(() => expect(screen.getByTestId('courses').textContent).toBe('1'));
 
+    fireEvent.change(screen.getByLabelText('Academic year of this semester'), { target: { value: '2025/2026' } });
     await fireEvent.click(screen.getByText('Back Up & Complete Semester'));
 
     // Success screen with the verified-backup promise.
@@ -147,6 +148,11 @@ describe('Complete Semester dialog', () => {
     expect(archiveKeys).toHaveLength(1);
     const record = idbStore.get(archiveKeys[0]) as any;
     expect(record.meta.status).toBe('verified');
+    // Archived semester is the one that ended, not the fresh workspace.
+    expect(record.meta.level).toBe('300');
+    expect(record.meta.semester).toBe('1');
+    expect(record.meta.title).toBe('Level 300 — Semester 1');
+    expect(record.meta.academicYear).toBe('2025/2026');
     expect(record.snapshot.courses).toHaveLength(1);
     expect(record.snapshot.slides).toHaveLength(2);
     expect(record.snapshot.notes).toHaveLength(1);

@@ -273,6 +273,12 @@ export interface SemesterSnapshot {
   timetables: AppState['timetables'];
   timetablePdf: string | null;
   capturedAt: string;
+  /**
+   * Any AppState field this build does not name explicitly. The archiver copies
+   * every semester field automatically, so a collection added later is still
+   * inside the snapshot (and `semester/workspace.json` in a portable backup).
+   */
+  [extra: string]: unknown;
 }
 
 export interface BackupManifestFile {
@@ -311,8 +317,11 @@ export interface StagedBackup {
   snapshot: SemesterSnapshot;
   /** Per-page full-text search index captured with the semester, if any. */
   index: Record<string, { materialId: string; topicId: string; title: string; pages: { page: number; text: string }[] }> | null;
-  /** key = fileId (kind 'file') or slideId (kind 'slidetext'). */
-  files: Map<string, { value: Blob | string; kind: 'file' | 'slidetext' }>;
+  /**
+   * key = fileId (kind 'file'), slideId (kind 'slidetext'), or the original
+   * IndexedDB key (kind 'record' — AI conversations and any future store).
+   */
+  files: Map<string, { value: Blob | string | unknown; kind: 'file' | 'slidetext' | 'record' }>;
 }
 
 /**

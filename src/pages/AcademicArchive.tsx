@@ -461,13 +461,11 @@ const AcademicArchive: React.FC = () => {
                   <div className="p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
+                        {meta.academicYear && (
+                          <p className="text-[11px] font-black uppercase tracking-widest text-[#2D6A4F]">{meta.academicYear}</p>
+                        )}
+                        <div className="flex items-center gap-2 flex-wrap mt-0.5">
                           <h3 className="font-bold text-gray-800 text-lg">{meta.title}</h3>
-                          {meta.academicYear && (
-                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 text-xs font-semibold rounded-full">
-                              {meta.academicYear}
-                            </span>
-                          )}
                           {failed ? (
                             <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs font-bold rounded-full" title={meta.error}>
                               Failed

@@ -29,6 +29,9 @@ import {
   verifySemesterArchive,
   listArchives,
   loadArchive,
+  loadArchivedFile,
+  loadArchivedRecords,
+  loadArchivedSlideText,
   deleteArchive,
   completeSemester,
   computeNextProgression,
@@ -207,7 +210,9 @@ describe('archive creation & verification', () => {
     // The per-page index was carried.
     expect(rec!.index?.s1.pages[0].text).toBe('deep text');
     // Binaries were COPIED into the archive namespace; originals untouched.
-    expect(meta.fileCount).toBe(3); // 2 files + 1 slide text (s3/s4 never offloaded)
+    // 2 files + 1 slide text + the search-index record (s3/s4 were never offloaded).
+    expect(meta.fileCount).toBe(4);
+    expect(rec!.manifest.some((m) => m.sourceKey === 'pharmatrack_search_index' && m.kind === 'record')).toBe(true);
     const pdfCopy = await idbStore.get(`semester_archive_file_${meta.id}_file1`);
     expect(pdfCopy).toBeInstanceOf(Blob);
     expect(await blobToText(pdfCopy as Blob)).toContain('digoxin');
@@ -296,7 +301,7 @@ describe('failure safety', () => {
 
     // Make the copy of file_file2 blow up with a quota error.
     await withFailingArchiveCopy('_file2', new DOMException('quota', 'QuotaExceededError'), async () => {
-      await expect(completeSemester(state, { level: 'Level 300', semester: '2nd Semester' }))
+      await expect(completeSemester(state, { nextLevel: 'Level 300', nextSemester: '2nd Semester' }))
         .rejects.toThrow(/storage is full|archive could not be completed/i);
     });
 
@@ -329,10 +334,15 @@ describe('complete semester → fresh workspace', () => {
     seedIdb(state);
     await setSearchIndexRaw({ s1: { materialId: 's1', topicId: 't1', title: 'Digoxin', pages: [{ page: 1, text: 'deep' }] } });
 
-    const { archive, fresh } = await completeSemester(state, { level: 'Level 300', semester: '2nd Semester' });
+    const { archive, fresh } = await completeSemester(state, { nextLevel: 'Level 300', nextSemester: '2nd Semester', academicYear: '2025/2026' });
 
     // The archive.
     expect(archive.status).toBe('verified');
+    // The archive is the semester that ended, not the one that is starting.
+    expect(archive.level).toBe('300');
+    expect(archive.semester).toBe('1');
+    expect(archive.title).toBe('Level 300 — Semester 1');
+    expect(archive.academicYear).toBe('2025/2026');
     const list = await listArchives();
     expect(list).toHaveLength(1);
     const archived = await loadArchive(list[0].id);
@@ -389,6 +399,114 @@ describe('complete semester → fresh workspace', () => {
     expect(fresh.openAIKey).toBe('');
     expect(hasWorkspaceContent(fresh)).toBe(false);
     expect(hasWorkspaceContent(state)).toBe(true);
+  });
+});
+
+describe('acceptance: complete semester', () => {
+  it('archives every semester record, verifies, then starts a clean workspace', async () => {
+    const state = makeState() as AppState & { clinicalCases: { id: string; title: string }[] };
+    state.clinicalCases = [{ id: 'cc1', title: 'Digoxin toxicity case' }];
+    state.slides = [
+      ...state.slides,
+      {
+        id: 's5', topicId: 't1', slideNumber: 3, title: 'Lecture 5 — Cardiovascular',
+        contentText: 'Slide text about beta blockers',
+        fileUrl: 'local:pptx1', fileType: 'png', status: 'completed', createdAt: '2024-01-06',
+      },
+    ];
+    seedIdb(state);
+    idbStore.set('file_pptx1', new Blob(['PK pptx lecture bytes'], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }));
+    idbStore.set('slidetext_s5', 'OCR: autonomic pharmacology, full extraction from the deck');
+    idbStore.set('pharmatrack_ai_conversation_conv1', {
+      id: 'conv1',
+      title: 'Digoxin chat',
+      messages: [{ id: 'm1', role: 'assistant', content: 'Monitor potassium with digoxin.' }],
+    });
+    idbStore.set('pharmatrack_ai_conversations_index', [
+      { id: 'conv1', title: 'Digoxin chat', messageCount: 1, createdAt: '2024-02-01', updatedAt: '2024-02-02' },
+    ]);
+    const secret = { nvidia: { apiKey: 'nvapi-should-stay-out-of-archive' } };
+    idbStore.set('pharmatrack_ai_credentials', secret);
+
+    const { archive, fresh } = await completeSemester(state, {
+      nextLevel: 'Level 300',
+      nextSemester: '2nd Semester',
+      academicYear: '2025/2026',
+    });
+
+    expect(archive.status).toBe('verified');
+    expect(archive.id).toMatch(/^archive_300_1_2025_2026_/);
+    expect(archive.level).toBe('300');
+    expect(archive.semester).toBe('1');
+    expect(archive.title).toBe('Level 300 — Semester 1');
+    expect(archive.academicYear).toBe('2025/2026');
+    expect(archive.completedAt).toBeTruthy();
+
+    // Fresh workspace keeps identity only.
+    expect(fresh.student?.name).toBe('Ama');
+    expect(fresh.student?.university).toBe('UCC');
+    expect(fresh.student?.level).toBe('Level 300');
+    expect(fresh.student?.semester).toBe('2nd Semester');
+    expect(fresh.courses).toEqual([]);
+    expect(fresh.topics).toEqual([]);
+    expect(fresh.slides).toEqual([]);
+    expect(fresh.notes).toEqual([]);
+    expect(fresh.examQuestions).toEqual([]);
+    expect(fresh.quizHistory).toEqual([]);
+    expect(fresh.studyPlans).toEqual([]);
+    expect(fresh.highlights).toEqual([]);
+    expect(fresh.chatHistory).toEqual([]);
+    expect(fresh.timetablePdf).toBeNull();
+    expect(fresh.timetables).toEqual({ class: [], quiz: [], exam: [] });
+    expect((fresh as { clinicalCases?: unknown }).clinicalCases).toBeUndefined();
+    expect(fresh.openAIKey).toBe('');
+
+    const saved = JSON.parse(localStorage.getItem('pharmatrack_state')!);
+    expect(saved.courses).toEqual([]);
+    expect(saved.student.semester).toBe('2nd Semester');
+
+    // Live semester records are gone. Credentials are not semester data.
+    expect(idbStore.has('file_file1')).toBe(false);
+    expect(idbStore.has('file_pptx1')).toBe(false);
+    expect(idbStore.has('slidetext_s1')).toBe(false);
+    expect(idbStore.has('slidetext_s5')).toBe(false);
+    expect(idbStore.has('pharmatrack_ai_conversation_conv1')).toBe(false);
+    expect(idbStore.get('pharmatrack_ai_credentials')).toEqual(secret);
+
+    // Opening the archive still reaches every item.
+    const opened = await loadArchive(archive.id);
+    expect(opened?.meta.status).toBe('verified');
+    expect(opened!.snapshot.courses.map((c) => c.courseCode)).toEqual(['PHA301', 'PHA302']);
+    expect(opened!.snapshot.notes[0].noteText).toContain('narrow therapeutic index');
+    expect(opened!.snapshot.examQuestions[0].questionText).toContain('digoxin');
+    expect(opened!.snapshot.quizHistory[0].scorePercentage).toBe(90);
+    expect(opened!.snapshot.studyPlans[0].notes).toBe('Ch 4');
+    expect(opened!.snapshot.timetables.class[0].subject).toBe('PHA301');
+    expect(opened!.snapshot.timetablePdf).toContain('PDFDATA');
+    expect(opened!.snapshot.highlights[0].text).toContain('narrow therapeutic index');
+    expect(opened!.snapshot.chatHistory[0].content).toContain('arrhythmia');
+    expect(opened!.snapshot.learningObjectives[0].objectiveText).toContain('digoxin');
+    expect((opened!.snapshot as { clinicalCases?: { title: string }[] }).clinicalCases?.[0].title).toBe('Digoxin toxicity case');
+    expect((opened!.snapshot as { openAIKey?: string }).openAIKey).toBeFalsy();
+
+    expect(await blobToText((await loadArchivedFile(archive.id, 'file1')) as Blob)).toContain('%PDF');
+    expect(await blobToText((await loadArchivedFile(archive.id, 'pptx1')) as Blob)).toContain('pptx lecture');
+    expect(await loadArchivedSlideText(archive.id, 's1')).toContain('cardiac glycosides');
+    expect(await loadArchivedSlideText(archive.id, 's5')).toContain('full extraction');
+
+    const records = await loadArchivedRecords(archive.id);
+    const chat = records.find((r) => r.sourceKey === 'pharmatrack_ai_conversation_conv1');
+    expect(JSON.stringify(chat?.value)).toContain('Monitor potassium with digoxin.');
+    expect(records.some((r) => r.sourceKey === 'pharmatrack_ai_credentials')).toBe(false);
+
+    for (const [key, value] of idbStore) {
+      if (!String(key).includes(archive.id)) continue;
+      const dumped = JSON.stringify(value);
+      expect(dumped).not.toContain('nvapi-should-stay-out-of-archive');
+      expect(dumped).not.toContain('sk-test-key');
+    }
+
+    expect((await verifySemesterArchive(archive.id)).status).toBe('verified');
   });
 });
 

@@ -125,11 +125,12 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
     setPhase('running');
     setError(null);
     try {
-      const { archive, fresh } = await completeSemester(
-        state,
-        { level: nextLevel, semester: nextSemester, academicYear },
-        setProgress,
-      );
+      const { archive, fresh } = await completeSemester(state, {
+        nextLevel,
+        nextSemester,
+        academicYear,
+        onProgress: setProgress,
+      });
       setDoneArchive(archive);
       // The verified archive owns everything; switch the app to the fresh
       // workspace. (saveState already ran inside completeSemester, so this
@@ -168,9 +169,10 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
             <div className="p-5 space-y-5">
               <p className="text-sm text-gray-600">
                 You're about to finish this semester and begin a fresh academic workspace.
-                Your current semester will be <strong>safely archived on this device</strong> before
-                the new semester begins — previous semesters remain available under{' '}
-                <strong>Academic Archive</strong>.
+                <strong> {state.student?.level || 'This level'} — {state.student?.semester || 'this semester'}</strong> will
+                be archived on this device first, verified, and only then replaced. The archive is
+                permanent and read-only. Your new workspace will not inherit its courses, notes,
+                quizzes, files or chat history. Previous semesters stay under <strong>Academic Archive</strong>.
               </p>
 
               {/* What will be archived */}
@@ -192,6 +194,19 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
                   Estimated archive size:{' '}
                   <span className="font-semibold text-gray-700">{estBytes === null ? 'calculating…' : formatBytes(estBytes)}</span>
                 </p>
+                <div className="mt-3">
+                  <label htmlFor="archive-academic-year" className="block text-sm font-medium text-gray-700 mb-1">
+                    Academic year of this semester
+                  </label>
+                  <input
+                    id="archive-academic-year"
+                    type="text"
+                    value={academicYear}
+                    onChange={(e) => setAcademicYear(e.target.value)}
+                    placeholder="e.g. 2026/2027"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] outline-none"
+                  />
+                </div>
               </div>
 
               {/* Next academic position */}
@@ -222,16 +237,6 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
                       {SEMESTERS.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Academic year (optional)</label>
-                  <input
-                    type="text"
-                    value={academicYear}
-                    onChange={(e) => setAcademicYear(e.target.value)}
-                    placeholder="e.g. 2026/2027"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] outline-none"
-                  />
                 </div>
               </div>
 
