@@ -2,12 +2,20 @@ import React, { useState, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Note } from '../types';
-import { Link } from 'react-router-dom';
-import { StickyNote, Plus, Edit2, Trash2, X, Search, BookOpen, ChevronDown, ChevronUp, Sparkles, Download, Clock, Paperclip, Loader2, FileText, Image, XCircle } from 'lucide-react';
+import { StickyNote, Plus, Edit2, Trash2, X, Search, ChevronDown, ChevronUp, Sparkles, Paperclip, Loader2, FileText, XCircle } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
+import {
+  AIEngineError,
+  aiManager,
+  buildContext,
+  buildTaskRequest,
+  profileById,
+} from '../ai';
+import { useAI } from '../ai/state';
 
 const Notes: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, getSlidesForTopic } = useApp();
+  const ai = useAI();
   const [selectedCourse, setSelectedCourse] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -81,28 +89,80 @@ const Notes: React.FC = () => {
     if (window.confirm('Delete this note permanently?')) dispatch({ type: 'DELETE_NOTE', payload: id });
   };
 
+  /**
+   * AI Auto-Summarize, through the engine.
+   *
+   * The old version hard-coded one Gemini URL and told the user to "add your
+   * Gemini 2.5 Flash API Key". Now the summary is a normal engine request: the
+   * active profile and provider decide who answers, the provider may fail over,
+   * and the note records which provider actually wrote it.
+   */
   const generateAiSummary = async (topicId: string) => {
     const slides = getSlidesForTopic(topicId);
-    if (!slides.length) { alert('No study material to summarize for this topic.'); return; }
-    
-    setIsGenerating(true);
-    const content = slides.map(s => s.contentText).join('\n\n').substring(0, 3000);
+    if (!slides.length) {
+      alert('No study material to summarize for this topic.');
+      return;
+    }
 
+    setIsGenerating(true);
     try {
-      if (state.openAIKey) {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${state.openAIKey}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: "Summarize this material in 3 bullet points: " + content }] }] })
-        });
-        const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          dispatch({ type: 'ADD_NOTE', payload: { id: uuidv4(), topicId, noteText: "🤖 AI Summary:\n" + text, isAiGenerated: true, createdAt: new Date().toISOString() } });
-        }
-      } else {
-         setTimeout(() => { dispatch({ type: 'ADD_NOTE', payload: { id: uuidv4(), topicId, noteText: "🤖 AI Summary:\nTo enable AI summaries, add your Gemini 2.5 Flash API Key in Settings.", isAiGenerated: true, createdAt: new Date().toISOString() } }); }, 1000);
-      }
-    } catch (e) { alert("Failed to connect to AI"); } finally { setIsGenerating(false); }
+      const topic = state.topics.find((t) => t.id === topicId);
+      const course = state.courses.find((c) => c.id === topic?.courseId);
+      const text = slides
+        .map((slide, index) => `--- Slide ${index + 1}: ${slide.title} ---\n${slide.contentText ?? ''}`)
+        .join('\n\n');
+
+      const context = buildContext(
+        {
+          student: state.student ? { level: state.student.level, semester: state.student.semester, program: state.student.program } : null,
+          courses: state.courses,
+          topics: state.topics,
+          slides: state.slides,
+          learningObjectives: state.learningObjectives,
+          notes: state.notes,
+          quizHistory: state.quizHistory,
+          studyPlans: state.studyPlans,
+        },
+        {
+          topicId,
+          courseId: course?.id,
+          materialText: { label: `${topic?.topicName ?? 'Topic'} material`, text },
+          includeObjectives: false,
+          includeNotes: false,
+        },
+      );
+
+      const request = buildTaskRequest({
+        task: 'summarize',
+        question: 'Summarise this topic’s material as 3–5 bullet points for revision.',
+        context,
+        profile: profileById(ai.settings.profiles, 'study'),
+        stream: false,
+      });
+
+      const response = await aiManager.generate(request);
+      dispatch({
+        type: 'ADD_NOTE',
+        payload: {
+          id: uuidv4(),
+          topicId,
+          noteText: `🤖 AI Summary (${response.providerId.toUpperCase()}${
+            response.model ? ` • ${response.model}` : ''
+          }):\n${response.content}`,
+          isAiGenerated: true,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      const report = err instanceof AIEngineError ? err.toReport() : null;
+      alert(
+        report
+          ? `${report.title}\n\n${report.reason}\n\nCheck:\n${report.checks.map((c) => `• ${c}`).join('\n')}`
+          : 'Failed to generate the summary. Open Settings → AI to check your provider.',
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (

@@ -39,6 +39,12 @@ export interface PptxViewerProps {
   onTextExtracted?: (pages: { page: number; text: string }[]) => void;
   onCreateHighlight?: (h: { page: number; text: string; color: HighlightColor }) => void;
   onAskAi?: (text: string) => void;
+  /**
+   * Reports the slide on screen (1-based) and its extracted text. This is what
+   * lets AI answer about *this slide* without sending the whole deck (see
+   * ai/context/builder.ts).
+   */
+  onSlideChange?: (slide: number, total: number, text: string) => void;
 }
 
 type ZoomMode = 'fitWidth' | 'fit' | 'custom';
@@ -485,7 +491,7 @@ const Thumb = memo(function Thumb({
 
 const PptxViewer: React.FC<PptxViewerProps> = ({
   fileUrl, title, extractedText, jumpToPage, initialQuery, uploadDate,
-  onTextExtracted, onCreateHighlight, onAskAi,
+  onTextExtracted, onCreateHighlight, onAskAi, onSlideChange,
 }) => {
   const [deck, setDeck] = useState<PptxDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -585,6 +591,14 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deck]);
+
+  // Publish the current slide so callers (the AI panel) always have the slide
+  // the student is actually looking at — never the whole deck.
+  useEffect(() => {
+    if (!deck) return;
+    const current = deck.slides[slide - 1];
+    onSlideChange?.(slide, deck.slides.length, current?.text ?? '');
+  }, [deck, slide, onSlideChange]);
 
   /* ---------------- navigation ---------------- */
   const go = useCallback(

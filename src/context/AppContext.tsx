@@ -18,6 +18,15 @@ import {
   ChatMessageStore,
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
+import {
+  findLegacyKey,
+  loadAISettings,
+  migrateLegacySettings,
+  providerForLegacyKey,
+  saveAISettings,
+} from '../ai/settings';
+import { saveCredentials } from '../ai/credentials';
+import { aiManager } from '../ai/manager';
 import { supabase, purgeStoredSession } from '../utils/supabase';
 import { loadSearchIndex } from '../utils/searchIndex';
 import { TimetableItem } from '../types';
@@ -358,6 +367,48 @@ const initialState: AppState = {
   timetablePdf: null,
 };
 
+/**
+ * Moves a pre-AI-engine `openAIKey` (which was always used against Google's
+ * endpoint, despite the name) into the multi-provider configuration:
+ *
+ *   old: state.openAIKey          new: providers.gemini.apiKey (IndexedDB)
+ *                                       profiles.default → gemini
+ *
+ * Order matters — the provider entry and its credential are written first, and
+ * the legacy field is cleared only afterwards, so an interrupted migration
+ * leaves the user's key intact and simply retries on the next launch.
+ */
+async function migrateLegacyAiKey(state: AppState): Promise<void> {
+  const legacy = findLegacyKey(state as unknown as Record<string, unknown>);
+  if (!legacy) return;
+
+  const settings = loadAISettings();
+  const targetId = providerForLegacyKey(legacy.key).kind;
+  const already = settings.providers.find((p) => p.id === targetId && p.enabled);
+
+  if (!already) {
+    const { settings: migrated, providerId } = migrateLegacySettings(settings, legacy.key);
+    const saved = saveAISettings(migrated);
+    if (!saved.providers.some((p) => p.id === providerId && p.enabled)) return;
+    await saveCredentials(providerId, { apiKey: legacy.key });
+    aiManager.reload();
+    await aiManager.ensureCredentials();
+  }
+
+  try {
+    const stored = loadState();
+    if (stored.openAIKey) {
+      saveState({ ...stored, openAIKey: '' });
+      console.warn(
+        'PharmaTRACK AI: moved your existing API key into AI Settings (Settings → AI). ' +
+          'API keys are no longer part of your academic data or backups.',
+      );
+    }
+  } catch {
+    /* keep the legacy field if clearing fails — it is harmless, just unused */
+  }
+}
+
 interface AppContextType {
   state: AppState;
   dispatch: React.Dispatch<Action>;
@@ -428,6 +479,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // ensure timetable arrays exist for old users
     if (!savedState.timetables) savedState.timetables = { class: [], quiz: [], exam: [] };
     dispatch({ type: 'LOAD_STATE', payload: savedState });
+
+    // One-time migration of the legacy single AI key into the multi-provider AI
+    // engine (see src/ai/settings.ts). The old field is only cleared once the
+    // new provider + credential are actually persisted, so a failure here can
+    // never lose a working key.
+    void migrateLegacyAiKey(savedState);
   }, []);
 
   const fetchProfile = async (userId: string) => {

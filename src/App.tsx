@@ -21,7 +21,9 @@ import Profile from './pages/Profile';
 import Onboarding from './pages/Onboarding';
 import AcademicArchive from './pages/AcademicArchive';
 import ArchiveViewer from './pages/ArchiveViewer';
+import AiAssistant from './pages/AiAssistant';
 import ErrorBoundary from './components/ErrorBoundary';
+import { AIProvider } from './ai/state';
 
 const App = () => {
   const { state } = useApp();
@@ -32,10 +34,15 @@ const App = () => {
   // and only unlocks cloud sync (see utils/requireAuth).
   const needsOnboarding = state.student === null;
 
+  // AIProvider owns AI configuration + credentials for the whole app. It sits
+  // inside the error boundary and outside the router, and is independent of the
+  // academic state — which is why AI keys never travel with a semester backup
+  // (see src/ai/credentials.ts).
   return (
     // Outer boundary catches anything outside the Layout (Login, Onboarding)
     // and any crash in the router itself.
     <ErrorBoundary>
+    <AIProvider>
     <HashRouter>
       <Routes>
         {needsOnboarding ? (
@@ -62,6 +69,7 @@ const App = () => {
             {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
             <Route path="/login" element={<Login />} />
             <Route path="/timetable" element={<Timetable />} />
+            <Route path="/ai" element={<AiAssistant />} />
             <Route path="/archive" element={<AcademicArchive />} />
             <Route path="/archive/:id" element={<ArchiveViewer />} />
             <Route path="*" element={<Navigate to="/" />} />
@@ -69,6 +77,7 @@ const App = () => {
         )}
       </Routes>
     </HashRouter>
+    </AIProvider>
     </ErrorBoundary>
   );
 };

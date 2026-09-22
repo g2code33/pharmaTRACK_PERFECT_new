@@ -345,7 +345,9 @@ describe('complete semester → fresh workspace', () => {
     expect(fresh.student?.program).toBe('Pharm.D');
     expect(fresh.student?.level).toBe('Level 300');
     expect(fresh.student?.semester).toBe('2nd Semester');
-    expect(fresh.openAIKey).toBe('sk-test-key');
+    // v4: a fresh semester does not inherit a legacy key — API credentials are
+    // provider configuration owned by the AI engine, not semester data.
+    expect(fresh.openAIKey).toBe('');
     expect(fresh.courses).toEqual([]);
     expect(fresh.topics).toEqual([]);
     expect(fresh.slides).toEqual([]);
@@ -382,7 +384,9 @@ describe('complete semester → fresh workspace', () => {
     expect(fresh.student?.level).toBe('Level 400');
     expect(fresh.student?.semester).toBe('1st Semester');
     expect(fresh.courses).toEqual([]);
-    expect(fresh.openAIKey).toBe('sk-test-key');
+    // v4: a fresh semester does not inherit a legacy key — API credentials are
+    // provider configuration owned by the AI engine, not semester data.
+    expect(fresh.openAIKey).toBe('');
     expect(hasWorkspaceContent(fresh)).toBe(false);
     expect(hasWorkspaceContent(state)).toBe(true);
   });

@@ -16,6 +16,7 @@ import {
   Brain,
   Sparkles,
 } from 'lucide-react';
+import { useAI } from '../ai/state';
 
 const Dashboard: React.FC = () => {
   const {
@@ -25,6 +26,7 @@ const Dashboard: React.FC = () => {
     getOverallProgress,
     getTopicsForCourse,
   } = useApp();
+  const ai = useAI();
   const navigate = useNavigate();
 
   const overallProgress = getOverallProgress();
@@ -95,9 +97,22 @@ const Dashboard: React.FC = () => {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 relative z-10">
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span className="px-2 py-0.5 bg-[#FFB703] text-[#1B4332] text-[10px] font-black rounded uppercase tracking-widest">
-                PharmaGAME AI Connected
-              </span>
+              {/* Honest status: this badge used to always claim "AI Connected"
+                  even with no provider configured. It now reflects the engine. */}
+              <Link
+                to="/settings?tab=ai"
+                data-testid="dashboard-ai-status"
+                title={ai.ready
+                  ? `AI ready via ${ai.activeProviderLabel}${ai.activeModel ? ` • ${ai.activeModel}` : ''}`
+                  : 'No AI provider configured — open AI Settings'}
+                className={`px-2 py-0.5 text-[10px] font-black rounded uppercase tracking-widest transition-colors ${
+                  ai.ready ? 'bg-[#FFB703] text-[#1B4332] hover:bg-yellow-400' : 'bg-white/15 text-green-50 hover:bg-white/25'
+                }`}
+              >
+                {ai.ready
+                  ? `AI Connected${ai.activeProviderLabel ? ` • ${ai.activeProviderLabel}` : ''}`
+                  : 'AI Not Configured'}
+              </Link>
             </div>
             <h1 className="text-2xl md:text-3xl font-bold mb-1">
             Welcome back, {state.student?.name || 'Student'}! 👋

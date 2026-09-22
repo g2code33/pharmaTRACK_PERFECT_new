@@ -21,6 +21,12 @@ export const setOnline = (value: boolean) => {
 // Default to online; individual tests opt into offline.
 setOnline(true);
 
+// jsdom has no layout, so scrollIntoView does not exist at all — the AI panel,
+// the reader and Settings all call it to follow new content.
+if (typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 // jsdom implements neither of these, but the PPTX renderer and file previews
 // rely on them. Minimal stand-ins so those paths are testable.
 if (typeof URL.createObjectURL !== 'function') {

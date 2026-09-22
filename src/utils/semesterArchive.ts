@@ -31,6 +31,7 @@ import type {
   Student,
 } from '../types';
 import { initialState, saveState } from './storage';
+import { scrubSecretsDeep } from '../ai/credentials';
 import { getSearchIndexRaw, setSearchIndexRaw, clearSearchIndex, type IndexShape } from './searchIndex';
 import type {
   PharmaTrackBackupManifest,
@@ -532,7 +533,11 @@ export const deleteArchive = async (archiveId: string): Promise<void> => {
 export const buildFreshWorkspace = (state: AppState, next: { level: string; semester: string }): AppState => ({
   ...initialState,
   isLoggedIn: state.isLoggedIn,
-  openAIKey: state.openAIKey,
+  // v4: a semester rollover carries academic identity only. The legacy
+  // `openAIKey` field is NOT copied forward — API keys are provider
+  // configuration owned by the AI engine (IndexedDB credential store), not
+  // academic data, so a fresh workspace never inherits a secret.
+  openAIKey: '',
   student: state.student ? { ...state.student, level: next.level, semester: next.semester } : null,
 });
 
@@ -796,7 +801,16 @@ const buildPackageEntries = (
   index: IndexShape | null,
   files: PackedFile[],
 ): PackageEntry[] => {
-  const sem = (name: string, value: unknown): PackageEntry => ({ name: `semester/${name}`, value: JSON.stringify(value, null, 2), type: 'application/json' });
+  // Every JSON entry is scrubbed on the way out. AI credentials live in a
+  // separate store and are never in the snapshot to begin with, but this is the
+  // belt-and-braces guard: if a future field, an imported archive or a legacy
+  // `openAIKey` ever carries key material, it leaves as [redacted] instead of
+  // riding along inside a file the student emails to a classmate.
+  const sem = (name: string, value: unknown): PackageEntry => ({
+    name: `semester/${name}`,
+    value: JSON.stringify(scrubSecretsDeep(value), null, 2),
+    type: 'application/json',
+  });
   const entries: PackageEntry[] = [
     sem('student.json', snapshot.student),
     sem('courses.json', snapshot.courses),
@@ -826,13 +840,13 @@ const buildPackageEntries = (
       });
       entries.push({
         name: `materials/${f.key}.json`,
-        value: JSON.stringify({
+        value: JSON.stringify(scrubSecretsDeep({
           fileId: f.key,
           slideId: f.slide?.id,
           materialTitle: f.slide?.title,
           slideFileType: f.slide?.fileType,
           mimeType: f.type,
-        }, null, 2),
+        }), null, 2),
         type: 'application/json',
       });
     } else {
@@ -1664,7 +1678,10 @@ export const applyWorkspaceSource = async (staged: StagedBackup, current: AppSta
   const fresh: AppState = {
     ...initialState,
     isLoggedIn: current.isLoggedIn,
-    openAIKey: current.openAIKey,
+    // The archive never carries credentials; this copies whatever the live
+  // workspace has (post-migration: an already-migrated empty string), never
+  // something that arrived inside the imported file.
+  openAIKey: current.openAIKey,
     student,
     courses: incoming.courses,
     topics: incoming.topics,

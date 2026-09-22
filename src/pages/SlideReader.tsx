@@ -5,9 +5,12 @@ import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
+import AIChatPanel from '../components/AIChatPanel';
+import { loadSlideText } from '../utils/storage';
+import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
-  ArrowLeft, ChevronLeft, ChevronRight, Sparkles, Send, Loader2,
-  Lightbulb, Maximize2, Minimize2, Download, X, Globe, MessageSquare as MessageSquareIcon, File,
+  ArrowLeft, ChevronLeft, ChevronRight, Loader2,
+  Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
   ArrowLeftCircle, ArrowRightCircle, RotateCw
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
@@ -53,8 +56,12 @@ const SlideReader: React.FC = () => {
   const [showAIPanel, setShowAIPanel] = useState(true);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [activePanel, setActivePanel] = useState<'ai' | 'browser'>('ai');
-  const [chatInput, setChatInput] = useState('');
-  const [isAILoading, setIsAILoading] = useState(false);
+  /** Page/slide currently on screen — the *only* material sent to the AI. */
+  const [page, setPage] = useState(1);
+  const [pageText, setPageText] = useState('');
+  const [pageCount, setPageCount] = useState(0);
+  /** Full text of the open material, loaded from IndexedDB on demand. */
+  const [fullText, setFullText] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
@@ -129,7 +136,6 @@ const SlideReader: React.FC = () => {
       }).then((u) => { unlisten = u; });
     });
     return () => { if (unlisten) unlisten(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabId]);
 
   const updateWebview = async () => {
@@ -305,23 +311,40 @@ const SlideReader: React.FC = () => {
     });
   };
 
-  /** Puts the selected passage into the AI panel with context. */
+  /**
+   * Selection → AI. The passage becomes part of the *context*, not a giant
+   * prompt string: the engine sends the selection plus the current page/slide.
+   */
+  const [selection, setSelection] = useState('');
   const handleAskAiAboutSelection = (text: string) => {
     setShowAIPanel(true);
     setShowBrowserPanel(false);
     setActivePanel('ai');
-    const trimmed = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
-    setChatInput(`Explain this from my notes:\n\n"${trimmed}"`);
+    setSelection(text);
   };
 
-  const chatMessages = state.chatHistory
-    .filter((m) => m.topicId === topicId)
-    .map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: new Date(m.timestamp),
-    }));
+  /** Loads the full extracted text lazily, only once a material is opened. */
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentMaterial?.id) {
+      setFullText(null);
+      return;
+    }
+    loadSlideText(currentMaterial.id)
+      .then((text) => !cancelled && setFullText(text ?? currentMaterial.contentText ?? ''))
+      .catch(() => !cancelled && setFullText(currentMaterial.contentText ?? ''));
+    return () => {
+      cancelled = true;
+    };
+  }, [currentMaterial?.id, currentMaterial?.contentText]);
+
+  // Reset page tracking when switching material.
+  useEffect(() => {
+    setPage(1);
+    setPageText('');
+    setPageCount(0);
+    setSelection('');
+  }, [currentMaterial?.id]);
 
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
@@ -409,36 +432,42 @@ const SlideReader: React.FC = () => {
     }
   };
 
-  const sendToAI = async (prompt: string) => {
-    if (!prompt.trim()) return;
+  /**
+   * Which material the student is reading, and exactly where in it. The engine
+   * turns this into "course → topic → page/slide → question" context; the whole
+   * document and the rest of the semester are never sent.
+   */
+  const isPdf = currentMaterial?.fileType === 'pdf';
+  const aiScope: ContextSelection = {
+    topicId,
+    courseId: topic?.courseId,
+    materialId: currentMaterial?.id,
+    page: isPdf ? page : undefined,
+    slide: isPdf ? undefined : page,
+    selection: selection || undefined,
+    materialText: currentMaterial
+      ? {
+          label: currentMaterial.title,
+          text: fullText ?? currentMaterial.contentText ?? '',
+          page: isPdf ? page : undefined,
+          slide: isPdf ? undefined : page,
+          // Only the page/slide in view goes out, not the whole document.
+          focusText: pageText || undefined,
+        }
+      : undefined,
+  };
 
-    dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'user', content: prompt } });
-    setIsAILoading(true);
-
-    try {
-      if (state.openAIKey && state.openAIKey.startsWith('AIza')) {
-        const apiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${state.openAIKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'User Request: ' + prompt }] }],
-          }),
-        });
-        const data = await apiResponse.json();
-        const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that.";
-        dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: aiText } });
-      } else {
-        setTimeout(() => {
-          dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: 'Please connect your Gemini API key in Settings to use the AI.' } });
-          setIsAILoading(false);
-        }, 1000);
-        return;
-      }
-    } catch (error) {
-      dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: 'Connection error. Please check your internet or API key.' } });
-    } finally {
-      setIsAILoading(false);
-    }
+  /**
+   * Mirrors the AI transcript into the topic's chat history. That store is
+   * academic data (it is included in semester archives), so it is kept in sync
+   * while the engine owns provider metadata.
+   */
+  const mirrorChatMessage = (message: AIChatMessage) => {
+    if (!topicId) return;
+    dispatch({
+      type: 'ADD_CHAT_MESSAGE',
+      payload: { topicId, role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content },
+    });
   };
 
   const renderUniversalContent = () => {
@@ -466,6 +495,11 @@ const SlideReader: React.FC = () => {
           jumpToPage={deepLinkPage}
           initialQuery={deepLinkQuery}
           focusHighlightId={focusHighlightId}
+          onPageChange={(current, total, text) => {
+            setPage(current);
+            setPageCount(total);
+            setPageText(text ?? '');
+          }}
         />
       );
     }
@@ -482,6 +516,11 @@ const SlideReader: React.FC = () => {
           initialQuery={deepLinkQuery}
           onCreateHighlight={(h) => handleCreateHighlight({ ...h, rects: [] })}
           onAskAi={handleAskAiAboutSelection}
+          onSlideChange={(current, total, text) => {
+            setPage(current);
+            setPageCount(total);
+            setPageText(text ?? '');
+          }}
         />
       );
     }
@@ -559,10 +598,15 @@ const SlideReader: React.FC = () => {
 
           <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
             <button
-              onClick={() => { setShowAIPanel(true); setShowBrowserPanel(false); setActivePanel('ai'); }}
+              onClick={() => { setShowAIPanel((v) => !v); setShowBrowserPanel(false); setActivePanel('ai'); }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'ai' && showAIPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <MessageSquareIcon className="w-3.5 h-3.5" /> AI
+              {pageCount > 0 && (
+                <span className="text-[9px] font-bold text-current/70" data-testid="ai-scope-label">
+                  {isPdf ? 'p' : 'slide'} {page}/{pageCount}
+                </span>
+              )}
             </button>
             <button
               onClick={() => { setShowBrowserPanel(true); setShowAIPanel(false); setActivePanel('browser'); }}
@@ -619,43 +663,32 @@ const SlideReader: React.FC = () => {
         )}
 
         {showAIPanel && (
-          <div className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
-            <div className="p-4 border-b flex items-center justify-between bg-white relative z-20">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-[#0F172A] to-[#1E293B] rounded-xl flex items-center justify-center shadow-lg"><Sparkles className="w-4 h-4 text-[#FFB703]" /></div>
-                <div><h3 className="font-black text-gray-800 uppercase italic text-sm leading-none">PharmaGAME</h3><p className="text-[8px] text-[#2D6A4F] font-black uppercase tracking-widest mt-0.5">Core Active</p></div>
-              </div>
-              <button onClick={() => setShowAIPanel(false)} className="p-2 hover:bg-gray-100 rounded-full transition-all"><X className="w-4 h-4 text-gray-400" /></button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 relative">
-              {chatMessages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center px-4">
-                  <div className="w-16 h-16 bg-white rounded-2xl shadow-sm border flex items-center justify-center mb-4"><Lightbulb className="w-8 h-8 text-[#FFB703]" /></div>
-                  <h4 className="font-bold text-gray-800 mb-2">AI Study Assistant</h4>
-                  <p className="text-xs text-gray-500 max-w-[200px]">Ask questions, summarize topics, or generate practice quizzes.</p>
-                </div>
-              ) : chatMessages.map((m) => (
-                <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} group animate-in slide-in-from-bottom-2 duration-300`}>
-                  <div className={`relative max-w-[90%] p-3.5 rounded-2xl text-[13px] leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-[#2D6A4F] text-white rounded-tr-sm' : 'bg-white border border-gray-100 text-gray-700 rounded-tl-sm'}`}>
-                    <p className="whitespace-pre-wrap">{m.content}</p>
-                  </div>
-                  <span className="text-[8px] text-gray-300 mt-1 uppercase font-black px-2">{m.role === 'user' ? 'You' : 'PharmaGAME'}</span>
-                </div>
-              ))}
-              {isAILoading && <div className="flex justify-start"><div className="bg-gray-50 px-3 py-2 rounded-xl flex items-center gap-2 animate-pulse"><Loader2 className="w-3 h-3 text-[#2D6A4F] animate-spin" /><span className="text-[9px] font-black text-[#2D6A4F] uppercase tracking-widest">Processing...</span></div></div>}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="p-4 bg-white border-t border-gray-100 z-20">
-              <form onSubmit={(e) => { e.preventDefault(); if (chatInput.trim()) { sendToAI(chatInput); setChatInput(''); } }} className="flex items-center gap-2">
-                <div className="flex-1 relative group">
-                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask PharmaGAME... (Press Enter)" className="w-full pl-4 pr-12 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none text-xs focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/5 transition-all shadow-inner" />
-                  <button type="submit" disabled={isAILoading || !chatInput.trim()} className="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 bg-[#2D6A4F] text-[#FFB703] rounded-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all disabled:opacity-30 shadow-md">
-                    <Send className="w-4 h-4" />
-                  </button>
-                </div>
-              </form>
-            </div>
+          <div
+            className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
+            style={{ width: `${panelWidth}px` }}
+          >
+            <button
+              onClick={() => setShowAIPanel(false)}
+              className="absolute top-2 right-2 p-1.5 hover:bg-gray-100 rounded-full transition-all z-20"
+              title="Close AI panel"
+            >
+              <X className="w-4 h-4 text-gray-400" />
+            </button>
+            {/* The panel talks to the AI engine, never to a provider: which
+                provider/model answers is configuration, not UI. */}
+            <AIChatPanel
+              scope={aiScope}
+              appState={state as unknown as AppStateLike}
+              title={currentMaterial ? 'PharmaTRACK AI' : 'AI'}
+              compact
+              loadMaterialText={currentMaterial?.id ? (id) => loadSlideText(id) : undefined}
+              quickTasks={
+                isPdf
+                  ? ['explain-page', 'ask-material', 'key-concepts', 'questions-from-material', 'mcq', 'flashcards', 'mechanism']
+                  : ['explain-slide', 'ask-material', 'key-concepts', 'questions-from-material', 'mcq', 'flashcards', 'mechanism']
+              }
+              onMessage={mirrorChatMessage}
+            />
           </div>
         )}
 
