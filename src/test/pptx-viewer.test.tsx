@@ -12,6 +12,7 @@ import JSZip from 'jszip';
 import React from 'react';
 
 import PptxViewer from '../components/PptxViewer';
+import { buildPowerPointDeck } from './pptx-powerpoint-fixture';
 
 const P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
@@ -336,5 +337,103 @@ describe('PptxViewer', () => {
     expect(screen.getByText('List of side effects')).toBeTruthy();
     fireEvent.click(screen.getByText('Back to Slides'));
     expect(pageInput().value).toBe('1');
+  });
+});
+
+/**
+ * Real-PowerPoint rendering: the numbers below are the ones a natural
+ * PowerPoint deck produces — 44pt centred titles from the master's
+ * p:titleStyle, 32/28pt bulleted body text with marL indents, themed colours
+ * and fonts, cropped/elliptically framed pictures, merged table cells and a
+ * full-bleed background picture inherited from the master.
+ */
+describe('PptxViewer with real PowerPoint structure', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const openReal = async (opts = {}) => {
+    mockFetchBlob(await buildPowerPointDeck(opts));
+    render(<PptxViewer fileUrl="local:real-1" title="Cardio" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+    return screen.getByTestId('pptx-stage');
+  };
+
+  const run = (root: HTMLElement, text: string) =>
+    Array.from(root.querySelectorAll('*')).find(
+      (el) => el.children.length === 0 && el.textContent === text,
+    ) as HTMLElement | undefined;
+
+  it('renders master/layout style inheritance (sizes, alignment, fonts, bullets, indents)', async () => {
+    const stage = await openReal();
+
+    // 44pt centred title in the theme's major font.
+    const title = run(stage, 'Cardiovascular Pharmacology')!;
+    const titlePara = title.closest('[style*="font-size"]') as HTMLElement;
+    expect(Math.round(parseFloat(titlePara.style.fontSize))).toBe(59); // 44pt
+    expect(titlePara.style.textAlign).toBe('center');
+    expect(title.style.fontFamily).toBe('Georgia');
+
+    // 24pt subtitle from the layout's own lstStyle, theme minor font.
+    const sub = run(stage, 'Lecture 1')!;
+    const subPara = sub.closest('[style*="font-size"]') as HTMLElement;
+    expect(Math.round(parseFloat(subPara.style.fontSize))).toBe(32); // 24pt
+    expect(sub.style.fontFamily).toBe('Verdana');
+
+    // Body placeholder: 32pt with the master's • bullet and marL indent.
+    const body = run(stage, 'Blocks beta-1 receptors')!;
+    const bodyPara = body.closest('[style*="font-size"]') as HTMLElement;
+    expect(Math.round(parseFloat(bodyPara.style.fontSize))).toBe(43); // 32pt
+    expect(bodyPara.style.marginLeft).toBe('36px'); // marL 342900 EMU
+    const deeper = run(stage, 'Reduces heart rate')!;
+    const deeperPara = deeper.closest('[style*="font-size"]') as HTMLElement;
+    expect(Math.round(parseFloat(deeperPara.style.fontSize))).toBe(37); // 28pt
+    expect(deeperPara.style.marginLeft).toBe('78px');
+    expect(stage.textContent).toContain('•');
+    expect(stage.textContent).toContain('–'); // lvl2 bullet from the real master
+  });
+
+  it('paints theme colours and clips cropped / elliptical pictures', async () => {
+    const stage = await openReal();
+
+    const accent = Array.from(stage.querySelectorAll('div')).find((d) =>
+      (d.getAttribute('style') || '').includes('rgb(0, 166, 81)'),
+    );
+    expect(accent).toBeTruthy(); // theme accent1 through p:clrMap
+
+    // The picture is cropped (a:srcRect) inside an elliptical frame
+    // (prstGeom prst="ellipse"): an overflow box clips the stretched image.
+    const img = stage.querySelector('img') as HTMLImageElement;
+    const frame = img.parentElement as HTMLElement;
+    expect(frame.className).toContain('overflow-hidden');
+    expect(frame.style.borderRadius).toBe('50%');
+    expect(frame.style.left).toBe('96px');
+    // Kept region 65% × 70% of the source, stretched into the 384×288 frame.
+    expect(img.style.width).toBe('590.7692307692307px');
+    expect(img.style.left).toBe('-147.69230769230768px');
+  });
+
+  it('renders merged table cells with spans and no continuation cells', async () => {
+    const stage = await openReal();
+    const tds = Array.from(stage.querySelectorAll('td'));
+    const cell = (text: string) => tds.find((td) => td.textContent === text)!;
+    expect(cell('Class').getAttribute('colspan')).toBe('2');
+    expect(cell('Atenolol').getAttribute('rowspan')).toBe('2');
+    // 4 grid columns: row 1 has 3 tds (one spanning 2), row 2 has 4,
+    // and the merged-away continuation cells are not rendered.
+    expect(tds.length).toBe(3 + 4 + 3);
+    expect(tds.some((td) => td.textContent === '')).toBe(false);
+  });
+
+  it('paints a background picture inherited from the master', async () => {
+    const stage = await openReal({ masterBackground: 'picture' });
+    const slideEl = stage.querySelector('div[style*="background-image"]') as HTMLElement;
+    const css = slideEl.getAttribute('style') || '';
+    expect(css).toContain('background-image: url("blob:');
+    expect(css).toContain('background-size: cover');
   });
 });

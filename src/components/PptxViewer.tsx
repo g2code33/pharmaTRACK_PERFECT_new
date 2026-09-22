@@ -4,7 +4,7 @@ import {
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
   PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { renderPptx, ptToPx, type PptxDocument, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
+import { renderPptx, ptToPx, type PptxDocument, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
 
@@ -181,20 +181,31 @@ function aspectLabel(w: number, h: number): string {
 /* ------------------------------------------------------------------ */
 
 const ParagraphView = memo(function ParagraphView({
-  p, fontScale, defaultSizePt,
-}: { p: PptxParagraph; fontScale: number; defaultSizePt: number }) {
-  const baseSize = (p.runs[0]?.sizePt ?? defaultSizePt) * fontScale;
+  p, fontScale, defaultSizePt, level,
+}: {
+  p: PptxParagraph;
+  fontScale: number;
+  defaultSizePt: number;
+  /** Inherited defaults for this paragraph's outline level (master/layout). */
+  level?: PptxLevelDefault;
+}) {
+  const runSize = p.runs.find((r) => r.sizePt)?.sizePt;
+  const baseSize = (runSize ?? level?.sizePt ?? defaultSizePt) * fontScale;
   const style: React.CSSProperties = {
-    textAlign: p.align ?? 'left',
+    textAlign: p.align ?? level?.align ?? 'left',
     fontSize: ptToPx(baseSize),
     lineHeight: p.lineSpacing ?? 1.15,
     marginTop: p.spaceBeforePt ? ptToPx(p.spaceBeforePt) : 0,
     marginBottom: p.spaceAfterPt ? ptToPx(p.spaceAfterPt) : 0,
+    // bodyStyle levels indent their bullets (marL), exactly like PowerPoint.
+    marginLeft: level?.indentPx ? level.indentPx : undefined,
   };
   if (!p.runs.length) {
     return <div aria-hidden style={{ ...style, minHeight: ptToPx(baseSize) }} />;
   }
-  const bullet = p.bullet === undefined ? null : p.bullet;
+  // An explicit buNone/buChar on the paragraph wins; otherwise the level's
+  // bullet from the master/layout style chain applies.
+  const bullet = p.bullet === undefined ? (level?.bullet ?? null) : p.bullet;
   return (
     <div style={style} className={bullet ? 'flex items-start' : ''}>
       {bullet ? (
@@ -206,11 +217,11 @@ const ParagraphView = memo(function ParagraphView({
             key={i}
             style={{
               fontSize: r.sizePt ? ptToPx(r.sizePt * fontScale) : undefined,
-              fontWeight: r.bold ? 700 : undefined,
-              fontStyle: r.italic ? 'italic' : undefined,
+              fontWeight: r.bold ?? level?.bold ? 700 : undefined,
+              fontStyle: r.italic ?? level?.italic ? 'italic' : undefined,
               textDecoration: r.underline ? 'underline' : undefined,
-              color: r.color,
-              fontFamily: r.font,
+              color: r.color ?? level?.color,
+              fontFamily: r.font ?? level?.font,
             }}
           >
             {r.text}
@@ -237,23 +248,36 @@ const TableView = memo(function TableView({ shape, base }: { shape: PptxShape; b
         <tbody>
           {table.cells.map((row, ri) => (
             <tr key={ri} style={{ height: table.rowHeights[ri] || undefined }}>
-              {row.map((c, ci) => (
-                <td
-                  key={ci}
-                  style={{
-                    background: c.fill,
-                    border: '1px solid rgba(0, 0, 0, 0.28)',
-                    padding: '2px 5px',
-                    fontSize: ptToPx((c.sizePt ?? 14) * shape.textScale),
-                    fontWeight: c.bold ? 700 : 400,
-                    color: c.color,
-                    verticalAlign: 'middle',
-                    overflow: 'hidden',
-                  }}
-                >
-                  {c.text}
-                </td>
-              ))}
+              {row.map((c, ci) => {
+                // Merged tables: the anchor cell carries gridSpan/rowSpan and
+                // PowerPoint emits an empty continuation cell after it.
+                if (c.merged) return null;
+                const b = c.borders;
+                const border = b
+                  ? `${b.t ? `1px solid ${b.t}` : 'none'} ${b.r ? `1px solid ${b.r}` : 'none'} ${
+                      b.b ? `1px solid ${b.b}` : 'none'
+                    } ${b.l ? `1px solid ${b.l}` : 'none'}`
+                  : '1px solid rgba(0, 0, 0, 0.28)';
+                return (
+                  <td
+                    key={ci}
+                    colSpan={c.gridSpan}
+                    rowSpan={c.rowSpan}
+                    style={{
+                      background: c.fill,
+                      border,
+                      padding: '2px 5px',
+                      fontSize: ptToPx((c.sizePt ?? 14) * shape.textScale),
+                      fontWeight: c.bold ? 700 : 400,
+                      color: c.color,
+                      verticalAlign: 'middle',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {c.text}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -274,7 +298,44 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
 
   if (shape.type === 'image') {
     if (!shape.imageUrl || !showImages || shape.w <= 0 || shape.h <= 0) return null;
-    return <img src={shape.imageUrl} alt="" loading="lazy" draggable={false} className="absolute select-none" style={{ ...base, objectFit: 'fill' }} />;
+    // Pictures can be framed by any preset geometry (ellipse, roundRect, …).
+    const radius =
+      shape.geom === 'ellipse' ? '50%' : shape.geom === 'roundRect' ? '10px' : undefined;
+    const crop = shape.crop;
+    if (!crop) {
+      return (
+        <img
+          src={shape.imageUrl}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="absolute select-none"
+          style={{ ...base, objectFit: 'fill', borderRadius: radius }}
+        />
+      );
+    }
+    // a:srcRect keeps part of the source; the kept region is stretched to fill
+    // the frame, so over-size the image and offset it behind an overflow box.
+    const kw = Math.max(1 - crop.l - crop.r, 0.01);
+    const kh = Math.max(1 - crop.t - crop.b, 0.01);
+    return (
+      <div aria-hidden className="absolute overflow-hidden" style={{ ...base, borderRadius: radius }}>
+        <img
+          src={shape.imageUrl}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="absolute select-none max-w-none"
+          style={{
+            left: -(crop.l * shape.w) / kw,
+            top: -(crop.t * shape.h) / kh,
+            width: shape.w / kw,
+            height: shape.h / kh,
+            objectFit: 'fill',
+          }}
+        />
+      </div>
+    );
   }
 
   if (shape.type === 'line') {
@@ -316,7 +377,13 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
           style={{ padding: '5px 9px' }}
         >
           {t.paragraphs.map((p, i) => (
-            <ParagraphView key={i} p={p} fontScale={t.fontScale * shape.textScale} defaultSizePt={t.defaultSizePt} />
+            <ParagraphView
+              key={i}
+              p={p}
+              fontScale={t.fontScale * shape.textScale}
+              defaultSizePt={t.defaultSizePt}
+              level={t.levels[p.level]}
+            />
           ))}
         </div>
       ) : null}
@@ -330,7 +397,15 @@ const SlideCanvas = memo(function SlideCanvas({
   return (
     <div
       className="relative overflow-hidden"
-      style={{ width: sw, height: sh, background: slide.background ?? '#ffffff', fontFamily: FONT_STACK }}
+      style={{
+        width: sw,
+        height: sh,
+        background: slide.background ?? '#ffffff',
+        backgroundImage: slide.backgroundImageUrl ? `url(${slide.backgroundImageUrl})` : undefined,
+        backgroundSize: slide.backgroundImageUrl ? 'cover' : undefined,
+        backgroundPosition: slide.backgroundImageUrl ? 'center' : undefined,
+        fontFamily: FONT_STACK,
+      }}
       data-slide-canvas
     >
       {slide.shapes.map((s) => (

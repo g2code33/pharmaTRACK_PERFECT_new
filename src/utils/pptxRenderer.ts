@@ -44,6 +44,8 @@ export type PptxAlign = 'left' | 'center' | 'right' | 'justify';
 
 export interface PptxParagraph {
   runs: PptxRun[];
+  /** Outline level (0-based) from a:pPr/@lvl. */
+  level: number;
   align?: PptxAlign;
   /** Multiplier, e.g. 1.5 for 150% line spacing. */
   lineSpacing?: number;
@@ -51,6 +53,23 @@ export interface PptxParagraph {
   spaceAfterPt?: number;
   /** null = no bullet; string = literal glyph (auto-numbering is resolved). */
   bullet?: string | null;
+}
+
+/**
+ * Text properties inherited through the PowerPoint style chain
+ * (shape lstStyle → slide layout placeholder → master txStyles).
+ */
+export interface PptxLevelDefault {
+  sizePt?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  align?: PptxAlign;
+  bullet?: string | null;
+  /** Font family for the level (theme fonts already resolved). */
+  font?: string;
+  /** Left margin for the level, in px (marL). */
+  indentPx?: number;
 }
 
 export interface PptxText {
@@ -61,6 +80,8 @@ export interface PptxText {
   fontScale: number;
   /** Font size assumed when a run carries no explicit sz. */
   defaultSizePt: number;
+  /** Per-level inherited defaults (index 0 = level 1). */
+  levels: PptxLevelDefault[];
 }
 
 export interface PptxTableCell {
@@ -69,6 +90,14 @@ export interface PptxTableCell {
   bold?: boolean;
   color?: string;
   fill?: string;
+  /** a:tc gridSpan — columns this (anchor) cell covers. */
+  gridSpan?: number;
+  /** a:tc rowSpan — rows this (anchor) cell covers. */
+  rowSpan?: number;
+  /** a:tc hMerge/vMerge — covered cell, emitted by PowerPoint after a span. */
+  merged?: 'h' | 'v';
+  /** Optional cell borders (a:lnL/lnR/lnT/lnB), CSS colours. */
+  borders?: { l?: string; r?: string; t?: string; b?: string };
 }
 
 export interface PptxTable {
@@ -95,6 +124,8 @@ export interface PptxShape {
   borderWidth?: number; // px
   text?: PptxText;
   imageUrl?: string;
+  /** a:srcRect cropping of the source image, as 0..1 fractions of each edge. */
+  crop?: { l: number; t: number; r: number; b: number };
   table?: PptxTable;
   /** Font scale inherited from an enclosing group. */
   textScale: number;
@@ -112,6 +143,8 @@ export interface PptxSlide {
   text: string;
   /** CSS colour or gradient for the slide background. */
   background?: string;
+  /** Full-bleed background picture (p:bg > p:bgPr > a:blipFill), if any. */
+  backgroundImageUrl?: string;
   shapes: PptxShape[];
 }
 
@@ -144,7 +177,8 @@ const children = (el: Element, tag: string): Element[] => {
   return Array.from(el.children).filter((c) => c.tagName.toLowerCase() === t);
 };
 
-const SCHEME_COLORS: Record<string, string> = {
+/** Fallback palette (Office 2013+ theme) for files with no readable theme. */
+const FALLBACK_SCHEME_COLORS: Record<string, string> = {
   dk1: '#000000',
   lt1: '#FFFFFF',
   dk2: '#44546A',
@@ -163,16 +197,111 @@ const SCHEME_COLORS: Record<string, string> = {
   folHlink: '#954F72',
 };
 
+const FALLBACK_FONTS = { major: 'Calibri', minor: 'Calibri' };
+
+/** Per-deck theme: the file's own colour scheme (as remapped by p:clrMap) + fonts. */
+interface ThemeInfo {
+  colors: Record<string, string>;
+  major: string;
+  minor: string;
+}
+
+/**
+ * The theme of the slide being parsed. Files resolve scheme colours/fonts
+ * through their theme, so the parser needs it while walking shapes; parsing
+ * is synchronous once a slide's parts are loaded, so a single slot is safe.
+ */
+let activeTheme: ThemeInfo | null = null;
+
+/** Reads the theme part a slide master points at: clrScheme + fontScheme. */
+async function loadTheme(zip: JSZip, masterRels: Map<string, Rel>): Promise<ThemeInfo | null> {
+  const themeRel = Array.from(masterRels.values()).find((r) => /theme\d*\.xml$/i.test(r.target));
+  const candidates = [
+    ...(themeRel ? [resolveZipPath('ppt/slideMasters', themeRel.target)] : []),
+    ...Object.keys(zip.files).filter((n) => /^ppt\/theme\/theme\d+\.xml$/i.test(n)).sort(),
+  ];
+  for (const path of candidates) {
+    const file = zip.file(path);
+    if (!file) continue;
+    const doc = new DOMParser().parseFromString(await file.async('text'), 'text/xml');
+    const scheme = doc.getElementsByTagName('a:clrScheme')[0];
+    const colors: Record<string, string> = {};
+    if (scheme) {
+      for (const el of Array.from(scheme.children)) {
+        const name = el.tagName.replace(/^a:/, '');
+        const srgb = child(el, 'a:srgbClr')?.getAttribute('val');
+        const sys = child(el, 'a:sysClr');
+        const sysLast = sys?.getAttribute('lastClr');
+        const sysName = sys?.getAttribute('val');
+        const hex =
+          srgb ||
+          sysLast ||
+          (sysName === 'window' || sysName === 'windowText'
+            ? sysName === 'window'
+              ? 'FFFFFF'
+              : '000000'
+            : undefined);
+        if (hex) colors[name] = `#${hex.toLowerCase()}`;
+      }
+    }
+    const fontScheme = doc.getElementsByTagName('a:fontScheme')[0];
+    const faceOf = (part: Element | null | undefined) =>
+      part ? child(part, 'a:latin')?.getAttribute('typeface') || undefined : undefined;
+    const major = fontScheme ? faceOf(child(fontScheme, 'a:majorFont')) : undefined;
+    const minor = fontScheme ? faceOf(child(fontScheme, 'a:minorFont')) : undefined;
+    if (!Object.keys(colors).length && !major && !minor) continue;
+    return {
+      colors,
+      major: major || FALLBACK_FONTS.major,
+      minor: minor || FALLBACK_FONTS.minor,
+    };
+  }
+  return null;
+}
+
+/** Applies the master's p:clrMap (tx1→dk1, bg1→lt1, …) to the theme palette. */
+function applyColorMap(theme: ThemeInfo, masterDoc: Document | null): void {
+  const map = masterDoc ? masterDoc.getElementsByTagName('p:clrMap')[0] : null;
+  if (!map) return;
+  const merged: Record<string, string> = {};
+  for (const attr of Array.from(map.attributes)) {
+    const value = theme.colors[attr.value] ?? FALLBACK_SCHEME_COLORS[attr.value];
+    if (value) merged[attr.name] = value;
+  }
+  theme.colors = { ...theme.colors, ...merged };
+}
+
+/** CSS colour for an a:schemeClr value, via the active file's theme. */
+function schemeColor(key: string): string {
+  return (
+    activeTheme?.colors[key] ??
+    FALLBACK_SCHEME_COLORS[key] ??
+    activeTheme?.colors.tx1 ??
+    '#000000'
+  );
+}
+
+/** Resolves theme font references (+mj-lt / +mn-lt / +mn-ea …) to a real face. */
+function resolveFont(face: string | undefined | null): string | undefined {
+  if (!face) return undefined;
+  if (face.startsWith('+mj-')) return activeTheme?.major ?? FALLBACK_FONTS.major;
+  if (face.startsWith('+mn-')) return activeTheme?.minor ?? FALLBACK_FONTS.minor;
+  return face;
+}
+
 function solidColor(fillEl: Element | null): string | undefined {
   if (!fillEl) return undefined;
-  const srgb = child(fillEl, 'a:srgbClr');
-  const s = srgb?.getAttribute('val');
-  if (s) return `#${s.toLowerCase()}`;
-  const scheme = child(fillEl, 'a:schemeClr');
-  if (scheme) {
-    const key = scheme.getAttribute('val') || '';
-    return SCHEME_COLORS[key] ?? '#000000';
+  const srgb = child(fillEl, 'a:srgbClr')?.getAttribute('val');
+  if (srgb) return `#${srgb.toLowerCase()}`;
+  const sys = child(fillEl, 'a:sysClr');
+  if (sys) {
+    const last = sys.getAttribute('lastClr');
+    if (last) return `#${last.toLowerCase()}`;
+    if (sys.getAttribute('val') === 'window') return '#FFFFFF';
+    return '#000000';
   }
+  const scheme = child(fillEl, 'a:schemeClr');
+  if (scheme) return schemeColor(scheme.getAttribute('val') || '');
   return undefined;
 }
 
@@ -203,6 +332,11 @@ function parseSpacingPt(pPr: Element, tag: string): number | undefined {
   return undefined;
 }
 
+/** a:buChar carries its glyph in char="•" (val= is not used by PowerPoint). */
+function bulletChar(el: Element): string {
+  return el.getAttribute('char') || el.getAttribute('val') || '•';
+}
+
 function autoNumGlyph(type: string, n: number): string {
   switch (type) {
     case 'arabicPeriod':
@@ -231,15 +365,91 @@ function parseRunProps(rPr: Element | null, out: PptxRun): void {
   const u = rPr.getAttribute('u');
   if (u && u !== 'none') out.underline = true;
   out.color = solidColor(child(rPr, 'a:solidFill'));
-  const latin = child(rPr, 'a:latin');
-  const face = latin?.getAttribute('typeface');
+  const face = resolveFont(child(rPr, 'a:latin')?.getAttribute('typeface'));
   if (face) out.font = face;
 }
 
+const ALIGN_MAP: Record<string, PptxAlign> = {
+  l: 'left',
+  ctr: 'center',
+  r: 'right',
+  rt: 'right',
+  just: 'justify',
+};
+
+/** Reads the inheritable properties of one a:lvlNpPr (or a:pPr) element. */
+function parseLevelDefault(pPr: Element): PptxLevelDefault {
+  const d: PptxLevelDefault = {};
+  const algn = pPr.getAttribute('algn');
+  if (algn && ALIGN_MAP[algn]) d.align = ALIGN_MAP[algn];
+  const marL = pPr.getAttribute('marL');
+  if (marL) {
+    const px = emuToPx(Math.abs(parseInt(marL, 10)));
+    if (px > 0) d.indentPx = px;
+  }
+  if (child(pPr, 'a:buNone')) d.bullet = null;
+  else if (child(pPr, 'a:buChar')) d.bullet = bulletChar(child(pPr, 'a:buChar')!);
+  else if (child(pPr, 'a:buAutoNum')) d.bullet = '•';
+
+  const defRPr = child(pPr, 'a:defRPr');
+  if (defRPr) {
+    const sz = defRPr.getAttribute('sz');
+    if (sz) {
+      const pt = parseInt(sz, 10) / 100;
+      if (pt > 0) d.sizePt = pt;
+    }
+    if (defRPr.getAttribute('b') === '1') d.bold = true;
+    if (defRPr.getAttribute('i') === '1') d.italic = true;
+    const color = solidColor(child(defRPr, 'a:solidFill'));
+    if (color) d.color = color;
+    const face = resolveFont(child(defRPr, 'a:latin')?.getAttribute('typeface'));
+    if (face) d.font = face;
+  }
+  return d;
+}
+
+/**
+ * Collects lvl1..lvl9 defaults from an a:lstStyle (placeholder/shape) or a
+ * txStyles style element (master), which hold a:lvlNpPr as direct children.
+ */
+function parseLevels(container: Element | null): PptxLevelDefault[] {
+  const out: PptxLevelDefault[] = [];
+  if (!container) return out;
+  for (let i = 1; i <= 9; i++) {
+    const pPr = child(container, `a:lvl${i}pPr`);
+    if (pPr) out[i - 1] = parseLevelDefault(pPr);
+  }
+  return out;
+}
+
+/** Earlier arrays win; later ones only fill gaps. */
+function mergeLevels(...chains: (PptxLevelDefault[] | undefined)[]): PptxLevelDefault[] {
+  const out: PptxLevelDefault[] = [];
+  for (const chain of chains) {
+    if (!chain) continue;
+    for (let i = 0; i < chain.length; i++) {
+      const src = chain[i];
+      if (!src) continue;
+      const dst = (out[i] ??= {});
+      if (dst.sizePt === undefined && src.sizePt !== undefined) dst.sizePt = src.sizePt;
+      if (dst.bold === undefined && src.bold !== undefined) dst.bold = src.bold;
+      if (dst.italic === undefined && src.italic !== undefined) dst.italic = src.italic;
+      if (dst.color === undefined && src.color !== undefined) dst.color = src.color;
+      if (dst.align === undefined && src.align !== undefined) dst.align = src.align;
+      if (dst.bullet === undefined && src.bullet !== undefined) dst.bullet = src.bullet;
+      if (dst.indentPx === undefined && src.indentPx !== undefined) dst.indentPx = src.indentPx;
+      if (dst.font === undefined && src.font !== undefined) dst.font = src.font;
+    }
+  }
+  return out;
+}
+
 function parseParagraph(p: Element, counter: { n: number }): PptxParagraph {
-  const para: PptxParagraph = { runs: [] };
+  const para: PptxParagraph = { runs: [], level: 0 };
   const pPr = child(p, 'a:pPr');
   if (pPr) {
+    const lvl = parseInt(pPr.getAttribute('lvl') || '0', 10);
+    if (Number.isFinite(lvl) && lvl > 0) para.level = Math.min(lvl, 8);
     const algn = pPr.getAttribute('algn');
     if (algn === 'ctr') para.align = 'center';
     else if (algn === 'r' || algn === 'rtl') para.align = 'right';
@@ -259,7 +469,7 @@ function parseParagraph(p: Element, counter: { n: number }): PptxParagraph {
     if (after !== undefined) para.spaceAfterPt = after;
 
     if (child(pPr, 'a:buNone')) para.bullet = null;
-    else if (child(pPr, 'a:buChar')) para.bullet = child(pPr, 'a:buChar')!.getAttribute('val') || '•';
+    else if (child(pPr, 'a:buChar')) para.bullet = bulletChar(child(pPr, 'a:buChar')!);
     else if (child(pPr, 'a:buAutoNum')) {
       counter.n += 1;
       para.bullet = autoNumGlyph(child(pPr, 'a:buAutoNum')!.getAttribute('type') || 'arabicPeriod', counter.n);
@@ -282,7 +492,11 @@ function parseParagraph(p: Element, counter: { n: number }): PptxParagraph {
   return para;
 }
 
-function parseText(txBody: Element | null, defaultSizePt: number): PptxText | undefined {
+function parseText(
+  txBody: Element | null,
+  defaultSizePt: number,
+  inherited: PptxLevelDefault[] = [],
+): PptxText | undefined {
   if (!txBody) return undefined;
   const bodyPr = child(txBody, 'a:bodyPr');
   const anchor = bodyPr?.getAttribute('anchor') as PptxText['anchor'] | undefined;
@@ -296,7 +510,10 @@ function parseText(txBody: Element | null, defaultSizePt: number): PptxText | un
   const counter = { n: 0 };
   const paragraphs = children(txBody, 'a:p').map((p) => parseParagraph(p, counter));
   if (!paragraphs.length) return undefined;
-  return { paragraphs, anchor, fontScale, defaultSizePt };
+  // The shape's own lstStyle is most specific, then the layout placeholder,
+  // then the master's txStyles.
+  const levels = mergeLevels(parseLevels(child(txBody, 'a:lstStyle')), inherited);
+  return { paragraphs, anchor, fontScale, defaultSizePt, levels };
 }
 
 interface Box {
@@ -467,69 +684,183 @@ interface LayoutGeom {
   h: number;
 }
 
+/** What a slide placeholder inherits from its layout counterpart. */
+interface PlaceholderInfo {
+  geom?: LayoutGeom;
+  anchor?: 't' | 'ctr' | 'b';
+  levels: PptxLevelDefault[];
+}
+
 interface LayoutInfo {
-  /** Placeholder geometry keyed by "type#id" then by "type". */
-  phGeom: Map<string, LayoutGeom>;
-  backgroundEl: Element | null;
+  /** Keyed by "type#idx" (OOXML placeholder matching), then by "type". */
+  placeholders: Map<string, PlaceholderInfo>;
+  /** Master <p:txStyles> levels, so real decks keep their 44pt titles etc. */
+  masterStyles: { title: PptxLevelDefault[]; body: PptxLevelDefault[]; other: PptxLevelDefault[] };
+  background?: string;
+  /** Background picture inherited from the layout or the master. */
+  backgroundImageUrl?: string;
+  /** The master's theme (colours/fonts) — applied while parsing the slide. */
+  theme?: ThemeInfo;
+}
+
+const TITLE_PH = new Set(['title', 'ctrTitle']);
+
+/** Styles a placeholder type picks up from the master's txStyles. */
+function masterLevelsFor(master: LayoutInfo['masterStyles'], phType: string): PptxLevelDefault[] {
+  if (TITLE_PH.has(phType)) return master.title;
+  if (phType === 'body' || phType === 'subTitle') return master.body;
+  return master.other;
+}
+
+/** Resolves a background element: p:bgPr fills, or a p:bgRef theme colour. */
+function backgroundCss(bg: Element | null): string | undefined {
+  if (!bg) return undefined;
+  const bgPr = child(bg, 'p:bgPr');
+  if (bgPr) {
+    const css = fillCss(bgPr);
+    if (css) return css;
+  }
+  // bgRef points at a theme fill; the referenced colour is usually declared
+  // inline (bg1/tx1/accentN), which is enough to match the slide's look.
+  const bgRef = child(bg, 'p:bgRef');
+  if (bgRef) {
+    const direct = solidColor(bgRef);
+    if (direct) return direct;
+  }
+  return undefined;
 }
 
 /**
- * Placeholders inherit position/size (and often background) from their slide
- * layout; if the slide doesn't define them, look them up in the layout and,
- * for the background, fall through to the master.
+ * Background pictures: p:bg > p:bgPr > a:blipFill with an embedded image.
+ * Resolves the referenced media to an object URL and hands it to the caller's
+ * revoke list.
  */
-async function loadLayoutInfo(zip: JSZip, slideRels: Map<string, Rel>): Promise<LayoutInfo | null> {
+async function backgroundPicture(
+  zip: JSZip,
+  bg: Element | null | undefined,
+  partDir: string,
+  rels: Map<string, Rel>,
+  onUrl: (url: string) => void,
+): Promise<string | undefined> {
+  const blip = bg ? child(child(bg, 'p:bgPr'), 'a:blipFill') : null;
+  const rid = blip ? child(blip, 'a:blip')?.getAttribute('r:embed') : null;
+  if (!rid) return undefined;
+  const rel = rels.get(rid);
+  if (!rel) return undefined;
+  const media = zip.file(resolveZipPath(partDir, rel.target));
+  if (!media) return undefined;
+  try {
+    const url = URL.createObjectURL(await media.async('blob'));
+    onUrl(url);
+    return url;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Placeholders inherit position, size, anchor and text styles from their slide
+ * layout, and text styles again from the master's txStyles. Decks authored in
+ * PowerPoint rely on this chain for nearly everything visible.
+ */
+async function loadLayoutInfo(
+  zip: JSZip,
+  slideRels: Map<string, Rel>,
+  onUrl: (url: string) => void,
+): Promise<LayoutInfo | null> {
   const layoutRel = Array.from(slideRels.values()).find((r) => r.type.endsWith('/slideLayout'));
   if (!layoutRel) return null;
   const layoutPath = resolveZipPath('ppt/slides', layoutRel.target);
   const layoutFile = zip.file(layoutPath);
   if (!layoutFile) return null;
   const layoutDoc = new DOMParser().parseFromString(await layoutFile.async('text'), 'text/xml');
+  const layoutRels = await loadRelsFor(zip, layoutPath);
+  let deckTheme: ThemeInfo | undefined;
+
+  // --- master: txStyles + background ---
+  let masterStyles: LayoutInfo['masterStyles'] = { title: [], body: [], other: [] };
+  let masterBg: Element | null = null;
+  let masterRels = new Map<string, Rel>();
+  const masterRel = Array.from(layoutRels.values()).find((r) =>
+    r.type.endsWith('/slideMaster'),
+  );
+  if (masterRel) {
+    const masterPath = resolveZipPath('ppt/slideLayouts', masterRel.target);
+    const masterFile = zip.file(masterPath);
+    if (masterFile) {
+      masterRels = await loadRelsFor(zip, masterPath);
+      const masterDoc = new DOMParser().parseFromString(await masterFile.async('text'), 'text/xml');
+      // Theme first: scheme colours and +mj-lt/+mn-lt font faces are resolved
+      // while parsing shapes and backgrounds below.
+      const theme = await loadTheme(zip, masterRels);
+      if (theme) {
+        applyColorMap(theme, masterDoc);
+        // Used below for bgRef colours; renderPptx re-applies it right before
+        // parsing this slide's shapes so concurrent parses cannot interleave.
+        activeTheme = theme;
+        deckTheme = theme;
+      }
+      const txStyles = masterDoc.getElementsByTagName('p:txStyles')[0];
+      if (txStyles) {
+        masterStyles = {
+          title: parseLevels(child(txStyles, 'p:titleStyle')),
+          body: parseLevels(child(txStyles, 'p:bodyStyle')),
+          other: parseLevels(child(txStyles, 'p:otherStyle')),
+        };
+      }
+      const mCsl = masterDoc.getElementsByTagName('p:cSld')[0];
+      masterBg = mCsl ? child(mCsl, 'p:bg') : null;
+    }
+  }
+
+  // --- layout placeholders ---
+  const placeholders = new Map<string, PlaceholderInfo>();
   const spTree = layoutDoc.getElementsByTagName('p:spTree')[0] || layoutDoc.documentElement;
-  const phGeom = new Map<string, LayoutGeom>();
   for (const sp of Array.from(spTree.getElementsByTagName('p:sp'))) {
     const ph = sp.getElementsByTagName('p:ph')[0];
     if (!ph) continue;
-    const type = ph.getAttribute('type') || '';
-    const id = ph.getAttribute('id') || '';
-    const box = parseXfrm(sp);
-    if (box.w <= 0 || box.h <= 0) continue;
-    const geom = { x: box.x, y: box.y, w: box.w, h: box.h };
-    if (id) phGeom.set(`${type}#${id}`, geom);
-    if (type && !phGeom.has(type)) phGeom.set(type, geom);
-  }
-  // Background: the layout's own, else the master's.
-  let backgroundEl: Element | null = null;
-  const cSld = layoutDoc.getElementsByTagName('p:cSld')[0];
-  const bg = cSld ? child(cSld, 'p:bg') : null;
-  if (bg) backgroundEl = bg;
-  else {
-    const masterRel = Array.from((await loadRelsFor(zip, layoutPath)).values()).find((r) =>
-      r.type.endsWith('/slideMaster'),
+    const type = ph.getAttribute('type') || 'body';
+    const idx = ph.getAttribute('idx') || '0';
+    const box = parseXfrm(child(sp, 'p:spPr'));
+    const txBody = child(sp, 'p:txBody');
+    const bodyPr = txBody ? child(txBody, 'a:bodyPr') : null;
+    const anchor = bodyPr?.getAttribute('anchor') as PlaceholderInfo['anchor'] | undefined;
+    const levels = mergeLevels(
+      parseLevels(txBody ? child(txBody, 'a:lstStyle') : null),
+      masterLevelsFor(masterStyles, type),
     );
-    if (masterRel) {
-      const masterPath = resolveZipPath('ppt/slideLayouts', masterRel.target);
-      const masterFile = zip.file(masterPath);
-      if (masterFile) {
-        const masterDoc = new DOMParser().parseFromString(await masterFile.async('text'), 'text/xml');
-        const mCsl = masterDoc.getElementsByTagName('p:cSld')[0];
-        const mBg = mCsl ? child(mCsl, 'p:bg') : null;
-        if (mBg) backgroundEl = mBg;
-      }
-    }
+    const info: PlaceholderInfo = { levels };
+    if (box.w > 0 && box.h > 0) info.geom = { x: box.x, y: box.y, w: box.w, h: box.h };
+    if (anchor) info.anchor = anchor;
+    placeholders.set(`${type}#${idx}`, info);
+    if (!placeholders.has(type)) placeholders.set(type, info);
   }
-  return { phGeom, backgroundEl };
+
+  const cSld = layoutDoc.getElementsByTagName('p:cSld')[0];
+  const layoutBg = cSld ? child(cSld, 'p:bg') : null;
+  const background = backgroundCss(layoutBg) ?? backgroundCss(masterBg);
+  const backgroundImageUrl =
+    (await backgroundPicture(zip, layoutBg, 'ppt/slideLayouts', layoutRels, onUrl)) ??
+    (await backgroundPicture(zip, masterBg, 'ppt/slideMasters', masterRels, onUrl));
+  return { placeholders, masterStyles, background, backgroundImageUrl, theme: deckTheme };
 }
 
-function phGeomFor(layout: LayoutInfo | null, phType: string, phId: string): LayoutGeom | undefined {
+/** OOXML matches a slide placeholder to its layout counterpart by type+idx. */
+function placeholderFor(
+  layout: LayoutInfo | null,
+  phType: string,
+  phIdx: string,
+): PlaceholderInfo | undefined {
   if (!layout) return undefined;
-  return layout.phGeom.get(`${phType}#${phId}`) ?? (phType ? layout.phGeom.get(phType) : undefined);
+  return layout.placeholders.get(`${phType}#${phIdx}`) ?? (phType ? layout.placeholders.get(phType) : undefined);
 }
 
 /** Sensible defaults when no layout geometry exists (e.g. hand-built files). */
 function defaultPhGeom(phType: string | undefined, sw: number, sh: number): LayoutGeom {
-  if (phType === 'title' || phType === 'ctr') return { x: sw * 0.06, y: sh * 0.07, w: sw * 0.88, h: sh * 0.22 };
-  if (phType === 'body' || phType === 'subTitle') return { x: sw * 0.1, y: sh * 0.34, w: sw * 0.8, h: sh * 0.56 };
+  if (phType === 'ctrTitle') return { x: sw * 0.1, y: sh * 0.32, w: sw * 0.8, h: sh * 0.22 };
+  if (phType === 'title') return { x: sw * 0.06, y: sh * 0.07, w: sw * 0.88, h: sh * 0.22 };
+  if (phType === 'subTitle') return { x: sw * 0.15, y: sh * 0.55, w: sw * 0.7, h: sh * 0.25 };
+  if (phType === 'body') return { x: sw * 0.1, y: sh * 0.34, w: sw * 0.8, h: sh * 0.56 };
   if (phType === 'pic' || phType === 'media' || phType === 'chart' || phType === 'tbl' || phType === 'dt')
     return { x: sw * 0.1, y: sh * 0.3, w: sw * 0.8, h: sh * 0.6 };
   return { x: sw * 0.08, y: sh * 0.12, w: sw * 0.84, h: sh * 0.5 };
@@ -554,6 +885,26 @@ function parseTableCell(tc: Element): PptxTableCell {
   }
   const tcPr = child(tc, 'a:tcPr');
   cell.fill = solidColor(tcPr ? child(tcPr, 'a:solidFill') : null);
+  const span = parseInt(tc.getAttribute('gridSpan') || '0', 10);
+  if (span > 1) cell.gridSpan = span;
+  const rowSpan = parseInt(tc.getAttribute('rowSpan') || '0', 10);
+  if (rowSpan > 1) cell.rowSpan = rowSpan;
+  if (tc.getAttribute('hMerge') === '1') cell.merged = 'h';
+  else if (tc.getAttribute('vMerge') === '1') cell.merged = 'v';
+  if (tcPr) {
+    const borders: NonNullable<PptxTableCell['borders']> = {};
+    const edge = (tag: string, key: 'l' | 'r' | 't' | 'b') => {
+      const ln = child(tcPr, tag);
+      if (!ln || child(ln, 'a:noFill')) return;
+      const color = solidColor(child(ln, 'a:solidFill'));
+      if (color) borders[key] = color;
+    };
+    edge('a:lnL', 'l');
+    edge('a:lnR', 'r');
+    edge('a:lnT', 't');
+    edge('a:lnB', 'b');
+    if (Object.keys(borders).length) cell.borders = borders;
+  }
   return cell;
 }
 
@@ -585,16 +936,27 @@ interface ShapeCtx {
   push: (s: PptxShape) => void;
 }
 
+/** Placeholder types that act as the slide title (incl. the title-slide one). */
+export const isTitlePlaceholder = (phType: string): boolean => phType === 'title' || phType === 'ctrTitle';
+
+function defaultSizePtFor(phType: string, isTitle: boolean): number {
+  if (phType === 'ctrTitle') return 44;
+  if (isTitle) return 32;
+  if (phType === 'subTitle') return 28;
+  return 18;
+}
+
 function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
   const spPr = child(sp, 'p:spPr');
   const ph = sp.getElementsByTagName('p:ph')[0];
-  const phType = ph?.getAttribute('type') || '';
-  const phId = ph?.getAttribute('id') || '';
-  const isTitle = phType === 'title' || phType === 'ctr';
+  const phType = ph?.getAttribute('type') || (ph ? 'body' : '');
+  const phIdx = ph?.getAttribute('idx') || '0';
+  const isTitle = isTitlePlaceholder(phType);
+  const placeholder = ph ? placeholderFor(ctx.layout, phType, phIdx) : undefined;
 
   let box = parseXfrm(spPr);
   if (box.w <= 0 || box.h <= 0) {
-    const inherited = phGeomFor(ctx.layout, phType, phId) ?? defaultPhGeom(phType || undefined, ctx.sw, ctx.sh);
+    const inherited = placeholder?.geom ?? defaultPhGeom(phType || undefined, ctx.sw, ctx.sh);
     box = { ...inherited, rot: 0 };
   }
   const b = applyT(ctx.t, box);
@@ -606,8 +968,9 @@ function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
   const lineColor = ln ? solidColor(child(ln, 'a:solidFill')) : undefined;
   const lineW = ln?.getAttribute('w') ? emuToPx(parseInt(ln.getAttribute('w')!, 10)) : undefined;
 
-  const defaultSizePt = isTitle ? 32 : 18;
-  const text = parseText(child(sp, 'p:txBody'), defaultSizePt);
+  const inheritedLevels = placeholder?.levels ?? (ctx.layout ? masterLevelsFor(ctx.layout.masterStyles, phType) : []);
+  const text = parseText(child(sp, 'p:txBody'), defaultSizePtFor(phType, isTitle), inheritedLevels);
+  if (text && !text.anchor && placeholder?.anchor) text.anchor = placeholder.anchor;
 
   const shape: PptxShape = {
     id: ctx.nextId(),
@@ -632,13 +995,14 @@ function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
 }
 
 function parsePic(pic: Element, ctx: ShapeCtx): PptxShape {
-  const box = applyT(ctx.t, parseXfrm(child(pic, 'p:spPr')));
+  const spPr = child(pic, 'p:spPr');
+  const box = applyT(ctx.t, parseXfrm(spPr));
   const blipFill = child(pic, 'p:blipFill');
   const blip = blipFill ? child(blipFill, 'a:blip') : null;
   const rid = blip?.getAttribute('r:embed');
   const url = rid ? ctx.imageUrls.get(rid) : undefined;
   if (url) ctx.imageList.push(url);
-  return {
+  const shape: PptxShape = {
     id: ctx.nextId(),
     type: 'image',
     x: box.x,
@@ -646,11 +1010,22 @@ function parsePic(pic: Element, ctx: ShapeCtx): PptxShape {
     w: Math.max(box.w, 0),
     h: Math.max(box.h, 0),
     rot: box.rot,
-    geom: 'rect',
+    geom: child(spPr, 'a:prstGeom')?.getAttribute('prst') || 'rect',
     imageUrl: url,
     textScale: 1,
     isTitle: false,
   };
+  // a:srcRect keeps a sub-rectangle of the source (values are 1/1000 %).
+  const srcRect = blipFill ? child(blipFill, 'a:srcRect') : null;
+  if (srcRect) {
+    const frac = (name: string) => {
+      const v = parseInt(srcRect.getAttribute(name) || '0', 10);
+      return Number.isFinite(v) && v > 0 ? Math.min(v / 100000, 0.999) : 0;
+    };
+    const crop = { l: frac('l'), t: frac('t'), r: frac('r'), b: frac('b') };
+    if (crop.l || crop.t || crop.r || crop.b) shape.crop = crop;
+  }
+  return shape;
 }
 
 function parseCxnSp(cxn: Element, ctx: ShapeCtx): PptxShape {
@@ -744,6 +1119,7 @@ function parseGroup(grp: Element, ctx: ShapeCtx): void {
 /* ------------------------------------------------------------------ */
 
 export async function renderPptx(blob: Blob): Promise<PptxDocument> {
+  activeTheme = null; // never inherit another deck's theme
   const zip = await JSZip.loadAsync(blob);
   const slideFiles = await orderedSlidePaths(zip);
   const { w: slideWidth, h: slideHeight } = await parsePresentationSize(zip);
@@ -775,19 +1151,24 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
       }
     }
 
-    const layout = await loadLayoutInfo(zip, rels);
+    const layout = await loadLayoutInfo(zip, rels, (u) => urlRevoke.push(u));
     const cSld = doc.getElementsByTagName('p:cSld')[0] || doc.documentElement;
     const spTree = cSld.getElementsByTagName('p:spTree')[0] || cSld;
 
-    // Background: slide itself → layout → master.
-    let background: string | undefined;
-    const bgEl = child(cSld, 'p:bg');
-    const bgPr = bgEl ? child(bgEl, 'p:bgPr') : null;
-    if (bgPr) background = fillCss(bgPr);
-    if (!background && layout?.backgroundEl) {
-      const lBgPr = child(layout.backgroundEl, 'p:bgPr');
-      background = fillCss(lBgPr);
-    }
+    // Background: the slide's own, else the layout's, else the master's.
+    const slideBg = child(cSld, 'p:bg');
+    const background = backgroundCss(slideBg) ?? layout?.background;
+    const slideBgImage = await backgroundPicture(
+      zip,
+      slideBg,
+      'ppt/slides',
+      rels,
+      (u) => urlRevoke.push(u),
+    );
+    const backgroundImageUrl = slideBgImage ?? layout?.backgroundImageUrl;
+
+    // Apply this slide's theme for the (synchronous) parse below.
+    activeTheme = layout?.theme ?? activeTheme;
 
     let nextId = 0;
     const shapes: PptxShape[] = [];
@@ -835,7 +1216,7 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
       const paraTexts = Array.from(txBody.getElementsByTagName('a:p'))
         .map((p) => Array.from(p.getElementsByTagName('a:t')).map((t) => t.textContent || '').join(''))
         .filter((t) => t.trim());
-      if (phType === 'title' || phType === 'ctr') {
+      if (isTitlePlaceholder(phType || (ph ? 'body' : ''))) {
         if (!title) title = paraTexts.join(' ');
       } else {
         body.push(...paraTexts);
@@ -878,6 +1259,7 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
       notes,
       text: parts.join('\n'),
       background,
+      backgroundImageUrl,
       shapes,
     });
   }
