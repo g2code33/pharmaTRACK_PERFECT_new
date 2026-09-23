@@ -124,6 +124,8 @@ export interface PptxShape {
   borderWidth?: number; // px
   text?: PptxText;
   imageUrl?: string;
+  /** Relationship id of an embedded image. Filled even when the bytes are not loaded yet. */
+  imageRid?: string;
   /** a:srcRect cropping of the source image, as 0..1 fractions of each edge. */
   crop?: { l: number; t: number; r: number; b: number };
   table?: PptxTable;
@@ -156,6 +158,12 @@ export interface PptxDocument {
   fullText: string;
   fileSize: number; // bytes
   dates?: { created?: string; modified?: string };
+  /**
+   * Loads images for one slide. No-op when media was already decoded during
+   * parse. Safe to call more than once. Large decks pass `{ lazyMedia: true }`
+   * so opening the file does not decode every picture.
+   */
+  ensureSlideMedia: (slideNumber: number) => Promise<void>;
   dispose: () => void;
 }
 
@@ -699,6 +707,8 @@ interface LayoutInfo {
   background?: string;
   /** Background picture inherited from the layout or the master. */
   backgroundImageUrl?: string;
+  /** Zip path of that picture, when decoding was deferred. */
+  backgroundImagePath?: string;
   /** The master's theme (colours/fonts) — applied while parsing the slide. */
   theme?: ThemeInfo;
 }
@@ -735,6 +745,20 @@ function backgroundCss(bg: Element | null): string | undefined {
  * Resolves the referenced media to an object URL and hands it to the caller's
  * revoke list.
  */
+/** Zip path of a background picture, without decoding the image. */
+function embeddedPicturePath(
+  bg: Element | null | undefined,
+  partDir: string,
+  rels: Map<string, Rel>,
+): string | undefined {
+  const blip = bg ? child(child(bg, 'p:bgPr'), 'a:blipFill') : null;
+  const rid = blip ? child(blip, 'a:blip')?.getAttribute('r:embed') : null;
+  if (!rid) return undefined;
+  const rel = rels.get(rid);
+  if (!rel) return undefined;
+  return resolveZipPath(partDir, rel.target);
+}
+
 async function backgroundPicture(
   zip: JSZip,
   bg: Element | null | undefined,
@@ -767,6 +791,7 @@ async function loadLayoutInfo(
   zip: JSZip,
   slideRels: Map<string, Rel>,
   onUrl: (url: string) => void,
+  deferPictures = false,
 ): Promise<LayoutInfo | null> {
   const layoutRel = Array.from(slideRels.values()).find((r) => r.type.endsWith('/slideLayout'));
   if (!layoutRel) return null;
@@ -839,10 +864,18 @@ async function loadLayoutInfo(
   const cSld = layoutDoc.getElementsByTagName('p:cSld')[0];
   const layoutBg = cSld ? child(cSld, 'p:bg') : null;
   const background = backgroundCss(layoutBg) ?? backgroundCss(masterBg);
-  const backgroundImageUrl =
-    (await backgroundPicture(zip, layoutBg, 'ppt/slideLayouts', layoutRels, onUrl)) ??
-    (await backgroundPicture(zip, masterBg, 'ppt/slideMasters', masterRels, onUrl));
-  return { placeholders, masterStyles, background, backgroundImageUrl, theme: deckTheme };
+  let backgroundImageUrl: string | undefined;
+  let backgroundImagePath: string | undefined;
+  if (deferPictures) {
+    backgroundImagePath =
+      embeddedPicturePath(layoutBg, 'ppt/slideLayouts', layoutRels) ??
+      embeddedPicturePath(masterBg, 'ppt/slideMasters', masterRels);
+  } else {
+    backgroundImageUrl =
+      (await backgroundPicture(zip, layoutBg, 'ppt/slideLayouts', layoutRels, onUrl)) ??
+      (await backgroundPicture(zip, masterBg, 'ppt/slideMasters', masterRels, onUrl));
+  }
+  return { placeholders, masterStyles, background, backgroundImageUrl, backgroundImagePath, theme: deckTheme };
 }
 
 /** OOXML matches a slide placeholder to its layout counterpart by type+idx. */
@@ -1012,6 +1045,7 @@ function parsePic(pic: Element, ctx: ShapeCtx): PptxShape {
     rot: box.rot,
     geom: child(spPr, 'a:prstGeom')?.getAttribute('prst') || 'rect',
     imageUrl: url,
+    imageRid: rid || undefined,
     textScale: 1,
     isTitle: false,
   };
@@ -1118,8 +1152,9 @@ function parseGroup(grp: Element, ctx: ShapeCtx): void {
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function renderPptx(blob: Blob): Promise<PptxDocument> {
+export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Promise<PptxDocument> {
   activeTheme = null; // never inherit another deck's theme
+  const lazyMedia = Boolean(opts?.lazyMedia);
   const zip = await JSZip.loadAsync(blob);
   const slideFiles = await orderedSlidePaths(zip);
   const { w: slideWidth, h: slideHeight } = await parsePresentationSize(zip);
@@ -1127,6 +1162,7 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
 
   const slides: PptxSlide[] = [];
   const urlRevoke: string[] = [];
+  const jobs = new Map<number, { rels: Map<string, Rel>; slideBgPath?: string; layoutBgPath?: string }>();
 
   for (let i = 0; i < slideFiles.length; i++) {
     const slidePath = slideFiles[i];
@@ -1135,37 +1171,50 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
     const doc = new DOMParser().parseFromString(content, 'text/xml');
     const rels = await loadRelsFor(zip, slidePath);
 
-    // Embedded images: resolve once per slide (object URLs stay alive until dispose).
+    // Embedded images. The viewer asks for lazy media so a 200-slide image
+    // deck does not decode every picture before the first slide is shown.
+    // Callers that omit the flag (and the unit tests) still get URLs now.
     const imageUrls = new Map<string, string>();
-    for (const [rid, rel] of rels) {
-      if (!rel.type.endsWith('/image')) continue;
-      const path = resolveZipPath('ppt/slides', rel.target);
-      const media = zip.file(path);
-      if (!media) continue;
-      try {
-        const url = URL.createObjectURL(await media.async('blob'));
-        imageUrls.set(rid, url);
-        urlRevoke.push(url);
-      } catch {
-        /* unreadable media — skip */
+    if (!lazyMedia) {
+      for (const [rid, rel] of rels) {
+        if (!rel.type.endsWith('/image')) continue;
+        const path = resolveZipPath('ppt/slides', rel.target);
+        const media = zip.file(path);
+        if (!media) continue;
+        try {
+          const url = URL.createObjectURL(await media.async('blob'));
+          imageUrls.set(rid, url);
+          urlRevoke.push(url);
+        } catch {
+          /* unreadable media — skip */
+        }
       }
     }
 
-    const layout = await loadLayoutInfo(zip, rels, (u) => urlRevoke.push(u));
+    const layout = await loadLayoutInfo(zip, rels, (u) => urlRevoke.push(u), lazyMedia);
     const cSld = doc.getElementsByTagName('p:cSld')[0] || doc.documentElement;
     const spTree = cSld.getElementsByTagName('p:spTree')[0] || cSld;
 
     // Background: the slide's own, else the layout's, else the master's.
     const slideBg = child(cSld, 'p:bg');
     const background = backgroundCss(slideBg) ?? layout?.background;
-    const slideBgImage = await backgroundPicture(
-      zip,
-      slideBg,
-      'ppt/slides',
-      rels,
-      (u) => urlRevoke.push(u),
-    );
-    const backgroundImageUrl = slideBgImage ?? layout?.backgroundImageUrl;
+    let backgroundImageUrl = layout?.backgroundImageUrl;
+    if (lazyMedia) {
+      jobs.set(i + 1, {
+        rels,
+        slideBgPath: embeddedPicturePath(slideBg, 'ppt/slides', rels),
+        layoutBgPath: layout?.backgroundImagePath,
+      });
+    } else {
+      const slideBgImage = await backgroundPicture(
+        zip,
+        slideBg,
+        'ppt/slides',
+        rels,
+        (u) => urlRevoke.push(u),
+      );
+      backgroundImageUrl = slideBgImage ?? layout?.backgroundImageUrl;
+    }
 
     // Apply this slide's theme for the (synchronous) parse below.
     activeTheme = layout?.theme ?? activeTheme;
@@ -1262,13 +1311,79 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
       backgroundImageUrl,
       shapes,
     });
+
+    // Keep the UI thread free on large lazy decks. Eager parses stay synchronous
+    // so existing tests do not pick up an extra turn.
+    if (lazyMedia && (i + 1) % 4 === 0 && i < slideFiles.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   const fullText = slides.length
     ? slides.map((s) => `--- Slide ${s.slideNumber} ---\n${s.text}`).join('\n\n')
     : '';
 
+  const loadedMedia = new Set<number>(lazyMedia ? [] : slides.map((s) => s.slideNumber));
+  const inflight = new Map<number, Promise<void>>();
+  const urlByPath = new Map<string, string>();
+  let alive = true;
+
+  const urlFor = async (path: string): Promise<string | undefined> => {
+    if (!alive) return undefined;
+    const cached = urlByPath.get(path);
+    if (cached) return cached;
+    const media = zip.file(path);
+    if (!media) return undefined;
+    try {
+      const url = URL.createObjectURL(await media.async('blob'));
+      if (!alive) {
+        try { URL.revokeObjectURL(url); } catch { /* disposed mid-load */ }
+        return undefined;
+      }
+      urlRevoke.push(url);
+      urlByPath.set(path, url);
+      return url;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const ensureSlideMedia = (slideNumber: number): Promise<void> => {
+    if (!alive || loadedMedia.has(slideNumber)) return Promise.resolve();
+    const pending = inflight.get(slideNumber);
+    if (pending) return pending;
+    const run = (async () => {
+      const job = jobs.get(slideNumber);
+      const slide = slides.find((s) => s.slideNumber === slideNumber);
+      if (!job || !slide) {
+        loadedMedia.add(slideNumber);
+        return;
+      }
+      if (job.slideBgPath) {
+        slide.backgroundImageUrl = (await urlFor(job.slideBgPath)) ?? slide.backgroundImageUrl;
+      } else if (job.layoutBgPath && !slide.backgroundImageUrl) {
+        slide.backgroundImageUrl = await urlFor(job.layoutBgPath);
+      }
+      for (const shape of slide.shapes) {
+        if (!shape.imageRid || shape.imageUrl) continue;
+        const rel = job.rels.get(shape.imageRid);
+        if (!rel || !rel.type.endsWith('/image')) continue;
+        const url = await urlFor(resolveZipPath('ppt/slides', rel.target));
+        if (!url) continue;
+        shape.imageUrl = url;
+        if (!slide.images.includes(url)) slide.images.push(url);
+      }
+      loadedMedia.add(slideNumber);
+    })();
+    inflight.set(slideNumber, run);
+    return run;
+  };
+
   const dispose = () => {
+    alive = false;
+    jobs.clear();
+    urlByPath.clear();
+    inflight.clear();
     urlRevoke.forEach((u) => {
       try {
         URL.revokeObjectURL(u);
@@ -1278,5 +1393,5 @@ export async function renderPptx(blob: Blob): Promise<PptxDocument> {
     });
   };
 
-  return { slides, slideWidth, slideHeight, fullText, fileSize: blob.size, dates, dispose };
+  return { slides, slideWidth, slideHeight, fullText, fileSize: blob.size, dates, ensureSlideMedia, dispose };
 }

@@ -22,6 +22,7 @@ import Onboarding from './pages/Onboarding';
 import AcademicArchive from './pages/AcademicArchive';
 import ArchiveViewer from './pages/ArchiveViewer';
 import StorageManager from './pages/StorageManager';
+import MaterialLibrary from './pages/MaterialLibrary';
 import AiAssistant from './pages/AiAssistant';
 import ErrorBoundary from './components/ErrorBoundary';
 import StorageNoticeBanner from './components/StorageNoticeBanner';
@@ -78,6 +79,7 @@ const App = () => {
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/materials" element={<StudyMaterials />} />
+            <Route path="/library" element={<MaterialLibrary />} />
             <Route path="/highlights" element={<Highlights />} />
             <Route path="/courses" element={<Courses />} />
             <Route path="/course/:courseId" element={<CourseDetail />} />

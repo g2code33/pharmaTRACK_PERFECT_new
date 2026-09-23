@@ -4,6 +4,7 @@ import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import * as mammoth from 'mammoth';
 import { renderPptx } from '../utils/pptxRenderer';
+import { kindFromExtension, ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
 import { saveFile } from '../utils/storage';
 import {
@@ -41,6 +42,10 @@ export interface UploadedMaterial {
   pageCount: number;
   sizeBytes: number;
   usedOcr: boolean;
+  materialKind?: MaterialKind;
+  originalName?: string;
+  ocrStatus?: OcrStatus;
+  visualStatus?: VisualStatus;
 }
 
 type ItemStatus = 'queued' | 'reading' | 'ocr' | 'saving' | 'done' | 'error' | 'cancelled';
@@ -177,6 +182,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let text = '';
       let pages = 1;
       let usedOcr = false;
+      let visualStatus: VisualStatus = 'unknown';
       let pageTexts: { page: number; text: string }[] = [];
 
       if (item.kind === 'pdf') {
@@ -187,11 +193,23 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         const r = await mammoth.extractRawText({ arrayBuffer: buffer });
         text = r.value;
       } else if (item.kind === 'pptx') {
-        const deck = await renderPptx(item.file);
-        text = deck.fullText;
-        pages = deck.slides.length;
-        pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
-        deck.dispose();
+        // Text extraction must not decode every picture, and a failed render
+        // must not throw the original file away. The reader tries the visual
+        // render again and says so if it still cannot draw the slides.
+        try {
+          const deck = await renderPptx(item.file, { lazyMedia: true });
+          text = deck.fullText;
+          pages = deck.slides.length;
+          pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
+          visualStatus = pages > 0 ? 'ok' : 'failed';
+          deck.dispose();
+        } catch (err) {
+          console.error('Presentation could not be read as slides; keeping the original.', err);
+          text = '';
+          pages = 0;
+          pageTexts = [];
+          visualStatus = 'failed';
+        }
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
           update(item.id, { status: 'ocr', message: 'Reading text from image…' });
@@ -212,7 +230,14 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       // Binary lives in IndexedDB; only metadata + text go into app state.
       await saveFile(materialId, new Uint8Array(buffer));
 
-      update(item.id, { status: 'done', progress: 1, message: usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`, usedOcr });
+      update(item.id, {
+        status: 'done',
+        progress: 1,
+        message: visualStatus === 'failed'
+          ? 'Saved the original. Visual rendering failed — open it to read the extracted text.'
+          : usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`,
+        usedOcr,
+      });
 
       if (!pageTexts.length && text.trim()) pageTexts = [{ page: 1, text }];
 

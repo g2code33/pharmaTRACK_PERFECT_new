@@ -245,6 +245,17 @@ describe('pptx renderer — geometry', () => {
     deck.dispose();
   });
 
+  it('does not decode every slide image until that slide is shown', async () => {
+    const deck = await renderPptx(await buildDeck(), { lazyMedia: true });
+    const pic = deck.slides[1].shapes.find((s) => s.type === 'image');
+    expect(pic).toBeDefined();
+    expect(pic!.x).toBeCloseTo(192, 6);
+    expect(pic!.imageUrl).toBeUndefined();
+    await deck.ensureSlideMedia(2);
+    expect(pic!.imageUrl).toMatch(/^blob:/);
+    deck.dispose();
+  });
+
   it('parses tables: grid columns, rows, cell text/format/fill', async () => {
     const deck = await renderPptx(await buildDeck());
     const table = deck.slides[1].shapes.find((s) => s.type === 'table');

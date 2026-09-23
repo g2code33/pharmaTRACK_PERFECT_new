@@ -12,6 +12,7 @@
  *    with no async lookup, which is the whole point of this app.
  */
 import type { AppState } from '../types';
+import { isPresentationSlide } from './materialKind';
 import { searchDeep } from './searchIndex';
 
 export type SearchCategory =
@@ -40,6 +41,7 @@ export interface SearchResult {
 const PAGES: { title: string; link: string; keywords: string }[] = [
   { title: 'Dashboard', link: '/', keywords: 'home overview' },
   { title: 'Study Materials', link: '/materials', keywords: 'upload pdf slides documents' },
+  { title: 'Material Library', link: '/library', keywords: 'files powerpoint pdf favorites tags library' },
   { title: 'Study Bank', link: '/highlights', keywords: 'highlights saved insights' },
   { title: 'My Courses', link: '/courses', keywords: 'subjects modules' },
   { title: 'Learning Objectives', link: '/objectives', keywords: 'goals outcomes' },
@@ -205,9 +207,11 @@ export const searchAll = (state: AppState, rawQuery: string, limit = 20): Search
     const key = `${hit.materialId}-${hit.page}`;
     if (seenDeep.has(key)) continue;
     seenDeep.add(key);
+    const slide = state.slides.find((s) => s.id === hit.materialId);
+    const unit = slide && isPresentationSlide(slide) ? 'Slide' : 'Page';
     push({
       id: `d-${key}`,
-      title: `${hit.title} — page ${hit.page}`,
+      title: `${hit.title} → ${unit} ${hit.page}`,
       category: 'In document',
       link: `/read/${hit.topicId}?material=${hit.materialId}&page=${hit.page}&q=${encodeURIComponent(rawQuery.trim())}`,
       snippet: hit.snippet,

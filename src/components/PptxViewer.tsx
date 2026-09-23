@@ -27,6 +27,11 @@ import type { HighlightColor } from '../types';
 
 export interface PptxViewerProps {
   fileUrl: string;
+  /**
+   * Stable key for resume. Blob URLs change every open, so the reader passes
+   * `local:<materialId>`. Defaults to fileUrl (tests and archive previews).
+   */
+  resumeKey?: string;
   title?: string;
   /** Text captured at upload time — used for the "View Extracted Text" fallback. */
   extractedText?: string;
@@ -398,11 +403,12 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
 });
 
 const SlideCanvas = memo(function SlideCanvas({
-  slide, sw, sh, showImages = true,
-}: { slide: PptxSlide; sw: number; sh: number; showImages?: boolean }) {
+  slide, sw, sh, showImages = true, mediaEpoch = 0,
+}: { slide: PptxSlide; sw: number; sh: number; showImages?: boolean; mediaEpoch?: number }) {
   return (
     <div
       className="relative overflow-hidden"
+      data-media-epoch={mediaEpoch}
       style={{
         width: sw,
         height: sh,
@@ -490,10 +496,12 @@ const Thumb = memo(function Thumb({
 /* ------------------------------------------------------------------ */
 
 const PptxViewer: React.FC<PptxViewerProps> = ({
-  fileUrl, title, extractedText, jumpToPage, initialQuery, uploadDate,
+  fileUrl, resumeKey, title, extractedText, jumpToPage, initialQuery, uploadDate,
   onTextExtracted, onCreateHighlight, onAskAi, onSlideChange,
 }) => {
+  const positionKey = resumeKey || fileUrl;
   const [deck, setDeck] = useState<PptxDocument | null>(null);
+  const [mediaEpoch, setMediaEpoch] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<'slides' | 'text'>('slides');
@@ -543,7 +551,17 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     (async () => {
       try {
         const blob = await (await fetch(fileUrl)).blob();
-        const parsed = await renderPptx(blob);
+        const parsed = await renderPptx(blob, { lazyMedia: true });
+        if (cancelled) {
+          parsed.dispose();
+          return;
+        }
+        let start = 1;
+        const saved = loadSavedSlide(positionKey);
+        if (saved && saved >= 1 && saved <= parsed.slides.length) start = saved;
+        if (jumpToPage && jumpToPage >= 1 && jumpToPage <= parsed.slides.length) start = jumpToPage;
+        await parsed.ensureSlideMedia(start);
+        if (start !== 1) await parsed.ensureSlideMedia(1);
         if (cancelled) {
           parsed.dispose();
           return;
@@ -579,11 +597,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     if (!deck || jumpAppliedRef.current) return;
     jumpAppliedRef.current = true;
     let start = 1;
-    const saved = loadSavedSlide(fileUrl);
+    const saved = loadSavedSlide(positionKey);
     if (saved && saved >= 1 && saved <= deck.slides.length) start = saved;
     if (jumpToPage && jumpToPage >= 1 && jumpToPage <= deck.slides.length) start = jumpToPage;
     setSlide(start);
     setPageInput(String(start));
+    void deck.ensureSlideMedia(start).then(() => setMediaEpoch((n) => n + 1));
     if (initialQuery) {
       setFindOpen(true);
       setQuery(initialQuery);
@@ -598,6 +617,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     if (!deck) return;
     const current = deck.slides[slide - 1];
     onSlideChange?.(slide, deck.slides.length, current?.text ?? '');
+    let cancelled = false;
+    // Pictures for this slide only. Neighbouring slides stay as text until shown.
+    deck.ensureSlideMedia(slide).then(() => {
+      if (!cancelled) setMediaEpoch((n) => n + 1);
+    });
+    return () => { cancelled = true; };
   }, [deck, slide, onSlideChange]);
 
   /* ---------------- navigation ---------------- */
@@ -607,9 +632,9 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
       const clamped = Math.min(total, Math.max(1, n));
       setSlide(clamped);
       setPageInput(String(clamped));
-      saveSlidePosition(fileUrl, clamped);
+      saveSlidePosition(positionKey, clamped);
     },
-    [deck, total, fileUrl],
+    [deck, total, positionKey],
   );
 
   /* ---------------- zoom ---------------- */
@@ -890,7 +915,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           </div>
           <h3 className="text-lg font-bold text-gray-900">Unable to render this PowerPoint visually</h3>
           <p className="mt-2 text-sm text-gray-500">
-            Your original presentation is safe. {failure}
+            Visual rendering failed. Your original presentation is safe. {failure}
           </p>
           <div className="mt-6 flex flex-col gap-2">
             <button
@@ -967,6 +992,11 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           </button>
         </div>
         <div className="flex-1 overflow-auto p-4">
+          {!hasSlides ? (
+            <p className="mx-auto mb-3 max-w-3xl rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Visual rendering failed. The original file is still here — use Download Original. This is the extracted text, not the slide layout.
+            </p>
+          ) : null}
           {deck && hasSlides ? (
             <div className="mx-auto max-w-3xl space-y-4">
               {deck.slides.map((s) => (
@@ -1267,7 +1297,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           onMouseUp={handleMouseUp}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
-          className={`relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-gray-200'}`}
+          className={`relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
           data-testid="pptx-stage"
         >
           <div className="flex min-h-full min-w-full items-center justify-center p-4">
@@ -1278,14 +1308,17 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
               >
                 <div
                   ref={stageRef}
-                  className="absolute left-0 top-0 origin-top-left shadow-2xl"
+                  className="absolute left-0 top-0 origin-top-left shadow-2xl ring-1 ring-black/50"
                   style={{ transform: `scale(${scale})`, width: deck.slideWidth, height: deck.slideHeight }}
                 >
                   {currentSlide ? (
-                    <SlideCanvas slide={currentSlide} sw={deck.slideWidth} sh={deck.slideHeight} />
+                    <SlideCanvas slide={currentSlide} sw={deck.slideWidth} sh={deck.slideHeight} mediaEpoch={mediaEpoch} />
                   ) : null}
                 </div>
               </div>
+              <p className="mt-2 text-[11px] font-bold tracking-wide text-slate-300">
+                Slide {slide} · {aspectLabel(deck.slideWidth, deck.slideHeight)}
+              </p>
               {showNotes && currentSlide ? (
                 <div
                   className="mt-3 w-full rounded-b-lg border border-t-0 border-slate-300 bg-white px-4 py-3 shadow-lg"

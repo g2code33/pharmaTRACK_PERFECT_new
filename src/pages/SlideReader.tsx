@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
+import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -346,22 +347,59 @@ const SlideReader: React.FC = () => {
     setSelection('');
   }, [currentMaterial?.id]);
 
+  // Recently opened. Does not touch the file, so a failed render still counts.
+  useEffect(() => {
+    const id = currentMaterial?.id;
+    if (!id) return;
+    dispatch({
+      type: 'UPDATE_SLIDE',
+      payload: { id, updates: { lastOpenedAt: new Date().toISOString() } },
+    });
+  }, [currentMaterial?.id, dispatch]);
+
+  // Last page/slide, written after the viewer has actually reported a count
+  // so the reset-to-1 above does not overwrite a resumed position.
+  useEffect(() => {
+    const id = currentMaterial?.id;
+    if (!id || pageCount < 1) return;
+    const timer = window.setTimeout(() => {
+      dispatch({
+        type: 'UPDATE_SLIDE',
+        payload: {
+          id,
+          updates: {
+            lastOpenedAt: new Date().toISOString(),
+            lastPosition: page,
+            pageCount,
+          },
+        },
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [currentMaterial?.id, page, pageCount, dispatch]);
+
   const [fileUrl, setFileUrl] = useState<string | null>(null);
+  const [openedKind, setOpenedKind] = useState<MaterialKind | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
 
   useEffect(() => {
-    if (!currentMaterial) return;
+    if (!currentMaterial?.id) return;
+    const materialId = currentMaterial.id;
+    const fileType = currentMaterial.fileType;
+    const knownKind = currentMaterial.materialKind;
+    const knownSize = currentMaterial.fileSize;
     setIsLoadingContent(true);
+    setOpenedKind(null);
     let isMounted = true;
 
-    loadFile(currentMaterial.id).then(async (fileData: any) => {
+    loadFile(materialId).then(async (fileData: any) => {
       if (!isMounted) return;
       if (!fileData) {
         setIsLoadingContent(false);
         return;
       }
 
-      let data;
+      let data: Uint8Array;
       if (fileData instanceof Blob) {
         data = new Uint8Array(await fileData.arrayBuffer());
       } else if (fileData instanceof Uint8Array) {
@@ -376,10 +414,26 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-      const blob = new Blob([data], { type: currentMaterial.fileType === 'pdf' ? 'application/pdf' : 'application/octet-stream' });
+      const sniffed = sniffMaterialKind(data);
+      const mime = fileType === 'pdf' || sniffed === 'pdf'
+        ? 'application/pdf'
+        : sniffed === 'pptx'
+          ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          : 'application/octet-stream';
+      const blob = new Blob([data as unknown as BlobPart], { type: mime });
       const newUrl = URL.createObjectURL(blob);
+      setOpenedKind(sniffed);
       setFileUrl(newUrl);
       setIsLoadingContent(false);
+
+      const updates: Partial<import('../types').Slide> = {};
+      if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
+        updates.materialKind = sniffed;
+      }
+      if (knownSize == null) updates.fileSize = data.byteLength;
+      if (Object.keys(updates).length) {
+        dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
+      }
     }).catch(err => {
       console.error(err);
       if (isMounted) setIsLoadingContent(false);
@@ -392,7 +446,9 @@ const SlideReader: React.FC = () => {
         return null;
       });
     };
-  }, [currentMaterial]);
+    // Metadata updates must not reload the file, or the viewer jumps back to slide 1.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMaterial?.id, currentMaterial?.fileType]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -437,7 +493,7 @@ const SlideReader: React.FC = () => {
    * turns this into "course → topic → page/slide → question" context; the whole
    * document and the rest of the semester are never sent.
    */
-  const isPdf = currentMaterial?.fileType === 'pdf';
+  const isPdf = currentMaterial?.fileType === 'pdf' || openedKind === 'pdf';
   const aiScope: ContextSelection = {
     topicId,
     courseId: topic?.courseId,
@@ -483,7 +539,7 @@ const SlideReader: React.FC = () => {
     // Canvas-rendered viewer. The old <iframe> clipped the bottom of every
     // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
     // iframe) and exposed no page count, search or navigation.
-    if (currentMaterial?.fileType === 'pdf') {
+    if (currentMaterial?.fileType === 'pdf' || openedKind === 'pdf') {
       return (
         <PdfViewer
           fileUrl={fileUrl}

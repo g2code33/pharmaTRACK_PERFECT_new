@@ -19,6 +19,8 @@ vi.mock('idb-keyval', () => ({
 import {
   loadSearchIndex, indexDocument, removeFromIndex, searchDeep, __resetIndex,
 } from '../utils/searchIndex';
+import { searchAll } from '../utils/search';
+import type { AppState } from '../types';
 
 /** Text long enough that the localStorage preview would have cut it off. */
 const FILLER = 'General pharmacology background material. '.repeat(80); // ~3.3k chars
@@ -40,7 +42,77 @@ const seed = () => indexDocument({
   ],
 });
 
+const searchState = {
+  isLoggedIn: false,
+  student: null,
+  courses: [],
+  topics: [{ id: 't1', courseId: 'c1', topicName: 'Beta blockers', orderIndex: 0, createdAt: '' }],
+  slides: [{
+    id: 's1',
+    topicId: 't1',
+    slideNumber: 1,
+    title: 'Beta blockers',
+    contentText: '--- Slide 1 ---\nIntroduction',
+    fileType: 'text',
+    status: 'not_started',
+    createdAt: '',
+  }],
+  notes: [],
+  examQuestions: [],
+  learningObjectives: [],
+  highlights: [],
+  quizHistory: [],
+  studyPlans: [],
+  examDates: [],
+  activities: [],
+  chatHistory: [],
+  savedInsights: [],
+  openAIKey: '',
+  timetables: { class: [], quiz: [], exam: [] },
+  timetablePdf: null,
+} as unknown as AppState;
+
 describe('deep document search', () => {
+  it('names the slide and links the search result to that slide', async () => {
+    await indexDocument({
+      materialId: 's1',
+      topicId: 't1',
+      title: 'Beta blockers',
+      pages: [{ page: 23, text: 'Propranolol is used when a beta blocker is required.' }],
+    });
+    const hit = searchAll(searchState, 'propranolol').find((r) => r.category === 'In document');
+    expect(hit?.title).toBe('Beta blockers → Slide 23');
+    expect(hit?.link).toContain('/read/t1?');
+    expect(hit?.link).toContain('material=s1');
+    expect(hit?.link).toContain('page=23');
+  });
+
+  it('keeps PDF hits labelled as pages', async () => {
+    await indexDocument({
+      materialId: 'pdf1',
+      topicId: 't1',
+      title: 'Handout',
+      pages: [{ page: 4, text: 'The renal clearance of digoxin.' }],
+    });
+    const pdfState = {
+      ...searchState,
+      slides: [{
+        id: 'pdf1',
+        topicId: 't1',
+        slideNumber: 1,
+        title: 'Handout',
+        contentText: '--- Page 1 ---\nIntro',
+        fileType: 'pdf',
+        materialKind: 'pdf',
+        status: 'not_started',
+        createdAt: '',
+      }],
+    } as unknown as AppState;
+    const hit = searchAll(pdfState, 'digoxin').find((r) => r.category === 'In document');
+    expect(hit?.title).toBe('Handout → Page 4');
+    expect(hit?.link).toContain('page=4');
+  });
+
   it('finds a keyword far past the 2000-character preview limit', async () => {
     await seed();
     const hits = searchDeep('depyrogenation');

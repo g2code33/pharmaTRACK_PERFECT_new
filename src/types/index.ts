@@ -43,6 +43,24 @@ export interface Slide {
   status: 'not_started' | 'in_progress' | 'completed';
   createdAt: string;
   avatar_url?: string;
+  /**
+   * Real file kind. `fileType` stays the old union so existing readers and
+   * archives keep working. Presentations used to be stored as `text` with the
+   * extension removed from the title.
+   */
+  materialKind?: 'pdf' | 'pptx' | 'ppt' | 'docx' | 'image' | 'text' | 'unknown';
+  /** Original filename, including the extension the title no longer has. */
+  originalName?: string;
+  fileSize?: number;
+  pageCount?: number;
+  ocrStatus?: 'not_needed' | 'done' | 'skipped' | 'failed' | 'unknown';
+  /** Set when a presentation could not be drawn. The original file is kept. */
+  visualStatus?: 'ok' | 'failed' | 'unknown';
+  favorite?: boolean;
+  tags?: string[];
+  lastOpenedAt?: string;
+  /** 1-based page or slide the student last had on screen. */
+  lastPosition?: number;
 }
 
 export interface LearningObjective {

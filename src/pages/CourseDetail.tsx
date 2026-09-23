@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, loadSlideText, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
+import { materialMetaFromUpload } from '../utils/materialKind';
 import { indexDocument, removeFromIndex } from '../utils/searchIndex';
 import {
   ArrowLeft,
@@ -254,6 +255,7 @@ const CourseDetail: React.FC = () => {
         fileUrl: m.id,
         status: 'not_started',
         createdAt: new Date().toISOString(),
+        ...materialMetaFromUpload(m),
       } as Slide,
     });
     addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, topicId);
