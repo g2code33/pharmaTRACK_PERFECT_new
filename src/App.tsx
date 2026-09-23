@@ -21,8 +21,11 @@ import Profile from './pages/Profile';
 import Onboarding from './pages/Onboarding';
 import AcademicArchive from './pages/AcademicArchive';
 import ArchiveViewer from './pages/ArchiveViewer';
+import StorageManager from './pages/StorageManager';
 import AiAssistant from './pages/AiAssistant';
 import ErrorBoundary from './components/ErrorBoundary';
+import StorageNoticeBanner from './components/StorageNoticeBanner';
+import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
 
 const App = () => {
@@ -33,11 +36,33 @@ const App = () => {
   // collected once by Onboarding and stored locally. Signing in is optional
   // and only unlocks cloud sync (see utils/requireAuth).
   const needsOnboarding = state.student === null;
+  // An unreadable semester file must not look like a brand-new student.
+  // Onboarding would invite them to start over, and the next save would be
+  // refused anyway. Show Storage until the file is readable again.
+  const storageBlocked = (() => {
+    const status = readWorkspaceRaw().status;
+    return status === 'malformed' || status === 'unavailable';
+  })();
 
   // AIProvider owns AI configuration + credentials for the whole app. It sits
   // inside the error boundary and outside the router, and is independent of the
   // academic state — which is why AI keys never travel with a semester backup
   // (see src/ai/credentials.ts).
+  if (storageBlocked) {
+    return (
+      <ErrorBoundary>
+        <HashRouter>
+          <div className="min-h-screen bg-slate-50">
+            <StorageNoticeBanner />
+            <main className="p-4 sm:p-8">
+              <StorageManager />
+            </main>
+          </div>
+        </HashRouter>
+      </ErrorBoundary>
+    );
+  }
+
   return (
     // Outer boundary catches anything outside the Layout (Login, Onboarding)
     // and any crash in the router itself.
@@ -72,6 +97,7 @@ const App = () => {
             <Route path="/ai" element={<AiAssistant />} />
             <Route path="/archive" element={<AcademicArchive />} />
             <Route path="/archive/:id" element={<ArchiveViewer />} />
+            <Route path="/storage" element={<StorageManager />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Route>
         )}

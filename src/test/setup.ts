@@ -1,10 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 import { afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
+import { allowWorkspacePersist } from '../utils/persistGuard';
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  allowWorkspacePersist();
   vi.restoreAllMocks();
 });
 

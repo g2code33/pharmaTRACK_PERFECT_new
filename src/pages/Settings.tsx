@@ -24,6 +24,7 @@ import {
   Cloud,
   GraduationCap,
   Archive,
+  HardDrive,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
@@ -262,6 +263,16 @@ const Settings: React.FC = () => {
         </h1>
         <p className="text-gray-500">Manage your profile and app preferences</p>
       </div>
+
+      <Link to="/storage" className="block bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:border-[#2D6A4F]/30">
+        <div className="flex items-center gap-3">
+          <HardDrive className="w-5 h-5 text-[#2D6A4F]" />
+          <div>
+            <h2 className="font-semibold text-gray-800">Storage Manager</h2>
+            <p className="text-sm text-gray-500">See what is on this device, and recover without deleting a semester.</p>
+          </div>
+        </div>
+      </Link>
 
       {/* Profile Section */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">

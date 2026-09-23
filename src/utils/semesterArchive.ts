@@ -57,7 +57,8 @@ export const APP_VERSION: string = String((pkg as { version?: string }).version 
 // key, which is how listArchives() distinguishes them.
 // ---------------------------------------------------------------------------
 export const ARCHIVE_VERSION = 1;
-const META_PREFIX = 'semester_archive_';
+export const ARCHIVE_KEY_PREFIX = 'semester_archive_';
+const META_PREFIX = ARCHIVE_KEY_PREFIX;
 const META_FILE_PREFIX = 'semester_archive_file_';
 const META_TEXT_PREFIX = 'semester_archive_text_';
 const META_RECORD_PREFIX = 'semester_archive_record_';
@@ -77,16 +78,32 @@ export const PROTECTED_IDB_KEYS = new Set<string>([
   'pharmatrack_ai_settings',
 ]);
 
+/**
+ * Safety copies made before a schema migration. Not semester data: never
+ * archived, never exported, never deleted when a semester rolls over.
+ * The Storage Manager owns this namespace.
+ */
+export const MIGRATION_BACKUP_PREFIX = 'pharmatrack_migration_backup_';
+
 /** True for the archive namespace itself — listing/cleanup must not treat these as live data. */
 export const isArchiveNamespaceKey = (key: string): boolean => key.startsWith(META_PREFIX);
 
 /**
  * A live IndexedDB key that belongs to the current semester. This is a
- * denylist (archives + secrets), not an allowlist, so a store added later is
- * captured without a code change.
+ * denylist (archives + secrets + migration safety copies + interrupted
+ * import stages), not an allowlist, so a store added later is captured
+ * without a code change.
+ *
+ * Import stages (`semester_import_*`) are unfinished work. They are discarded
+ * only by the import flow or by an explicit Storage Manager action — never as
+ * a side effect of archiving or replacing the workspace.
  */
 export const isSemesterOwnedIdbKey = (key: string): boolean =>
-  Boolean(key) && !PROTECTED_IDB_KEYS.has(key) && !isArchiveNamespaceKey(key);
+  Boolean(key) &&
+  !PROTECTED_IDB_KEYS.has(key) &&
+  !isArchiveNamespaceKey(key) &&
+  !key.startsWith(MIGRATION_BACKUP_PREFIX) &&
+  !key.startsWith('semester_import_');
 
 const isArchiveMetaKey = (key: string): boolean =>
   key.startsWith(META_PREFIX) &&

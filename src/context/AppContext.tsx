@@ -18,6 +18,7 @@ import {
   ChatMessageStore,
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
+import { ensureSchema } from '../utils/storageManager';
 import {
   findLegacyKey,
   loadAISettings,
@@ -25,7 +26,7 @@ import {
   providerForLegacyKey,
   saveAISettings,
 } from '../ai/settings';
-import { saveCredentials } from '../ai/credentials';
+import { saveCredentials, storedApiKey } from '../ai/credentials';
 import { aiManager } from '../ai/manager';
 import { supabase, purgeStoredSession } from '../utils/supabase';
 import { loadSearchIndex } from '../utils/searchIndex';
@@ -382,17 +383,22 @@ async function migrateLegacyAiKey(state: AppState): Promise<void> {
   const legacy = findLegacyKey(state as unknown as Record<string, unknown>);
   if (!legacy) return;
 
-  const settings = loadAISettings();
   const targetId = providerForLegacyKey(legacy.key).kind;
-  const already = settings.providers.find((p) => p.id === targetId && p.enabled);
+  // A different key already in the AI store is left alone. Clearing the legacy
+  // field in that case would drop the only copy of this key.
+  const alreadyStored = await storedApiKey(targetId);
+  if (alreadyStored && alreadyStored !== legacy.key) return;
 
-  if (!already) {
+  if (alreadyStored !== legacy.key) {
+    const settings = loadAISettings();
     const { settings: migrated, providerId } = migrateLegacySettings(settings, legacy.key);
     const saved = saveAISettings(migrated);
     if (!saved.providers.some((p) => p.id === providerId && p.enabled)) return;
     await saveCredentials(providerId, { apiKey: legacy.key });
     aiManager.reload();
     await aiManager.ensureCredentials();
+    // Cache is not proof. The key stays in the semester file until IndexedDB has it.
+    if ((await storedApiKey(providerId)) !== legacy.key) return;
   }
 
   try {
@@ -430,7 +436,14 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [state, dispatch] = useReducer(appReducer, initialState);
+  const [state, rawDispatch] = useReducer(appReducer, initialState);
+  // A boot migration is async. If the student already added something, applying
+  // the pre-edit snapshot afterwards would wipe that work.
+  const editedDuringBoot = useRef(false);
+  const dispatch = useCallback((action: Action) => {
+    if (action.type !== 'LOAD_STATE' && action.type !== 'SET_LOGGED_IN') editedDuringBoot.current = true;
+    rawDispatch(action);
+  }, []);
 
   // Set the moment the user signs out, and read synchronously by the session
   // effect below. A ref (not state) is required because the effect and the
@@ -467,24 +480,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // synchronously against it.
   useEffect(() => { void loadSearchIndex(); }, []);
 
-  // Initial Load from IDB/LocalStorage
+  // Readable data is applied synchronously so a click in the same turn is not
+  // overwritten by an empty snapshot. Migration is async and only replaces
+  // state if the student has not edited yet.
   useEffect(() => {
-    const savedState = loadState();
-    // Default them to True if they are offline and had a student!
-    // Deliberately no "offline + has student => isLoggedIn = true" fudge here.
-    // That existed only to get past the old login wall. Now that the app runs
-    // without an account, faking a session would wrongly advertise cloud
-    // features to local-only users. isLoggedIn reflects a real Supabase
-    // session and nothing else; checkSession() below restores it if one exists.
-    // ensure timetable arrays exist for old users
-    if (!savedState.timetables) savedState.timetables = { class: [], quiz: [], exam: [] };
-    dispatch({ type: 'LOAD_STATE', payload: savedState });
+    let cancelled = false;
+    const saved = loadState();
+    if (!saved.timetables) saved.timetables = { class: [], quiz: [], exam: [] };
+    rawDispatch({ type: 'LOAD_STATE', payload: saved });
 
-    // One-time migration of the legacy single AI key into the multi-provider AI
-    // engine (see src/ai/settings.ts). The old field is only cleared once the
-    // new provider + credential are actually persisted, so a failure here can
-    // never lose a working key.
-    void migrateLegacyAiKey(savedState);
+    void (async () => {
+      const result = await ensureSchema();
+      if (cancelled || editedDuringBoot.current) return;
+      const next = result.state;
+      if (!next.timetables) next.timetables = { class: [], quiz: [], exam: [] };
+      rawDispatch({ type: 'LOAD_STATE', payload: next });
+      if (result.persist) void migrateLegacyAiKey(next);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const fetchProfile = async (userId: string) => {

@@ -54,6 +54,22 @@ export async function loadCredentials(providerId: ProviderId): Promise<ProviderC
   return all[providerId] ?? {};
 }
 
+/**
+ * The key actually persisted in IndexedDB, bypassing the in-memory cache.
+ * `saveCredentials` updates the cache even when the write fails, so a migration
+ * must not treat the cache as proof that the key is safe to remove elsewhere.
+ * Returns null when the store cannot be read — callers must keep the old copy.
+ */
+export async function storedApiKey(providerId: ProviderId): Promise<string | null> {
+  try {
+    const all = (await idb.get(CRED_KEY)) as CredentialMap | undefined;
+    const key = all?.[providerId]?.apiKey;
+    return typeof key === 'string' && key.trim() ? key : null;
+  } catch {
+    return null;
+  }
+}
+
 /** All credentials, for attaching to provider configs at load time. */
 export async function loadAllCredentials(): Promise<CredentialMap> {
   return { ...(await read()) };

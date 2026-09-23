@@ -1,10 +1,41 @@
 import { AppState, Course, Topic, Slide, LearningObjective, ExamQuestion, QuizHistory, StudyPlan, Note, ExamDate, Activity } from '../types';
 import * as idb from 'idb-keyval';
+import {
+  allowWorkspacePersist,
+  blockWorkspacePersist,
+  isWorkspacePersistBlocked,
+  workspacePersistBlockReason,
+} from './persistGuard';
 
 const STORAGE_KEY = 'pharmatrack_state';
 
-// Exported so the semester-archive system can build a genuinely empty fresh
-// workspace from the same single source of truth (no second copy to drift).
+export {
+  allowWorkspacePersist,
+  blockWorkspacePersist,
+  isWorkspacePersistBlocked,
+  workspacePersistBlockReason,
+};
+
+export type WorkspaceRawStatus = 'missing' | 'ok' | 'malformed' | 'unavailable';
+
+/** Read the semester file without replacing it. Never writes. */
+export function readWorkspaceRaw(): { raw: string | null; status: WorkspaceRawStatus } {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return { raw: null, status: 'unavailable' };
+  }
+  if (raw == null) return { raw: null, status: 'missing' };
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { raw, status: 'malformed' };
+    return { raw, status: 'ok' };
+  } catch {
+    return { raw, status: 'malformed' };
+  }
+}
+
 export const initialState: AppState = {
   isLoggedIn: false,
   student: null,
@@ -27,14 +58,27 @@ export const initialState: AppState = {
 };
 
 export const loadState = (): AppState => {
+  const { raw, status } = readWorkspaceRaw();
+  if (status === 'unavailable' || status === 'malformed') {
+    // Return an empty in-memory workspace, but do not write it back. The raw
+    // file is still in localStorage and saveState will refuse to replace it.
+    blockWorkspacePersist(
+      status === 'unavailable'
+        ? 'localStorage could not be read, so PharmaTRACK will not overwrite whatever is still stored.'
+        : 'Saved semester data could not be read, so it will not be overwritten.',
+    );
+    if (status === 'malformed') console.error('Error loading state from localStorage: saved data is not valid JSON.');
+    return initialState;
+  }
+  if (status === 'missing' || raw == null) {
+    allowWorkspacePersist();
+    return initialState;
+  }
   try {
-    const serializedState = localStorage.getItem(STORAGE_KEY);
-    if (serializedState === null) {
-      return initialState;
-    }
-    const parsedState = JSON.parse(serializedState);
-    return { ...initialState, ...parsedState };
+    allowWorkspacePersist();
+    return { ...initialState, ...JSON.parse(raw) };
   } catch (err) {
+    blockWorkspacePersist('Saved semester data could not be read, so it will not be overwritten.');
     console.error('Error loading state from localStorage:', err);
     return initialState;
   }
@@ -73,6 +117,19 @@ export const deleteSlideText = async (slideId: string): Promise<void> => {
 };
 
 export const saveState = (state: AppState): void => {
+  // Never replace a file we could not parse. A migration that needs to write
+  // does so only after a verified safety copy, and it does not come through here.
+  const existing = readWorkspaceRaw();
+  if (existing.status === 'malformed' || existing.status === 'unavailable') {
+    const reason = existing.status === 'unavailable'
+      ? 'localStorage could not be read, so PharmaTRACK will not overwrite whatever is still stored.'
+      : 'Saved semester data could not be read, so it will not be overwritten.';
+    blockWorkspacePersist(reason);
+    console.error(`Refusing to save over stored data: ${reason}`);
+    return;
+  }
+  if (isWorkspacePersistBlocked()) allowWorkspacePersist();
+
   try {
     let offloaded = 0;
 

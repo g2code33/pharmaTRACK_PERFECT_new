@@ -6,7 +6,8 @@ import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles } from 'lucide-react';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive } from 'lucide-react';
+import StorageNoticeBanner from './StorageNoticeBanner';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/timetable', icon: Calendar, label: 'Offline Timetable' },
   { path: '/archive', icon: Archive, label: 'Academic Archive' },
+  { path: '/storage', icon: HardDrive, label: 'Storage' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -183,6 +185,7 @@ const Layout: React.FC = () => {
   return (
     <div className={`flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
+      <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
         <aside className={`fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
           <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
