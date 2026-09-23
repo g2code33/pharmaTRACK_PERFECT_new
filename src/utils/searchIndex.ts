@@ -41,6 +41,68 @@ export type IndexShape = Record<string, IndexedDoc>;
 let memoryIndex: IndexShape = {};
 let loaded = false;
 
+/**
+ * Trigram postings built once from `memoryIndex`. A search intersects these
+ * lists and only then reads the candidate pages, so typing does not walk
+ * every document's full text. The page text itself stays in the index that
+ * was loaded at startup — it is not fetched again per keystroke.
+ */
+type PageKey = string;
+const PAGE_SEP = '\u0000';
+let postings: Map<string, PageKey[]> | null = null;
+let postingsGen = 0;
+let builtGen = -1;
+
+const pageKey = (materialId: string, page: number): PageKey => `${materialId}${PAGE_SEP}${page}`;
+
+const invalidatePostings = () => {
+  postingsGen++;
+  postings = null;
+};
+
+const ensurePostings = (): Map<string, PageKey[]> => {
+  if (postings && builtGen === postingsGen) return postings;
+  const map = new Map<string, PageKey[]>();
+  for (const doc of Object.values(memoryIndex)) {
+    for (const page of doc.pages) {
+      const key = pageKey(doc.materialId, page.page);
+      const hay = page.text.toLowerCase();
+      const seen = new Set<string>();
+      for (let i = 0; i <= hay.length - 3; i++) {
+        const gram = hay.slice(i, i + 3);
+        if (seen.has(gram)) continue;
+        seen.add(gram);
+        const list = map.get(gram);
+        if (list) list.push(key);
+        else map.set(gram, [key]);
+      }
+    }
+  }
+  postings = map;
+  builtGen = postingsGen;
+  return map;
+};
+
+/** Pages that contain every trigram of `term`. Terms shorter than 3 are not indexed. */
+const pagesForTerm = (index: Map<string, PageKey[]>, term: string): Set<PageKey> | null => {
+  if (term.length < 3) return null;
+  const lists: PageKey[][] = [];
+  for (let i = 0; i <= term.length - 3; i++) {
+    const list = index.get(term.slice(i, i + 3));
+    if (!list || list.length === 0) return new Set();
+    lists.push(list);
+  }
+  lists.sort((a, b) => a.length - b.length);
+  let acc = new Set(lists[0]);
+  for (let i = 1; i < lists.length; i++) {
+    const next = new Set<PageKey>();
+    for (const key of lists[i]) if (acc.has(key)) next.add(key);
+    acc = next;
+    if (acc.size === 0) break;
+  }
+  return acc;
+};
+
 export const loadSearchIndex = async (): Promise<void> => {
   if (loaded) return;
   try {
@@ -50,6 +112,7 @@ export const loadSearchIndex = async (): Promise<void> => {
     memoryIndex = {};
   } finally {
     loaded = true;
+    invalidatePostings();
   }
 };
 
@@ -73,12 +136,14 @@ export const indexDocument = async (doc: IndexedDoc): Promise<void> => {
   }
 
   memoryIndex[doc.materialId] = { ...doc, pages };
+  invalidatePostings();
   await persist();
 };
 
 export const removeFromIndex = async (materialId: string): Promise<void> => {
   if (!memoryIndex[materialId]) return;
   delete memoryIndex[materialId];
+  invalidatePostings();
   await persist();
 };
 
@@ -101,6 +166,7 @@ export const getSearchIndexRaw = async (): Promise<IndexShape | null> => {
 export const setSearchIndexRaw = async (index: IndexShape | null): Promise<void> => {
   memoryIndex = index ?? {};
   loaded = true;
+  invalidatePostings();
   try {
     if (index === null) {
       await idb.del(INDEX_KEY);
@@ -129,9 +195,35 @@ export interface DeepHit {
   count: number;
 }
 
+const recordHit = (hits: DeepHit[], doc: IndexedDoc, page: IndexedPage, terms: string[]) => {
+  const hay = page.text.toLowerCase();
+  // Every term must appear on the page, so multi-word queries behave as AND.
+  if (!terms.every((t) => hay.includes(t))) return;
+
+  const first = hay.indexOf(terms[0]);
+  const start = Math.max(0, first - 45);
+  const end = Math.min(page.text.length, first + terms[0].length + 75);
+
+  let count = 0;
+  let from = 0;
+  let at = hay.indexOf(terms[0], from);
+  while (at !== -1 && count < 50) { count++; from = at + terms[0].length; at = hay.indexOf(terms[0], from); }
+
+  hits.push({
+    materialId: doc.materialId,
+    topicId: doc.topicId,
+    title: doc.title,
+    page: page.page,
+    snippet: `${start > 0 ? '…' : ''}${page.text.slice(start, end).trim()}…`,
+    count,
+  });
+};
+
 /**
- * Searches the full text of every indexed document.
+ * Searches indexed document text.
  * Synchronous by design so the global search box updates as the user types.
+ * Candidate pages come from the trigram index; the includes() check is what
+ * actually decides a hit, so ranking and snippets stay the same.
  */
 export const searchDeep = (rawQuery: string, limit = 12): DeepHit[] => {
   const query = rawQuery.trim().toLowerCase();
@@ -139,30 +231,39 @@ export const searchDeep = (rawQuery: string, limit = 12): DeepHit[] => {
 
   const terms = query.split(/\s+/).filter(Boolean);
   const hits: DeepHit[] = [];
+  const index = ensurePostings();
 
-  for (const doc of Object.values(memoryIndex)) {
-    for (const page of doc.pages) {
-      const hay = page.text.toLowerCase();
-      // Every term must appear on the page, so multi-word queries behave as AND.
-      if (!terms.every((t) => hay.includes(t))) continue;
+  let candidates: Set<PageKey> | null = null;
+  let shortTerm = false;
+  for (const term of terms) {
+    const pages = pagesForTerm(index, term);
+    if (!pages) {
+      shortTerm = true;
+      continue;
+    }
+    if (pages.size === 0) return [];
+    if (!candidates) candidates = pages;
+    else {
+      const next = new Set<PageKey>();
+      for (const key of pages) if (candidates.has(key)) next.add(key);
+      candidates = next;
+      if (candidates.size === 0) return [];
+    }
+  }
 
-      const first = hay.indexOf(terms[0]);
-      const start = Math.max(0, first - 45);
-      const end = Math.min(page.text.length, first + terms[0].length + 75);
-
-      let count = 0;
-      let from = 0;
-      let at = hay.indexOf(terms[0], from);
-      while (at !== -1 && count < 50) { count++; from = at + terms[0].length; at = hay.indexOf(terms[0], from); }
-
-      hits.push({
-        materialId: doc.materialId,
-        topicId: doc.topicId,
-        title: doc.title,
-        page: page.page,
-        snippet: `${start > 0 ? '…' : ''}${page.text.slice(start, end).trim()}…`,
-        count,
-      });
+  // "ab cd" has no trigram to narrow with. Rare, and still correct.
+  if (!candidates || (shortTerm && terms.every((t) => t.length < 3))) {
+    for (const doc of Object.values(memoryIndex)) {
+      for (const page of doc.pages) recordHit(hits, doc, page, terms);
+    }
+  } else {
+    for (const key of candidates) {
+      const sep = key.indexOf('\0');
+      const materialId = key.slice(0, sep);
+      const pageNum = Number(key.slice(sep + 1));
+      const doc = memoryIndex[materialId];
+      const page = doc?.pages.find((p) => p.page === pageNum);
+      if (doc && page) recordHit(hits, doc, page, terms);
     }
   }
 
@@ -171,4 +272,8 @@ export const searchDeep = (rawQuery: string, limit = 12): DeepHit[] => {
 };
 
 /** Exposed for tests. */
-export const __resetIndex = () => { memoryIndex = {}; loaded = false; };
+export const __resetIndex = () => {
+  memoryIndex = {};
+  loaded = false;
+  invalidatePostings();
+};

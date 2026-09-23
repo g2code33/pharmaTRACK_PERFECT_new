@@ -239,6 +239,9 @@ export function classifyStorageKey(store: 'local' | 'idb', key: string): Storage
   if (key === AI_CONV_INDEX || key.startsWith(AI_CONV_PREFIX)) return 'ai-conversations';
   if (key.startsWith(MIGRATION_BACKUP_PREFIX) || key === SCHEMA_KEY) return 'application-settings';
   if (key === SEARCH_INDEX_KEY) return 'current-semester';
+  if (key === 'pharmatrack_archive_search_catalog' || key === 'pharmatrack_conversation_search') {
+    return 'application-settings';
+  }
   return 'current-semester';
 }
 

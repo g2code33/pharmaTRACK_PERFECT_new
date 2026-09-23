@@ -30,6 +30,8 @@ import { saveCredentials, storedApiKey } from '../ai/credentials';
 import { aiManager } from '../ai/manager';
 import { supabase, purgeStoredSession } from '../utils/supabase';
 import { loadSearchIndex } from '../utils/searchIndex';
+import { ensureArchiveCatalog } from '../utils/archiveCatalog';
+import { ensureConversationIndex } from '../utils/conversationSearch';
 import { TimetableItem } from '../types';
 
 type Action =
@@ -478,7 +480,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Warm the full-text search index from IndexedDB so global search can run
   // synchronously against it.
-  useEffect(() => { void loadSearchIndex(); }, []);
+  useEffect(() => {
+    void loadSearchIndex();
+    void ensureArchiveCatalog();
+    void ensureConversationIndex();
+  }, []);
 
   // Readable data is applied synchronously so a click in the same turn is not
   // overwritten by an empty snapshot. Migration is async and only replaces

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { FileQuestion, Upload, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle } from 'lucide-react';
 import { ExamQuestion } from '../types';
@@ -6,6 +7,10 @@ import { v4 as uuidv4 } from 'uuid';
 
 const QuestionBank = () => {
   const { state, dispatch } = useApp();
+  const [params] = useSearchParams();
+  const questionId = params.get('question');
+  const questionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const appliedQuestion = useRef('');
   
   // Import Modal State
   const [showImportModal, setShowImportModal] = useState(false);
@@ -23,6 +28,19 @@ const QuestionBank = () => {
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
 
   const filteredTopics = state.topics.filter(t => t.courseId === selectedCourseId);
+
+  useEffect(() => {
+    if (!questionId || appliedQuestion.current === questionId) return;
+    const question = state.examQuestions.find((q) => q.id === questionId);
+    if (!question) return;
+    appliedQuestion.current = questionId;
+    if (question.courseId) setExpandedCourses((prev) => new Set(prev).add(question.courseId));
+    if (question.topicId) setExpandedTopics((prev) => new Set(prev).add(question.topicId));
+    const timer = window.setTimeout(() => {
+      questionRefs.current[questionId]?.scrollIntoView({ block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [questionId, state.examQuestions]);
 
   const toggleCourse = (id: string) => {
     const next = new Set(expandedCourses);
@@ -157,7 +175,7 @@ const QuestionBank = () => {
                        {expandedTopics.has(topic.id) && (
                          <div className="p-5 grid gap-4 bg-slate-50/30">
                            {topic.questions.map((q, idx) => (
-                             <div key={q.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow relative group">
+                             <div key={q.id} ref={(el) => { questionRefs.current[q.id] = el; }} data-question-id={q.id} className={`bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition-shadow relative group ${questionId === q.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-slate-200'}`}>
                                 <div className="absolute top-4 right-4 flex opacity-0 group-hover:opacity-100 transition-opacity gap-2">
                                    <button onClick={() => openEditModal(q)} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"><Edit2 size={16} /></button>
                                    <button onClick={() => handleDelete(q.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={16} /></button>

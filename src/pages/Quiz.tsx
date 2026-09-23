@@ -1,10 +1,10 @@
 // PharmTrack - Quiz Mode Page
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { ExamQuestion, QuizHistory } from '../types';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Brain,
   Play,
@@ -36,6 +36,9 @@ interface QuizSettings {
 
 const Quiz: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, addActivity } = useApp();
+  const [params] = useSearchParams();
+  const quizId = params.get('quiz');
+  const reviewedQuiz = useRef('');
 
   // Quiz setup state
   const [settings, setSettings] = useState<QuizSettings>({
@@ -109,6 +112,14 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(true);
   };
+
+  useEffect(() => {
+    if (!quizId || reviewedQuiz.current === quizId) return;
+    const history = state.quizHistory.find((quiz) => quiz.id === quizId);
+    if (!history) return;
+    reviewedQuiz.current = quizId;
+    reviewQuiz(history);
+  }, [quizId, state.quizHistory]);
 
   const startQuiz = () => {
     // Shuffle and select questions

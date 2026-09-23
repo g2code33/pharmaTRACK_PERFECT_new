@@ -36,6 +36,16 @@ const AiAssistant: React.FC = () => {
   const topicId = params.get('topic') ?? undefined;
   const materialId = params.get('material') ?? undefined;
   const courseId = params.get('course') ?? undefined;
+  const conversationId = params.get('conversation') ?? undefined;
+
+  const replaceParams = useCallback((patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(params);
+    for (const [key, value] of Object.entries(patch)) {
+      if (!value) next.delete(key);
+      else next.set(key, value);
+    }
+    setParams(next);
+  }, [params, setParams]);
 
   const topic = state.topics.find((t) => t.id === topicId);
   const course = state.courses.find((c) => c.id === (topic?.courseId ?? courseId));
@@ -107,10 +117,16 @@ const AiAssistant: React.FC = () => {
     setOpenConversation(conversation);
   }, []);
 
+  useEffect(() => {
+    if (!conversationId || conversationId === openId) return;
+    void openHistoryEntry(conversationId);
+  }, [conversationId, openId, openHistoryEntry]);
+
   const startNewChat = useCallback(() => {
     setOpenId(null);
     setOpenConversation(null);
-  }, []);
+    replaceParams({ conversation: null });
+  }, [replaceParams]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-4">
@@ -156,7 +172,7 @@ const AiAssistant: React.FC = () => {
             <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Course</span>
             <select
               value={course?.id ?? ''}
-              onChange={(e) => setParams({ course: e.target.value })}
+              onChange={(e) => replaceParams({ course: e.target.value || null, topic: null, material: null })}
               className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#2D6A4F]"
             >
               <option value="">— all courses —</option>
@@ -173,7 +189,7 @@ const AiAssistant: React.FC = () => {
             <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Topic</span>
             <select
               value={topicId ?? ''}
-              onChange={(e) => setParams({ course: course?.id ?? '', topic: e.target.value })}
+              onChange={(e) => replaceParams({ topic: e.target.value || null, material: null })}
               className="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-[#2D6A4F]"
             >
               <option value="">— all topics —</option>
@@ -197,7 +213,7 @@ const AiAssistant: React.FC = () => {
                 {materials.map((m) => (
                   <button
                     key={m.id}
-                    onClick={() => setParams({ course: course?.id ?? '', topic: topicId, material: m.id })}
+                    onClick={() => replaceParams({ material: m.id })}
                     className={`w-full flex items-center gap-2 p-2 rounded-lg text-left text-xs border ${
                       m.id === materialId
                         ? 'border-[#2D6A4F] bg-[#2D6A4F]/5 font-bold'
@@ -243,7 +259,7 @@ const AiAssistant: React.FC = () => {
               {history.slice(0, 12).map((meta) => (
                 <button
                   key={meta.id}
-                  onClick={() => void openHistoryEntry(meta.id)}
+                  onClick={() => replaceParams({ conversation: meta.id })}
                   className={`w-full text-left p-2 rounded-lg border text-[11px] ${
                     meta.id === openId ? 'border-[#2D6A4F] bg-[#2D6A4F]/5' : 'border-gray-100 hover:bg-gray-50'
                   }`}

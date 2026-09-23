@@ -11,8 +11,8 @@
  * activities, highlights, saved insights, chat history, timetables and the
  * timetable PDF, plus material metadata.
  */
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { loadArchive, loadArchivedFile, loadArchivedRecords, loadArchivedSlideText, type ArchiveRecord } from '../utils/semesterArchive';
 import { extractWordText } from '../utils/wordProcessor';
 import type { AppState, Slide } from '../types';
@@ -62,11 +62,16 @@ interface PreviewState {
 
 const ArchiveViewer: React.FC = () => {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const focusKey = searchParams.get('focus') || '';
+  const focusPage = Number.parseInt(searchParams.get('page') || '', 10) || undefined;
   const [record, setRecord] = useState<ArchiveRecord | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [selected, setSelected] = useState<string>('overview'); // 'overview' | course id
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [previewPage, setPreviewPage] = useState<number | undefined>();
   const [previewLoading, setPreviewLoading] = useState(false);
+  const appliedFocus = useRef('');
   const [aiConversations, setAiConversations] = useState<Array<{ id: string; title?: string; messages?: Array<{ id?: string; role?: string; content?: string }> }>>([]);
 
   useEffect(() => {
@@ -110,29 +115,9 @@ const ArchiveViewer: React.FC = () => {
     (snapshot?.slides || []).filter((s) => s.topicId === topicId).sort((a, b) => a.slideNumber - b.slideNumber),
   [snapshot]);
 
-  if (notFound) {
-    return (
-      <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-100 p-10 text-center">
-        <AlertTriangle className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-        <h1 className="text-lg font-bold text-gray-700">Archive not found</h1>
-        <p className="text-gray-500 text-sm mt-1">It may have been deleted from this device.</p>
-        <Link to="/archive" className="inline-block mt-4 px-4 py-2 bg-[#2D6A4F] text-white rounded-lg text-sm font-medium">
-          Back to Academic Archive
-        </Link>
-      </div>
-    );
-  }
-
-  if (!record || !snapshot) {
-    return (
-      <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-100 p-10 text-center text-gray-500">
-        <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" /> Loading archive…
-      </div>
-    );
-  }
-
-  const openPreview = async (slide: Slide) => {
+  const openPreview = useCallback(async (slide: Slide, page?: number) => {
     if (!id) return;
+    setPreviewPage(page);
     setPreviewLoading(true);
     setPreview({ slide, url: null, blobType: '', text: null, offloaded: null, docxText: null, error: null });
     try {
@@ -158,20 +143,84 @@ const ArchiveViewer: React.FC = () => {
             }
           }
         } else {
-          setPreview((p) => (p ? { ...p, error: 'The file for this material is not in the archive.' } : p));
+          setPreview((prev) => (prev ? { ...prev, error: 'The file for this material is not in the archive.' } : prev));
         }
       }
       const offloaded = await loadArchivedSlideText(id, slide.id);
-      setPreview((p) => (p
-        ? { ...p, url, blobType, text: slide.contentText || null, offloaded, docxText, error: p.error }
-        : p));
+      setPreview((prev) => (prev
+        ? { ...prev, url, blobType, text: slide.contentText || null, offloaded, docxText, error: prev.error }
+        : prev));
     } catch (err) {
       console.error(err);
-      setPreview((p) => (p ? { ...p, error: 'Could not load this file.' } : p));
+      setPreview((prev) => (prev ? { ...prev, error: 'Could not load this file.' } : prev));
     } finally {
       setPreviewLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    if (!record || !snapshot || !focusKey) return;
+    const token = `${record.meta.id}|${focusKey}|${focusPage ?? ''}`;
+    if (appliedFocus.current === token) return;
+    appliedFocus.current = token;
+    const sep = focusKey.indexOf(':');
+    const kind = sep === -1 ? focusKey : focusKey.slice(0, sep);
+    const itemId = sep === -1 ? '' : focusKey.slice(sep + 1);
+    const scrollTo = (selector: string) => {
+      window.setTimeout(() => {
+        document.querySelector(selector)?.scrollIntoView({ block: 'center' });
+      }, 120);
+    };
+
+    if (kind === 'course' && itemId) {
+      setSelected(itemId);
+      return;
+    }
+    if (kind === 'topic' && itemId) {
+      const topic = (snapshot.topics || []).find((t) => t.id === itemId);
+      if (topic) setSelected(topic.courseId);
+      scrollTo(`[data-archive-focus="topic:${itemId}"]`);
+      return;
+    }
+    if ((kind === 'slide' || kind === 'highlight') && itemId) {
+      const slideId = kind === 'slide'
+        ? itemId
+        : (snapshot.highlights || []).find((h) => h.id === itemId)?.materialId;
+      const slide = slideId ? (snapshot.slides || []).find((s) => s.id === slideId) : undefined;
+      if (slide) {
+        const topic = (snapshot.topics || []).find((t) => t.id === slide.topicId);
+        if (topic) setSelected(topic.courseId);
+        const page = focusPage || (kind === 'highlight'
+          ? (snapshot.highlights || []).find((h) => h.id === itemId)?.page
+          : undefined);
+        void openPreview(slide, page);
+        return;
+      }
+    }
+    setSelected('overview');
+    if (itemId) scrollTo(`[data-archive-focus="${kind}:${itemId}"]`);
+  }, [record, snapshot, focusKey, focusPage, openPreview]);
+
+  if (notFound) {
+    return (
+      <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-100 p-10 text-center">
+        <AlertTriangle className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+        <h1 className="text-lg font-bold text-gray-700">Archive not found</h1>
+        <p className="text-gray-500 text-sm mt-1">It may have been deleted from this device.</p>
+        <Link to="/archive" className="inline-block mt-4 px-4 py-2 bg-[#2D6A4F] text-white rounded-lg text-sm font-medium">
+          Back to Academic Archive
+        </Link>
+      </div>
+    );
+  }
+
+  if (!record || !snapshot) {
+    return (
+      <div className="max-w-3xl mx-auto bg-white rounded-xl border border-gray-100 p-10 text-center text-gray-500">
+        <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" /> Loading archive…
+      </div>
+    );
+  }
 
   const previewKind = (p: PreviewState): 'pdf' | 'pptx' | 'image' | 'docx' | 'other' => {
     const t = `${p.blobType} ${String(p.slide.fileType || '')}`.toLowerCase();
@@ -331,7 +380,7 @@ const ArchiveViewer: React.FC = () => {
                 <Section title="Learning Objectives" icon={ListChecks}>
                   <div className="space-y-1.5">
                     {(snapshot.learningObjectives || []).map((o) => (
-                      <div key={o.id} className="flex items-center gap-2 text-sm bg-gray-50 rounded-lg px-3 py-2">
+                        <div key={o.id} data-archive-focus={`objective:${o.id}`} className={`flex items-center gap-2 text-sm rounded-lg px-3 py-2 ${focusKey === `objective:${o.id}` ? 'bg-[#2D6A4F]/10 ring-2 ring-[#2D6A4F]/40' : 'bg-gray-50'}`}>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${o.status === 'partial' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'}`}>{o.status}</span>
                         <span className="text-gray-700">{o.objectiveText}</span>
                       </div>
@@ -346,7 +395,7 @@ const ArchiveViewer: React.FC = () => {
                     {(snapshot.notes || []).map((note) => {
                       const topic = (snapshot.topics || []).find((t) => t.id === note.topicId);
                       return (
-                        <div key={note.id} className="border border-gray-100 rounded-xl p-4">
+                        <div key={note.id} data-archive-focus={`note:${note.id}`} className={`border rounded-xl p-4 ${focusKey === `note:${note.id}` ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/30' : 'border-gray-100'}`}>
                           <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
                             <StickyNote className="w-3.5 h-3.5" />
                             {topic?.topicName || 'Note'} · {format(new Date(note.createdAt), 'd MMM yyyy')}
@@ -375,7 +424,7 @@ const ArchiveViewer: React.FC = () => {
                     {(snapshot.examQuestions || []).map((q) => {
                       const c = (snapshot.courses || []).find((x) => x.id === q.courseId);
                       return (
-                        <details key={q.id} className="border border-gray-100 rounded-xl p-4">
+                        <details key={q.id} data-archive-focus={`question:${q.id}`} open={focusKey === `question:${q.id}`} className={`border rounded-xl p-4 ${focusKey === `question:${q.id}` ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/30' : 'border-gray-100'}`}>
                           <summary className="cursor-pointer text-sm text-gray-700 flex items-center gap-2 list-none">
                             <FileQuestion className="w-4 h-4 text-[#2D6A4F] flex-shrink-0" />
                             <span className="font-semibold">{c?.courseCode || '—'}</span>
@@ -412,7 +461,7 @@ const ArchiveViewer: React.FC = () => {
                     {[...(snapshot.quizHistory || [])].sort((a, b) => b.completedAt.localeCompare(a.completedAt)).map((q) => {
                       const c = (snapshot.courses || []).find((x) => x.id === q.courseId);
                       return (
-                        <div key={q.id} className="border border-gray-100 rounded-xl p-4 flex items-center gap-4">
+                        <div key={q.id} data-archive-focus={`quiz:${q.id}`} className={`border rounded-xl p-4 flex items-center gap-4 ${focusKey === `quiz:${q.id}` ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/30' : 'border-gray-100'}`}>
                           <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-sm ${q.scorePercentage >= 70 ? 'bg-green-100 text-green-700' : q.scorePercentage >= 50 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
                             {q.scorePercentage}%
                           </div>
@@ -485,7 +534,7 @@ const ArchiveViewer: React.FC = () => {
                     {[...(snapshot.highlights || [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).map((h) => {
                       const slide = (snapshot.slides || []).find((s) => s.id === h.materialId);
                       return (
-                        <div key={h.id} className="border-l-4 rounded-r-lg bg-gray-50 px-4 py-3" style={{ borderColor: h.color || '#FFB703' }}>
+                        <div key={h.id} data-archive-focus={`highlight:${h.id}`} className={`border-l-4 rounded-r-lg px-4 py-3 ${focusKey === `highlight:${h.id}` ? 'bg-[#2D6A4F]/10 ring-2 ring-[#2D6A4F]/30' : 'bg-gray-50'}`} style={{ borderColor: h.color || '#FFB703' }}>
                           <p className="text-sm text-gray-700">{h.text}</p>
                           {h.note && <p className="text-xs text-gray-500 mt-1 italic">Note: {h.note}</p>}
                           <p className="text-[11px] text-gray-400 mt-1">
@@ -502,7 +551,7 @@ const ArchiveViewer: React.FC = () => {
                 <Section title="Saved Insights" icon={Lightbulb}>
                   <div className="space-y-2">
                     {(snapshot.savedInsights || []).map((s) => (
-                      <div key={s.id} className="bg-amber-50/60 border border-amber-100 rounded-xl px-4 py-3">
+                      <div key={s.id} data-archive-focus={`insight:${s.id}`} className={`rounded-xl px-4 py-3 ${focusKey === `insight:${s.id}` ? 'bg-[#2D6A4F]/10 border border-[#2D6A4F] ring-2 ring-[#2D6A4F]/30' : 'bg-amber-50/60 border border-amber-100'}`}>
                         <p className="text-sm text-gray-700 whitespace-pre-wrap">{s.content}</p>
                         <p className="text-[11px] text-gray-400 mt-1 flex items-center gap-1">
                           <Bot className="w-3 h-3" /> {s.type} · {format(new Date(s.timestamp), 'd MMM yyyy')}
@@ -530,7 +579,7 @@ const ArchiveViewer: React.FC = () => {
                             <p className="text-xs font-bold text-gray-500 uppercase mb-2">{topic?.topicName || 'Conversation'}</p>
                             <div className="space-y-1.5">
                               {msgs.slice(-60).map((m) => (
-                                <div key={m.id} className={`text-sm rounded-xl px-3 py-2 max-w-[85%] ${m.role === 'user' ? 'bg-[#2D6A4F]/10 ml-auto text-gray-800' : 'bg-gray-100 text-gray-700'}`}>
+                                <div key={m.id} data-archive-focus={`chat:${m.id}`} className={`text-sm rounded-xl px-3 py-2 max-w-[85%] ${focusKey === `chat:${m.id}` ? 'ring-2 ring-[#FFB703]' : ''} ${m.role === 'user' ? 'bg-[#2D6A4F]/10 ml-auto text-gray-800' : 'bg-gray-100 text-gray-700'}`}>
                                   {m.content}
                                 </div>
                               ))}
@@ -546,7 +595,7 @@ const ArchiveViewer: React.FC = () => {
                 <Section title="AI conversations" icon={MessageSquare}>
                   <div className="space-y-4 max-h-96 overflow-y-auto pr-1" data-testid="archive-ai-conversations">
                     {aiConversations.map((conv) => (
-                      <div key={conv.id}>
+                      <div key={conv.id} data-archive-focus={`aichat:${conv.id}`} className={focusKey === `aichat:${conv.id}` ? 'ring-2 ring-[#FFB703] rounded-xl p-2' : undefined}>
                         <p className="text-xs font-bold text-gray-500 uppercase mb-2">{conv.title || 'Conversation'}</p>
                         <div className="space-y-1.5">
                           {(conv.messages || []).slice(-40).map((m, i) => (
@@ -581,7 +630,7 @@ const ArchiveViewer: React.FC = () => {
               </div>
 
               {topicsFor(course.id).map((topic) => (
-                <div key={topic.id} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                <div key={topic.id} data-archive-focus={`topic:${topic.id}`} className={`bg-white rounded-xl border shadow-sm overflow-hidden ${focusKey === `topic:${topic.id}` ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/30' : 'border-gray-100'}`}>
                   <div className="px-4 py-3 bg-gray-50">
                     <p className="font-semibold text-gray-700 text-sm">{topic.topicName}</p>
                   </div>
@@ -631,8 +680,8 @@ const ArchiveViewer: React.FC = () => {
                 const kind = previewKind(preview);
                 return (
                   <>
-                    {preview.url && kind === 'pdf' && <div className="h-[70vh]"><PdfViewer fileUrl={preview.url} title={preview.slide.title} /></div>}
-                    {preview.url && kind === 'pptx' && <div className="h-[70vh]"><PptxViewer fileUrl={preview.url} title={preview.slide.title} /></div>}
+                    {preview.url && kind === 'pdf' && <div className="h-[70vh]"><PdfViewer fileUrl={preview.url} title={preview.slide.title} jumpToPage={previewPage} /></div>}
+                    {preview.url && kind === 'pptx' && <div className="h-[70vh]"><PptxViewer fileUrl={preview.url} title={preview.slide.title} jumpToPage={previewPage} /></div>}
                     {preview.url && kind === 'image' && <img src={preview.url} alt={preview.slide.title} className="max-h-[70vh] mx-auto" />}
                     {kind === 'docx' && (
                       <div className="p-4">

@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { searchAll, type SearchResult } from '../utils/search';
+import { searchAcademic } from '../utils/academicSearch';
+import { onSearchIndex } from '../utils/searchNotify';
+import type { SearchResult } from '../utils/search';
 import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -11,6 +13,7 @@ import StorageNoticeBanner from './StorageNoticeBanner';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
+  { path: '/search', icon: Search, label: 'Academic Search' },
   { path: '/ai', icon: Sparkles, label: 'PharmaTRACK AI' },
   { path: '/materials', icon: Upload, label: '📚 Study Materials', highlight: true },
   { path: '/highlights', icon: Bookmark, label: '⭐ Study Bank' },
@@ -37,6 +40,7 @@ const Layout: React.FC = () => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [indexTick, setIndexTick] = useState(0);
   const searchBoxRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
@@ -56,10 +60,12 @@ const Layout: React.FC = () => {
 
   const recentSlides = [...state.slides].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
 
+  useEffect(() => onSearchIndex(() => setIndexTick((n) => n + 1)), []);
+
   useEffect(() => {
-    setSearchResults(searchAll(state, searchQuery));
+    setSearchResults(searchAcademic(state, searchQuery, undefined, 8));
     setActiveIndex(0);
-  }, [searchQuery, state]);
+  }, [searchQuery, state, indexTick]);
 
   // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
   // which raced with the click it was trying to allow.
@@ -240,7 +246,7 @@ const Layout: React.FC = () => {
                   <input
                     ref={searchInputRef}
                     type="text"
-                    placeholder="Search courses, topics, slides, notes, questions…  (Ctrl+K)"
+                    placeholder="Search notes, slides, questions, archives…  (Ctrl+K)"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
@@ -282,7 +288,7 @@ const Layout: React.FC = () => {
                     ) : searchResults.length === 0 ? (
                       <div className="p-6 text-center">
                         <p className="text-sm font-bold text-gray-600">No matches for “{searchQuery}”</p>
-                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or check Study Materials.</p>
+                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or open Academic Search for filters.</p>
                       </div>
                     ) : (
                       <>
@@ -302,13 +308,28 @@ const Layout: React.FC = () => {
                             <div className="flex justify-between items-start gap-3">
                               <div className="min-w-0 flex-1">
                                 <p className="font-bold text-[#2D6A4F] truncate">{res.title}</p>
+                                {(res.courseCode || res.topicName || res.location || res.scope === 'archive') && (
+                                  <p className="text-[11px] text-gray-400 mt-0.5 truncate">
+                                    {[res.scope === 'archive' ? (res.semesterLabel || 'Archive') : res.courseCode, res.topicName, res.materialTitle && res.materialTitle !== res.title ? res.materialTitle : undefined, res.location].filter(Boolean).join(' · ')}
+                                  </p>
+                                )}
                                 {res.snippet && <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{res.snippet}</p>}
                               </div>
-                              <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.category}</span>
+                              <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.action || res.category}</span>
                             </div>
                           </div>
                         ))}
                       </>
+                    )}
+                    {searchQuery.trim().length >= 2 && (
+                      <div
+                        role="button"
+                        tabIndex={-1}
+                        onMouseDown={(e) => { e.preventDefault(); goToResult(`/search?q=${encodeURIComponent(searchQuery.trim())}`); }}
+                        className="px-4 py-2.5 bg-slate-50 text-center text-xs font-bold text-[#2D6A4F] hover:bg-[#2D6A4F]/10 cursor-pointer border-t"
+                      >
+                        See all results and filters
+                      </div>
                     )}
                   </div>
                 )}

@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Note } from '../types';
@@ -16,6 +17,10 @@ import { useAI } from '../ai/state';
 const Notes: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, getSlidesForTopic } = useApp();
   const ai = useAI();
+  const [params] = useSearchParams();
+  const noteId = params.get('note');
+  const noteRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const appliedNote = useRef('');
   const [selectedCourse, setSelectedCourse] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,6 +44,25 @@ const Notes: React.FC = () => {
     if (searchQuery && !note.noteText.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  useEffect(() => {
+    if (!noteId || appliedNote.current === noteId) return;
+    const note = state.notes.find((n) => n.id === noteId);
+    if (!note) return;
+    appliedNote.current = noteId;
+    setSelectedCourse('');
+    setSelectedTopic('');
+    setSearchQuery('');
+    setExpandedNotes((prev) => {
+      const next = new Set(prev);
+      next.add(noteId);
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      noteRefs.current[noteId]?.scrollIntoView({ block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [noteId, state.notes]);
 
   const toggleNote = (id: string) => {
     const newExpanded = new Set(expandedNotes);
@@ -199,7 +223,7 @@ const Notes: React.FC = () => {
             const isExpanded = expandedNotes.has(note.id);
 
             return (
-              <div key={note.id} className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm hover:shadow-md transition-shadow group">
+              <div key={note.id} ref={(el) => { noteRefs.current[note.id] = el; }} data-note-id={note.id} className={`bg-white rounded-xl p-5 border shadow-sm hover:shadow-md transition-shadow group ${noteId === note.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-gray-100'}`}>
                 <div className="flex justify-between items-start mb-3">
                   <div>
                     <h3 className="font-bold text-gray-800 text-lg mb-1">{topic?.topicName}</h3>
