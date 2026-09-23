@@ -16,6 +16,7 @@ import {
   listArchives,
   loadArchive,
   loadArchivedFile,
+  loadArchivedRecords,
   loadArchivedSlideText,
   deleteArchive,
   exportBackup,
@@ -469,7 +470,8 @@ describe('storage failure during Import into Academic Archive', () => {
     // The copy of the first file blows up (quota / disk error).
     const realSet = idbStore.set.bind(idbStore);
     idbStore.set = (k: string, v: unknown) => {
-      if (k.includes('archive_') && k.endsWith('_file1')) throw new DOMException('boom', 'QuotaExceededError');
+      // Staging writes semester_import_* first. A failure there must not promote.
+      if (k.startsWith('semester_import_') && k.endsWith('_file1')) throw new DOMException('boom', 'QuotaExceededError');
       return realSet(k, v);
     };
     await expect(importBackupIntoArchive(result.parsed.staged, 'archive')).rejects.toThrow(/could not be imported/i);
@@ -478,10 +480,144 @@ describe('storage failure during Import into Academic Archive', () => {
     // The live workspace is byte-for-byte untouched…
     for (const [k, v] of before) expect(idbStore.get(k), `record ${k} changed`).toBe(v);
     expect(localStorage.getItem('pharmatrack_state')).toBe(stateBefore);
-    // …and the interrupted import left zero traces (no partial/failed archive litter).
+    // …and the interrupted import left zero traces (no partial archive, no staged namespace).
     expect([...idbStore.keys()].filter((k) => k.startsWith('semester_archive'))).toEqual([]);
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_import_'))).toEqual([]);
     expect((await listArchives())).toHaveLength(0);
     void meta;
+  });
+});
+
+describe('staging — promote only after the temporary namespace validates', () => {
+  it('writes semester_import_* before any permanent archive key, then removes the stage', async () => {
+    const deviceA = makeState();
+    seedIdb(deviceA);
+    const meta = await createSemesterArchive(deviceA, { level: 'Level 300', semester: '1st Semester', academicYear: '2026/2027' });
+    const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
+    idbStore.clear();
+    const result = await parseBackup(await blobToBuffer(blob));
+    if (!result.ok || result.parsed.kind !== 'semester') throw new Error('parse failed');
+
+    const order: string[] = [];
+    const realSet = idbStore.set.bind(idbStore);
+    idbStore.set = (k: string, v: unknown) => {
+      if (k.startsWith('semester_import_') || k.startsWith('semester_archive')) order.push(k);
+      return realSet(k, v);
+    };
+    const imported = await importBackupIntoArchive(result.parsed.staged, 'archive');
+    idbStore.set = realSet;
+
+    expect(imported.status).toBe('verified');
+    expect(order.some((k) => k.startsWith('semester_import_'))).toBe(true);
+    const firstArchive = order.findIndex((k) => k.startsWith('semester_archive'));
+    const firstStage = order.findIndex((k) => k.startsWith('semester_import_'));
+    expect(firstStage).toBeGreaterThanOrEqual(0);
+    expect(firstArchive).toBeGreaterThan(firstStage);
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_import_'))).toEqual([]);
+  });
+
+  it('a failed replace restores the existing archive instead of deleting it first', async () => {
+    const state = makeState();
+    seedIdb(state);
+    const meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' });
+    const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
+    const result = await parseBackup(await blobToBuffer(blob));
+    if (!result.ok || result.parsed.kind !== 'semester') throw new Error('parse failed');
+
+    const realSet = idbStore.set.bind(idbStore);
+    let overwrote = false;
+    let failedOnce = false;
+    idbStore.set = (k: string, v: unknown) => {
+      // Let staging finish. During promotion, overwrite one archived file, then fail once
+      // so the rollback (which writes the same keys back) can still run.
+      if (!failedOnce && overwrote && k.startsWith('semester_archive') && k.includes(meta.id) && k.endsWith('_file2')) {
+        failedOnce = true;
+        throw new DOMException('boom', 'QuotaExceededError');
+      }
+      if (!overwrote && k.startsWith('semester_archive') && k.includes(meta.id) && k.endsWith('_file1')) {
+        overwrote = true;
+        return realSet(k, new Blob(['tampered-during-promote']));
+      }
+      return realSet(k, v);
+    };
+    await expect(importBackupIntoArchive(result.parsed.staged, 'replace', meta.id)).rejects.toThrow(/could not be imported/i);
+    idbStore.set = realSet;
+    expect(overwrote).toBe(true);
+
+    const still = await loadArchive(meta.id);
+    expect(still?.meta.status).toBe('verified');
+    expect(still!.snapshot.courses.map((c) => c.id)).toEqual(['c1', 'c2']);
+    expect(await blobToText((await loadArchivedFile(meta.id, 'file1')) as Blob)).toContain('%PDF');
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_import_'))).toEqual([]);
+    expect((await listArchives())).toHaveLength(1);
+  });
+});
+
+describe('acceptance: device A export → device B import', () => {
+  it('moves the real files and every academic record, and never the API keys', async () => {
+    const deviceA = makeState();
+    deviceA.slides = [
+      ...deviceA.slides,
+      { id: 's3', topicId: 't1', slideNumber: 2, title: 'Lecture deck', contentText: 'slide text', fileUrl: 'local:file3', fileType: 'pptx' as never, status: 'completed', createdAt: '2024-01-04' },
+    ];
+    deviceA.openAIKey = 'sk-test-key-should-not-export';
+    seedIdb(deviceA);
+    idbStore.set('slidetext_s3', 'OCR: autonomic pharmacology extracted from the deck');
+    idbStore.set('pharmatrack_ai_conversation_conv1', {
+      id: 'conv1', title: 'Digoxin chat', messages: [{ role: 'assistant', content: 'Monitor potassium with digoxin.' }],
+    });
+    idbStore.set('pharmatrack_ai_credentials', { nvidia: { apiKey: 'nvapi-device-a-secret-key' } });
+
+    const meta = await createSemesterArchive(deviceA, { level: 'Level 300', semester: '1st Semester', academicYear: '2026/2027' });
+    const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
+    expect(semesterBackupFileName(meta.level, meta.semester, meta.academicYear)).toBe('PharmaTRACK_Level-300_Semester-1_2026-2027.pharmatrack');
+
+    const zip = await JSZip.loadAsync(await blobToBuffer(blob));
+    expect(zip.file('semester/semester.json')).toBeTruthy();
+    expect(zip.file('files/file1.pdf')).toBeTruthy();
+    expect(zip.file('files/file3.pptx')).toBeTruthy();
+    expect(await zip.file('text/s1.txt')!.async('string')).toContain('cardiac glycosides');
+    expect(await zip.file('text/s3.txt')!.async('string')).toContain('autonomic pharmacology');
+    const packed = await Promise.all(Object.keys(zip.files).filter((n) => !zip.files[n].dir).map(async (n) => zip.files[n].async('string')));
+    const all = packed.join('\n');
+    expect(all).not.toContain('nvapi-device-a-secret-key');
+    expect(all).not.toContain('sk-test-key-should-not-export');
+    expect(all).not.toContain('pharmatrack_ai_credentials');
+
+    // Device B.
+    const fileBytes = await blobToBuffer(blob);
+    idbStore.clear();
+    localStorage.clear();
+    idbStore.set('pharmatrack_ai_credentials', { gemini: { apiKey: 'AIza-device-b-must-stay' } });
+
+    const parsed = await parseBackup(fileBytes);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok || parsed.parsed.kind !== 'semester') return;
+    const imported = await importBackupIntoArchive(parsed.parsed.staged, 'archive');
+    expect(imported.status).toBe('verified');
+    expect(imported.id).toBe(meta.id);
+    expect(imported.academicYear).toBe('2026/2027');
+    expect(imported.title).toBe('Level 300 — Semester 1');
+
+    const opened = await loadArchive(imported.id);
+    expect(opened!.snapshot.courses.map((c) => c.courseCode)).toEqual(['PHA301', 'PHA302']);
+    expect(opened!.snapshot.topics.map((t) => t.topicName)).toContain('Cardiac Glycosides');
+    expect(opened!.snapshot.notes[0].noteText).toContain('narrow therapeutic index');
+    expect(opened!.snapshot.examQuestions[0].modelAnswer).toContain('Na/K');
+    expect(opened!.snapshot.quizHistory[0].scorePercentage).toBe(90);
+    expect(opened!.snapshot.studyPlans[0].notes).toBe('Ch 4');
+    expect(opened!.snapshot.timetables.class[0].subject).toBe('PHA301');
+    expect(opened!.snapshot.chatHistory[0].content).toContain('arrhythmia');
+    expect(await blobToText((await loadArchivedFile(imported.id, 'file1')) as Blob)).toContain('%PDF');
+    expect(await blobToText((await loadArchivedFile(imported.id, 'file3')) as Blob)).toContain('PK');
+    expect(await loadArchivedSlideText(imported.id, 's1')).toBe(LONG_TEXT);
+    expect(await loadArchivedSlideText(imported.id, 's3')).toContain('autonomic pharmacology');
+
+    const records = await loadArchivedRecords(imported.id);
+    expect(JSON.stringify(records)).toContain('Monitor potassium with digoxin.');
+    expect(records.some((r) => r.sourceKey === 'pharmatrack_ai_credentials')).toBe(false);
+    expect(idbStore.get('pharmatrack_ai_credentials')).toEqual({ gemini: { apiKey: 'AIza-device-b-must-stay' } });
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_import_'))).toEqual([]);
   });
 });
 
@@ -509,6 +645,18 @@ describe('validation — corrupted & invalid backups are rejected', () => {
     const out = await zip.generateAsync({ type: 'arraybuffer' });
     const result = await parseBackup(out);
     expect(result.ok).toBe(false);
+  });
+
+  it('rejects a malformed archive id', async () => {
+    const { blob } = await seed();
+    const zip = await JSZip.loadAsync(await blobToBuffer(blob));
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string'));
+    manifest.archiveId = '../not-an-archive';
+    zip.file('manifest.json', JSON.stringify(manifest));
+    const result = await parseBackup(await zip.generateAsync({ type: 'arraybuffer' }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toMatch(/archive ID/i);
   });
 
   it('rejects an unknown format string', async () => {

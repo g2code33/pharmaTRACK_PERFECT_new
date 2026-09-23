@@ -843,7 +843,7 @@ const AcademicArchive: React.FC = () => {
                             disabled={importBusy}
                             className="py-2.5 border border-red-300 text-red-700 rounded-lg hover:bg-red-50 text-sm font-medium col-span-2"
                           >
-                            Replace Existing — Advanced
+                            Replace Existing
                           </button>
                         </div>
                       ) : (
@@ -864,6 +864,11 @@ const AcademicArchive: React.FC = () => {
                         </div>
                       )
                     ) : null}
+                    {parsed.kind === 'semester' && !parsing && (
+                      <p className="text-[11px] text-gray-500">
+                        Validated. The default import adds this semester to Academic Archive and does not replace your current workspace.
+                      </p>
+                    )}
 
                     {parsed.kind === 'degree' && (
                       <button

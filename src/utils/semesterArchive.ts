@@ -747,7 +747,8 @@ export const completeSemester = async (
 //       learning-objectives.json  exam-questions.json  quiz-history.json
 //       study-plans.json  notes.json  exam-dates.json  activities.json
 //       chat-history.json  highlights.json  saved-insights.json
-//       timetable.json  search-index.json (when present)
+//       semester.json             identity (archive id, year, level, semester)
+//       timetable.json  search-index.json (when present)  workspace.json
 //     materials/<fileId>.json    material metadata (which slide owns the file)
 //     files/<fileId>.<ext>       the ACTUAL uploaded binaries (PDF/PPTX/…)
 //     text/<slideId>.txt         offloaded slide / OCR text (verbatim)
@@ -970,6 +971,15 @@ const buildPackageEntries = (
     sem('highlights.json', snapshot.highlights),
     sem('saved-insights.json', snapshot.savedInsights),
     sem('timetable.json', { timetables: snapshot.timetables, timetablePdf: snapshot.timetablePdf }),
+    sem('semester.json', {
+      archiveId: meta.archiveId,
+      academicYear: meta.academicYear,
+      level: meta.level,
+      semester: meta.semester,
+      title: meta.title,
+      completedAt: meta.completedAt,
+      source: meta.source,
+    }),
     // Full snapshot, including collections this build does not name. Importers
     // keep reading the named files above; unknown keys are merged from here.
     sem('workspace.json', snapshot),
@@ -1406,6 +1416,14 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
   if (!current.integrity?.checksum || !current.integrity.algorithm) {
     return fail('Invalid backup: manifest integrity block is incomplete.');
   }
+  if (current.source === 'archive') {
+    if (!isValidArchiveId(current.archiveId)) {
+      return fail('Invalid backup: archive ID is missing or not a PharmaTRACK archive id.');
+    }
+    diagnostics.push({ check: 'archive-id', ok: true, detail: current.archiveId });
+  } else {
+    diagnostics.push({ check: 'archive-id', ok: true, detail: 'live export — no archive id required' });
+  }
   for (const part of REQUIRED_SEMESTER_PARTS) {
     if (!zip.file(part)) {
       diagnostics.push({ check: `part:${part}`, ok: false });
@@ -1449,6 +1467,24 @@ export const parseBackup = async (buffer: ArrayBuffer | Uint8Array): Promise<Par
       for (const [key, value] of Object.entries(full)) {
         if (key in snapshot || NON_SEMESTER_STATE_KEYS.has(key)) continue;
         (snapshot as Record<string, unknown>)[key] = value;
+      }
+    }
+    const semesterInfo = zip.file('semester/semester.json');
+    if (semesterInfo) {
+      const info = JSON.parse(await semesterInfo.async('string')) as {
+        archiveId?: string; level?: string; semester?: string; academicYear?: string;
+      };
+      if (info.archiveId && current.archiveId && info.archiveId !== current.archiveId) {
+        return fail('Invalid backup: semester.json archive ID does not match the manifest.');
+      }
+      if (info.level && String(parseLevel(String(info.level))) !== String(parseLevel(current.level || ''))) {
+        return fail('Invalid backup: semester.json level does not match the manifest.');
+      }
+      if (info.semester && String(parseSemester(String(info.semester))) !== String(parseSemester(current.semester || ''))) {
+        return fail('Invalid backup: semester.json semester does not match the manifest.');
+      }
+      if (info.academicYear && current.academicYear && info.academicYear !== current.academicYear) {
+        return fail('Invalid backup: semester.json academic year does not match the manifest.');
       }
     }
   } catch (err) {
@@ -1663,6 +1699,160 @@ export const stagedSummary = (staged: StagedBackup): BackupSummary => {
 
 export type ImportArchiveMode = 'archive' | 'copy' | 'replace';
 
+/** Temporary namespace. Never listed as an archive. Promoted only after validation. */
+export const IMPORT_NAMESPACE_PREFIX = 'semester_import_';
+
+/** A PharmaTRACK archive id, e.g. archive_300_1_2026_2027_ab12cd34. */
+export const isValidArchiveId = (id: string | undefined | null): id is string =>
+  typeof id === 'string' && /^archive_[A-Za-z0-9_-]{4,80}$/.test(id);
+
+const importMetaKey = (importId: string) => `${IMPORT_NAMESPACE_PREFIX}${importId}`;
+const importFileKey = (importId: string, fileId: string) => `${IMPORT_NAMESPACE_PREFIX}file_${importId}_${fileId}`;
+const importTextKey = (importId: string, slideId: string) => `${IMPORT_NAMESPACE_PREFIX}text_${importId}_${slideId}`;
+const importRecordKey = (importId: string, sourceKey: string) => `${IMPORT_NAMESPACE_PREFIX}record_${importId}__${sourceKey}`;
+
+interface ImportStageManifestEntry {
+  sourceKey: string;
+  importKey: string;
+  kind: 'file' | 'slidetext' | 'record';
+  /** fileId / slideId, or the original IndexedDB key for kind 'record'. */
+  fileId: string;
+  size: number;
+}
+
+interface ImportStageRecord {
+  importId: string;
+  snapshot: SemesterSnapshot;
+  index: IndexShape | null;
+  manifest: ImportStageManifestEntry[];
+  checksum: string;
+}
+
+const keysBelongingToImport = (keys: string[], importId: string): string[] =>
+  keys.filter((k) =>
+    k === importMetaKey(importId) ||
+    k.startsWith(`${IMPORT_NAMESPACE_PREFIX}file_${importId}_`) ||
+    k.startsWith(`${IMPORT_NAMESPACE_PREFIX}text_${importId}_`) ||
+    k.startsWith(`${IMPORT_NAMESPACE_PREFIX}record_${importId}__`),
+  );
+
+const discardImport = async (importId: string): Promise<void> => {
+  try {
+    const keys = await idb.keys<string>();
+    const partial = keysBelongingToImport(keys, importId);
+    if (partial.length) await idb.delMany(partial);
+  } catch (err) {
+    console.error('Import staging cleanup failed (safe to ignore):', err);
+  }
+};
+
+const stageChecksum = (manifest: ImportStageManifestEntry[]): string =>
+  checksumOf(JSON.stringify({
+    files: manifest.map((f) => [f.kind, f.sourceKey, f.size]).sort(),
+  }));
+
+/**
+ * Writes a validated backup into `semester_import_<importId>` and proves the
+ * bytes landed. Does not touch any permanent archive or the live workspace.
+ */
+const stageBackupImport = async (
+  importId: string,
+  staged: StagedBackup,
+  onProgress?: ProgressFn,
+): Promise<ImportStageRecord> => {
+  const manifest: ImportStageManifestEntry[] = [];
+  let i = 0;
+  const total = staged.files.size;
+  onProgress?.({ phase: 'files', current: 0, total, message: 'Staging import…' });
+  for (const [key, entry] of staged.files) {
+    const importKey = entry.kind === 'file'
+      ? importFileKey(importId, key)
+      : entry.kind === 'slidetext'
+        ? importTextKey(importId, key)
+        : importRecordKey(importId, key);
+    await idb.set(importKey, entry.value);
+    const sourceKey = entry.kind === 'file' ? `file_${key}` : entry.kind === 'slidetext' ? `slidetext_${key}` : key;
+    manifest.push({ sourceKey, importKey, kind: entry.kind, fileId: key, size: sizeOf(entry.value) });
+    i++;
+    onProgress?.({ phase: 'files', current: i, total, message: `Staging import… ${i}/${total}` });
+  }
+  const record: ImportStageRecord = {
+    importId,
+    snapshot: staged.snapshot,
+    index: staged.index ?? null,
+    manifest,
+    checksum: stageChecksum(manifest),
+  };
+  await idb.set(importMetaKey(importId), record);
+  return record;
+};
+
+/** Re-reads the staged namespace and refuses to promote anything incomplete. */
+const validateStagedImport = async (importId: string): Promise<ImportStageRecord> => {
+  const record = await idb.get<ImportStageRecord>(importMetaKey(importId));
+  if (!record || record.importId !== importId) {
+    throw new ArchiveError('Staged import not found — nothing was added to Academic Archive.');
+  }
+  if (record.checksum !== stageChecksum(record.manifest)) {
+    throw new ArchiveError('Staged import checksum mismatch — nothing was added to Academic Archive.');
+  }
+  const structure = validatedSnapshot(record.snapshot);
+  if (!structure.ok) throw new ArchiveError(`${structure.reason} Nothing was added to Academic Archive.`);
+  for (const entry of record.manifest) {
+    const value = await idb.get(entry.importKey);
+    if (value === undefined || value === null) {
+      throw new ArchiveError(`Staged import is missing ${entry.sourceKey}. Nothing was added to Academic Archive.`);
+    }
+    if (sizeOf(value) !== entry.size) {
+      throw new ArchiveError(`Staged import size mismatch for ${entry.sourceKey}. Nothing was added to Academic Archive.`);
+    }
+  }
+  return record;
+};
+
+/** Copies a validated stage into the permanent archive namespace. */
+const promoteStagedImport = async (
+  stage: ImportStageRecord,
+  targetId: string,
+  title: string,
+  baseMeta: SemesterArchiveMeta,
+): Promise<SemesterArchiveMeta> => {
+  const manifest: ArchiveRecord['manifest'] = [];
+  let totalBytes = 0;
+  for (const entry of stage.manifest) {
+    const value = await idb.get(entry.importKey);
+    if (value === undefined || value === null) {
+      throw new ArchiveError(`Staged import lost ${entry.sourceKey} before it could be saved.`);
+    }
+    const archiveKey = entry.kind === 'file'
+      ? archiveFileKey(targetId, entry.fileId)
+      : entry.kind === 'slidetext'
+        ? archiveTextKey(targetId, entry.fileId)
+        : archiveRecordKey(targetId, entry.sourceKey);
+    await idb.set(archiveKey, value);
+    totalBytes += entry.size;
+    manifest.push({ sourceKey: entry.sourceKey, archiveKey, kind: entry.kind, size: entry.size });
+  }
+  const meta: SemesterArchiveMeta = {
+    ...baseMeta,
+    id: targetId,
+    title,
+    status: 'creating',
+    fileCount: manifest.length,
+    totalBytes,
+    itemCount: itemCountOf(stage.snapshot as unknown as AppState),
+    counts: collectionCounts(stage.snapshot as unknown as AppState),
+  };
+  meta.checksum = checksumOf(canonicalForArchive(meta, manifest));
+  const record: ArchiveRecord = { meta, snapshot: stage.snapshot, index: stage.index, manifest };
+  await idb.set(META_PREFIX + targetId, record);
+  const verified = await verifySemesterArchive(targetId);
+  if (verified.status !== 'verified') {
+    throw new ArchiveError(`The imported archive did not verify (${verified.error || 'unknown reason'}). Nothing was added.`);
+  }
+  return verified;
+};
+
 /**
  * Collision detection: is this semester already on this device?
  *  - byId: the backup carries the exact archiveId of an existing archive
@@ -1708,7 +1898,7 @@ export const importBackupIntoArchive = async (
 
   const id = mode === 'replace' && existingId ? existingId
     : mode === 'copy' ? freshId()
-    : (m.archiveId && m.archiveId !== 'live' ? m.archiveId : freshId());
+    : (m.archiveId && m.archiveId !== 'live' && isValidArchiveId(m.archiveId) ? m.archiveId : freshId());
   const title = mode === 'copy' ? `${m.title || `Level ${L} — Semester ${S}`} (Copy)` : (m.title || `Level ${L} — Semester ${S}`);
   const baseMeta: SemesterArchiveMeta = {
     id,
@@ -1726,57 +1916,55 @@ export const importBackupIntoArchive = async (
     counts: collectionCounts(snapshot as unknown as AppState),
   };
 
-  const cleanup = async (): Promise<void> => {
-    try {
-      const keys = await idb.keys<string>();
-      const partial = keysBelongingToArchive(keys, id);
-      if (partial.length) await idb.delMany(partial);
-    } catch (err) {
-      console.error('Import cleanup failed (safe to ignore):', err);
-    }
-  };
-
+  // Stage first, under a namespace listArchives() cannot see. The permanent
+  // archive — including one being replaced — is not touched until this copy
+  // has been re-read and validated.
+  const importId = uuidv4().slice(0, 8);
+  let promoted = false;
+  // Hold of the archive being replaced, captured only after staging validates,
+  // so a staging failure cannot have moved it.
+  let hold: Map<string, unknown> | null = null;
   try {
-    // Replace mode: clear the old archive's namespace before writing new data.
-    if (mode === 'replace') await cleanup();
+    await stageBackupImport(importId, staged, onProgress);
+    onProgress?.({ phase: 'verify', message: 'Validating staged import…' });
+    const stage = await validateStagedImport(importId);
 
-    const manifest: ArchiveRecord['manifest'] = [];
-    let totalBytes = 0;
-    const marker: ArchiveRecord = { meta: baseMeta, snapshot, index: staged.index ?? null, manifest };
-    await idb.set(META_PREFIX + id, marker);
-
-    onProgress?.({ phase: 'files', current: 0, total: staged.files.size, copiedBytes: 0, message: 'Copying files into the archive…' });
-    let i = 0;
-    for (const [key, entry] of staged.files) {
-      const targetKey = entry.kind === 'file'
-        ? archiveFileKey(id, key)
-        : entry.kind === 'slidetext'
-          ? archiveTextKey(id, key)
-          : archiveRecordKey(id, key);
-      await idb.set(targetKey, entry.value);
-      const size = sizeOf(entry.value);
-      totalBytes += size;
-      const sourceKey = entry.kind === 'file' ? `file_${key}` : entry.kind === 'slidetext' ? `slidetext_${key}` : key;
-      manifest.push({ sourceKey, archiveKey: targetKey, kind: entry.kind, size });
-      i++;
-      onProgress?.({ phase: 'files', current: i, total: staged.files.size, copiedBytes: totalBytes, message: `Copying files into the archive… ${i}/${staged.files.size}` });
+    if (mode === 'replace' && existingId) {
+      const existingKeys = keysBelongingToArchive(await idb.keys<string>(), existingId);
+      hold = new Map();
+      for (const key of existingKeys) hold.set(key, await idb.get(key));
     }
 
-    const meta: SemesterArchiveMeta = { ...baseMeta, fileCount: manifest.length, totalBytes };
-    meta.checksum = checksumOf(canonicalForArchive(meta, manifest));
-    const record: ArchiveRecord = { meta, snapshot, index: staged.index ?? null, manifest };
-    await idb.set(META_PREFIX + id, record);
+    onProgress?.({ phase: 'files', message: 'Saving into Academic Archive…' });
+    const verified = await promoteStagedImport(stage, id, title, baseMeta);
+    promoted = true;
 
-    onProgress?.({ phase: 'verify', message: 'Verifying the imported archive…' });
-    const verified = await verifySemesterArchive(id);
-    if (verified.status !== 'verified') {
-      await cleanup();
-      throw new ArchiveError(`The imported archive did not verify (${verified.error || 'unknown reason'}). Nothing was added.`);
+    if (hold) {
+      const written = new Set(keysBelongingToArchive(await idb.keys<string>(), id));
+      const orphans = [...hold.keys()].filter((key) => !written.has(key));
+      if (orphans.length) await idb.delMany(orphans);
     }
+    await discardImport(importId);
     onProgress?.({ phase: 'done', message: 'Imported into Academic Archive ✓' });
     return verified;
   } catch (err) {
-    await cleanup();
+    if (hold && !promoted) {
+      // Put the previous archive back. New keys that were not part of it go.
+      try {
+        const now = keysBelongingToArchive(await idb.keys<string>(), id);
+        const extras = now.filter((key) => !hold!.has(key));
+        if (extras.length) await idb.delMany(extras);
+        for (const [key, value] of hold) await idb.set(key, value);
+      } catch (rollbackErr) {
+        console.error('Could not fully roll back a failed replace (the staged import was discarded):', rollbackErr);
+      }
+    } else if (!promoted) {
+      try {
+        const partial = keysBelongingToArchive(await idb.keys<string>(), id);
+        if (partial.length) await idb.delMany(partial);
+      } catch { /* best-effort */ }
+    }
+    await discardImport(importId);
     throw err instanceof ArchiveError ? err : toArchiveError(err, `The backup could not be imported: ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`);
   }
 };
@@ -1804,10 +1992,25 @@ export const importBackupAsWorkspace = async (
       title: (current.student ? `Level ${parseLevel(current.student.level)} — Semester ${parseSemester(current.student.semester)}` : 'Current') + ' (auto-backup before import)',
       onProgress: (p) => onProgress?.({ ...p, phase: p.phase === 'done' ? 'protect' : p.phase, message: `Backing up current semester: ${p.message || ''}` }),
     });
+    if (guard.status !== 'verified') {
+      throw new ArchiveError('Backing up the current semester failed, so the restore was aborted. Nothing was changed.');
+    }
     guardArchive = guard;
   }
-  const fresh = await applyWorkspaceSource(staged, current, onProgress);
-  return { fresh, guardArchive, restoredFrom: (staged.manifest as PharmaTrackBackupManifest).archiveId || 'import' };
+
+  // Stage and re-validate the incoming semester before the live workspace moves.
+  const importId = uuidv4().slice(0, 8);
+  try {
+    await stageBackupImport(importId, staged, onProgress);
+    onProgress?.({ phase: 'verify', message: 'Validating staged import…' });
+    await validateStagedImport(importId);
+    const fresh = await applyWorkspaceSource(staged, current, onProgress);
+    await discardImport(importId);
+    return { fresh, guardArchive, restoredFrom: (staged.manifest as PharmaTrackBackupManifest).archiveId || 'import' };
+  } catch (err) {
+    await discardImport(importId);
+    throw err instanceof ArchiveError ? err : toArchiveError(err, `The backup could not be restored: ${err instanceof Error ? err.message : String(err)}. Your previous semester is still in Academic Archive if it was backed up.`);
+  }
 };
 
 
