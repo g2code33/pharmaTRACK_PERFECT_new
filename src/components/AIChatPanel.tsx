@@ -108,8 +108,19 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   initialConversation = null,
 }) => {
   const navigate = useNavigate();
-  const { readyCount, activeProfile, settings } = useAI();
+  const { readyCount, activeProfile, settings, providers } = useAI();
   const online = useOnline();
+
+  /**
+   * A provider that runs on this device answers without the internet, so
+   * "offline" does not automatically mean "no AI". Everything else needs a
+   * connection, and the panel says so plainly instead of failing mid-answer.
+   */
+  const hasLocalProvider = useMemo(
+    () => providers.some((p) => p.enabled && p.usable && runsLocally(p.kind, p.baseUrl)),
+    [providers],
+  );
+  const offlineBlocked = !online && !hasLocalProvider;
 
   const [conversation, setConversation] = useState<AIConversation>(
     () =>
@@ -329,6 +340,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   };
 
   const configured = readyCount > 0;
+  /** Ready to answer: something configured, and reachable from here. */
+  const canSend = configured && !offlineBlocked;
 
   return (
     <div className={`flex flex-col h-full bg-white ${className}`} data-testid="ai-chat-panel">
@@ -363,12 +376,27 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
         </div>
       </div>
 
-      {!online && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border-b border-amber-100 text-[11px] text-amber-800">
-          <WifiOff className="w-3.5 h-3.5 shrink-0" />
-          <span>Offline — your material and past conversations still work; live AI needs a connection.</span>
+      {offlineBlocked ? (
+        <div
+          className="flex items-start gap-2 px-3 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900"
+          data-testid="ai-offline-state"
+        >
+          <WifiOff className="w-3.5 h-3.5 shrink-0 mt-px" />
+          <div className="min-w-0">
+            <p className="font-bold">AI unavailable offline</p>
+            <p className="text-amber-800">
+              Reading, notes, quizzes, search, revision and archives all keep working — only live generation
+              needs a connection. Add a local provider (Ollama or llama.cpp) in Settings → AI to keep AI working
+              offline too.
+            </p>
+          </div>
         </div>
-      )}
+      ) : !online ? (
+        <div className="flex items-center gap-2 px-3 py-2 bg-[#2D6A4F]/5 border-b border-[#2D6A4F]/20 text-[11px] text-[#1B4332]">
+          <WifiOff className="w-3.5 h-3.5 shrink-0" />
+          <span>Offline — answering from your local provider, which runs on this device.</span>
+        </div>
+      ) : null}
 
       {!configured && (
         <div className="m-3 p-3 rounded-xl border border-[#2D6A4F]/20 bg-[#2D6A4F]/5 text-[11px] text-gray-700">
@@ -455,7 +483,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
               <div key={group} className="relative">
                 <button
                   onClick={() => setOpenMenu(open ? null : group)}
-                  disabled={!configured || busy}
+                  disabled={!canSend || busy}
                   className="flex items-center gap-1 px-2 py-1 rounded-lg border border-gray-200 bg-white text-[10px] font-bold text-gray-600 hover:border-[#2D6A4F] hover:text-[#2D6A4F] disabled:opacity-40"
                 >
                   <Icon className="w-3 h-3" />
@@ -510,8 +538,8 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={configured ? 'Ask about this material…' : 'Configure a provider first…'}
-            disabled={!configured}
+            placeholder={canSend ? 'Ask about this material…' : offlineBlocked ? 'AI unavailable offline' : 'Configure a provider first…'}
+            disabled={!canSend}
             className="flex-1 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/5 disabled:opacity-60"
             aria-label="Ask the AI"
           />
@@ -528,7 +556,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() || !configured}
+              disabled={!input.trim() || !canSend}
               className="w-9 h-9 rounded-xl bg-[#2D6A4F] text-[#FFB703] flex items-center justify-center disabled:opacity-30"
               title="Send"
             >
@@ -544,6 +572,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
 /* ------------------------------------------------------------------ */
 /* Pieces                                                             */
 /* ------------------------------------------------------------------ */
+
+/**
+ * True for a provider that answers without leaving the device: the dedicated
+ * local runtime, or any endpoint pointed at this machine. These are the only
+ * providers that can serve AI while the student is offline.
+ */
+function runsLocally(kind: string, baseUrl?: string): boolean {
+  if (kind === 'local') return true;
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?/i.test(baseUrl ?? '');
+}
 
 /**
  * The academic source line under an answer, e.g.
