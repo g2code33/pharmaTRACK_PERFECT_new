@@ -3,7 +3,7 @@
 A desktop study companion for pharmacy students. Cross-platform Tauri v2 app
 built with React, TypeScript and Tailwind CSS.
 
-![Version](https://img.shields.io/badge/version-1.1.82-blue)
+![Version](https://img.shields.io/badge/version-1.1.83-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-24C8D8)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 
