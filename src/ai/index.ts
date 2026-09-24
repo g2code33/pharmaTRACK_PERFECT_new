@@ -65,5 +65,33 @@ export { estimateTokens, truncateToTokens, formatTokens } from './context/tokens
 export type { AppStateLike, ContextSelection, RetrievalHit } from './context/types';
 export { chunkMaterial, lexicalIndex, rankChunks, retrieve, tokenize } from './retrieval';
 export type { RetrievalIndex, RetrievalQuery, RetrievalSource, RetrievedChunk } from './retrieval';
+
+/* Local RAG: Materials → Extraction → Chunking → Metadata → Index → Retrieval */
+export {
+  buildTopicDigest,
+  indexableSources,
+  retrieveForSelection,
+  toRetrievalHit,
+} from './rag/pipeline';
+export type { PipelineOptions } from './rag/pipeline';
+export {
+  clearRagIndex,
+  loadRagIndex,
+  rankChunks as rankIndexedChunks,
+  rebuildIndex,
+  searchIndex,
+  statsFor,
+  syncIndex,
+} from './rag/index';
+export {
+  chunkSource,
+  chunkUnit,
+  extractUnits,
+  fingerprintText,
+  metaFor,
+} from './rag/chunker';
+export type { ExtractedUnit } from './rag/chunker';
+export { RAG_INDEX_KEY, RAG_INDEX_VERSION, chunkCitation, sourceHeader } from './rag/types';
+export type { ChunkMeta, IndexableSource, IndexedChunk, MaterialIndexEntry, RagHit, RagIndexShape, RagQuery } from './rag/types';
 export { AI_TASKS, buildTaskRequest, taskById, taskPrompt, tasksInGroup } from './tasks';
 export type { AITaskDefinition, AITaskId } from './tasks';

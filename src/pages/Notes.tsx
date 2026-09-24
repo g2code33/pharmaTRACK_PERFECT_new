@@ -10,6 +10,7 @@ import {
   aiManager,
   buildContext,
   buildTaskRequest,
+  buildTopicDigest,
   profileById,
 } from '../ai';
 import { useAI } from '../ai/state';
@@ -132,25 +133,46 @@ const Notes: React.FC = () => {
     try {
       const topic = state.topics.find((t) => t.id === topicId);
       const course = state.courses.find((c) => c.id === topic?.courseId);
-      const text = slides
-        .map((slide, index) => `--- Slide ${index + 1}: ${slide.title} ---\n${slide.contentText ?? ''}`)
-        .join('\n\n');
+
+      const appStateLike = {
+        student: state.student ? { level: state.student.level, semester: state.student.semester, program: state.student.program } : null,
+        courses: state.courses,
+        topics: state.topics,
+        slides: state.slides,
+        learningObjectives: state.learningObjectives,
+        notes: state.notes,
+        quizHistory: state.quizHistory,
+        studyPlans: state.studyPlans,
+      };
+
+      /**
+       * Local retrieval picks the passages instead of concatenating every slide
+       * in the topic. A small topic goes across whole; a large one contributes
+       * the chunks that fit the budget, each still labelled with its source.
+       */
+      const digest = await buildTopicDigest(appStateLike, {
+        topicId,
+        courseId: course?.id,
+        query: topic?.topicName,
+        budgetTokens: 6_000,
+      });
+
+      if (!digest.text.trim()) {
+        alert('No readable text in this topic’s materials yet.');
+        setIsGenerating(false);
+        return;
+      }
 
       const context = buildContext(
-        {
-          student: state.student ? { level: state.student.level, semester: state.student.semester, program: state.student.program } : null,
-          courses: state.courses,
-          topics: state.topics,
-          slides: state.slides,
-          learningObjectives: state.learningObjectives,
-          notes: state.notes,
-          quizHistory: state.quizHistory,
-          studyPlans: state.studyPlans,
-        },
+        appStateLike,
         {
           topicId,
           courseId: course?.id,
-          materialText: { label: `${topic?.topicName ?? 'Topic'} material`, text },
+          materialText: {
+            label: `${topic?.topicName ?? 'Topic'} material${digest.materialsUsed > 1 ? ` (${digest.materialsUsed} files)` : ''}`,
+            text: digest.text,
+          },
+          retrieval: digest.hits,
           includeObjectives: false,
           includeNotes: false,
         },

@@ -15,6 +15,7 @@
  * can jump straight back into the reader.
  */
 import type { StateSlideLike, RetrievalHit } from './context/types';
+import { significantHits } from './rag/index';
 
 export interface RetrievalSource extends StateSlideLike {
   courseId?: string;
@@ -209,8 +210,7 @@ export async function retrieve(
     hits = rankChunks(query.text, chunks.flat(), query.limit ?? 5);
   }
 
-  const minScore = query.minScore ?? 0.6;
-  return hits.filter((h) => h.score >= minScore);
+  return significantHits(hits, query.minScore);
 }
 
 /**

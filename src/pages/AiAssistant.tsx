@@ -328,14 +328,17 @@ const AiAssistant: React.FC = () => {
             title={material ? material.title : topic ? topic.topicName : 'PharmaTRACK AI'}
             loadMaterialText={material?.id ? (id) => loadSlideText(id) : undefined}
             quickTasks={[
+              // Topic-level jobs first: teach me, quiz me, find my weak areas,
+              // build revision material.
+              'teach',
+              'mcq',
+              'weak-topics',
+              'revision-summary',
               'explain',
               'simplify',
               'summarize',
-              'mcq',
               'flashcards',
               'short-answer',
-              'weak-topics',
-              'revision-summary',
               'mechanism',
               'adverse-effects',
               'clinical-reasoning',

@@ -34,6 +34,8 @@ export interface StateSlideLike {
   title: string;
   contentText?: string;
   slideNumber?: number;
+  /** pptx | pdf | docx | image | text | unknown. Used to label retrieval hits. */
+  materialKind?: string;
 }
 
 export interface StateObjectiveLike {
@@ -97,6 +99,11 @@ export interface AppStateLike {
   examQuestions?: StateQuestionLike[];
 }
 
+/**
+ * A retrieved passage. Every field that identifies *where it came from* is
+ * carried through the whole pipeline so a response can be cited precisely and
+ * the UI can link straight back to the page or slide.
+ */
 export interface RetrievalHit {
   /** Conversation/material label shown in the source line. */
   label: string;
@@ -105,6 +112,13 @@ export interface RetrievalHit {
   page?: number;
   slide?: number;
   score: number;
+  semester?: string;
+  courseId?: string;
+  courseCode?: string;
+  courseName?: string;
+  topicId?: string;
+  topicName?: string;
+  materialTitle?: string;
 }
 
 /** Everything a caller can ask the builder to include. */

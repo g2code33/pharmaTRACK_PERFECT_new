@@ -76,6 +76,8 @@ export const archiveRecordKey = (archiveId: string, sourceKey: string) => `${MET
 export const PROTECTED_IDB_KEYS = new Set<string>([
   'pharmatrack_ai_credentials',
   'pharmatrack_ai_settings',
+  // Derived AI retrieval index. Rebuilt from academic data; never archived.
+  'pharmatrack_ai_rag_index',
   // Derived search catalogs. Rebuilt from academic data; not semester content.
   'pharmatrack_archive_search_catalog',
   'pharmatrack_conversation_search',

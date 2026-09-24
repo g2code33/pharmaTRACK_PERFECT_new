@@ -288,6 +288,15 @@ export interface AIContextSource {
   materialId?: string;
   page?: number;
   slide?: number;
+  /**
+   * Human-readable academic provenance, carried through the whole pipeline so
+   * an answer can be shown with the course, topic and material it came from
+   * rather than only an opaque id.
+   */
+  courseName?: string;
+  topicName?: string;
+  materialTitle?: string;
+  semester?: string;
   /** Characters contributed by this source (filled in by the builder). */
   chars?: number;
   truncated?: boolean;

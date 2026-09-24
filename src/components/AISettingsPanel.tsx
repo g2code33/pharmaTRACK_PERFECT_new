@@ -7,10 +7,10 @@
  * NVIDIA, Gemini, Claude, Groq, OpenRouter, Mistral and any custom
  * OpenAI-compatible endpoint without a provider-specific branch in the UI.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, CircleSlash, Eye, EyeOff,
-  Key, Loader2, Plug, Plus, RefreshCw, Save, Shield, ShieldCheck, Sparkles, Trash2, Zap,
+  Database, Key, Loader2, Plug, Plus, RefreshCw, Save, Shield, ShieldCheck, Sparkles, Trash2, Zap,
 } from 'lucide-react';
 
 import {
@@ -21,6 +21,10 @@ import {
   presetFor,
   requiresKey,
   resolveModelInfo,
+  indexableSources,
+  loadRagIndex,
+  statsFor,
+  syncIndex,
   type AICapability,
   type AIConnectionTest,
   type AIProfile,
@@ -28,6 +32,8 @@ import {
   type ProviderId,
 } from '../ai';
 import { blankProvider, useAI } from '../ai/state';
+import { useApp } from '../context/AppContext';
+import { loadSlideText } from '../utils/storage';
 
 const inputCls =
   'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm';
@@ -130,10 +136,97 @@ export const AISettingsPanel: React.FC = () => {
       />
       <ProfilesCard />
       <FallbackCard />
+      <LocalIndexCard />
       <AdvancedCard />
     </div>
   );
 };
+
+/* ------------------------------------------------------------------ */
+/* Local retrieval index                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The offline retrieval layer, made visible. Indexing is incremental and
+ * local — no network call, no provider, no embedding service — and the index is
+ * a derived cache, so rebuilding it is always safe.
+ */
+const LocalIndexCard: React.FC = () => {
+  const { state } = useApp();
+  const [stats, setStats] = useState<{ materials: number; chunks: number; chars: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setStats(statsFor(await loadRagIndex()));
+    } catch {
+      setStats(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh, state.slides.length]);
+
+  const rebuild = async () => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      const index = await syncIndex(indexableSources(state), (id) => loadSlideText(id));
+      const next = statsFor(index);
+      setStats(next);
+      setNotice(`Indexed ${next.materials} material${next.materials === 1 ? '' : 's'} · ${next.chunks} passages.`);
+    } catch {
+      setNotice('Could not rebuild the index. Your materials are untouched.');
+    } finally {
+      setBusy(false);
+      setTimeout(() => setNotice(null), 4000);
+    }
+  };
+
+  return (
+    <section className="p-4 bg-white rounded-xl border border-gray-200" data-testid="ai-local-index">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+            <Database className="w-4 h-4 text-[#2D6A4F]" /> Local retrieval index
+          </h2>
+          <p className="text-xs text-gray-500 mt-1 max-w-xl">
+            Your materials are chunked and indexed on this device so a question is answered from the pages and
+            slides that actually match — never the whole library. Indexing works offline; only generation needs a
+            provider. The index is a derived cache and is never included in a semester backup.
+          </p>
+        </div>
+        <button type="button" className={btnGhost} onClick={() => void rebuild()} disabled={busy}>
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          {busy ? 'Indexing…' : 'Rebuild'}
+        </button>
+      </div>
+
+      <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <Stat label="Materials" value={stats?.materials ?? 0} />
+        <Stat label="Passages" value={stats?.chunks ?? 0} />
+        <Stat label="Characters" value={stats?.chars ?? 0} />
+      </dl>
+
+      {notice && (
+        <p className="mt-2 text-xs text-[#1B4332] flex items-center gap-1.5" data-testid="ai-index-notice">
+          <CheckCircle2 className="w-3.5 h-3.5" /> {notice}
+        </p>
+      )}
+    </section>
+  );
+};
+
+const Stat: React.FC<{ label: string; value: number }> = ({ label, value }) => (
+  <div className="p-2 rounded-lg bg-gray-50 border border-gray-100">
+    <dt className="text-[10px] uppercase font-black text-gray-400">{label}</dt>
+    <dd className="text-lg font-black text-gray-800" data-testid={`ai-index-stat-${label.toLowerCase()}`}>
+      {value.toLocaleString()}
+    </dd>
+  </div>
+);
 
 /* ------------------------------------------------------------------ */
 /* Privacy                                                            */

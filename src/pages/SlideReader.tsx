@@ -745,9 +745,11 @@ const SlideReader: React.FC = () => {
               compact
               loadMaterialText={currentMaterial?.id ? (id) => loadSlideText(id) : undefined}
               quickTasks={
+                // The Phase 11 action sets. A PDF page and a presentation slide
+                // offer the same jobs; only the wording of "explain" differs.
                 isPdf
-                  ? ['explain-page', 'ask-material', 'key-concepts', 'questions-from-material', 'mcq', 'flashcards', 'mechanism']
-                  : ['explain-slide', 'ask-material', 'key-concepts', 'questions-from-material', 'mcq', 'flashcards', 'mechanism']
+                  ? ['explain-page', 'simplify', 'summarize', 'questions-from-material', 'flashcards', 'ask-material', 'key-concepts', 'mcq', 'mechanism']
+                  : ['explain-slide', 'simplify', 'summarize', 'questions-from-material', 'flashcards', 'ask-material', 'key-concepts', 'mcq', 'mechanism']
               }
               onMessage={mirrorChatMessage}
             />

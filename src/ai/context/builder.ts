@@ -18,6 +18,8 @@ import type {
   ContextSelection,
 } from './types';
 import { estimateTokens, truncateToTokens } from './tokens';
+import { sourceHeader } from '../rag/types';
+import type { ChunkMeta } from '../rag/types';
 
 /** Rough token budget defaults, overridable per profile. */
 export const DEFAULT_CONTEXT_BUDGET = 12_000;
@@ -40,16 +42,43 @@ export function buildContext(
   const course =
     state.courses.find((c) => c.id === (selection.courseId ?? topic?.courseId)) ??
     undefined;
+  const material = state.slides.find((s) => s.id === selection.materialId);
+
+  /**
+   * Source header for the material in focus, in the form the model is asked to
+   * answer from:
+   *
+   *   Course: Pharmacology
+   *   Topic: Autonomic drugs
+   *   Source: Lecture 4
+   *   Slide: 23
+   */
+  const focusMeta: ChunkMeta = {
+    semester: state.student?.semester,
+    courseId: course?.id,
+    courseCode: course?.courseCode,
+    courseName: course?.courseName,
+    topicId: topic?.id ?? '',
+    topicName: topic?.topicName,
+    materialId: material?.id ?? '',
+    materialTitle: material?.title ?? selection.materialText?.label ?? '',
+    materialKind: material?.materialKind,
+    page: selection.page,
+    slide: selection.slide,
+  };
+  const focusHeader = material || selection.materialText ? sourceHeader(focusMeta) : '';
+  // The header already names the course and topic; don't pay for them twice.
+  const headerNamesCourse = Boolean(focusHeader && (focusMeta.courseName || focusMeta.topicName));
 
   /* --- 1. Academic position (small, always useful, never identifying) --- */
   const position: string[] = [];
   if (state.student?.level) position.push(`Level: ${state.student.level}`);
   if (state.student?.semester) position.push(`Semester: ${state.student.semester}`);
   if (state.student?.program) position.push(`Programme: ${state.student.program}`);
-  if (course) {
+  if (course && !headerNamesCourse) {
     position.push(`Course: ${course.courseCode ? `${course.courseCode} — ` : ''}${course.courseName}`);
   }
-  if (topic) position.push(`Topic: ${topic.topicName}`);
+  if (topic && !headerNamesCourse) position.push(`Topic: ${topic.topicName}`);
   if (position.length) {
     push(blocks, {
       label: 'Student context',
@@ -59,11 +88,10 @@ export function buildContext(
   }
 
   /* --- 2. The material in focus: selection → page/slide → retrieval --- */
-  const material = state.slides.find((s) => s.id === selection.materialId);
   if (selection.selection?.trim()) {
     push(blocks, {
       label: 'Selected passage',
-      text: selection.selection.trim(),
+      text: focusHeader ? `${focusHeader}\n\n${selection.selection.trim()}` : selection.selection.trim(),
       source: {
         kind: 'selection',
         label: material
@@ -90,11 +118,17 @@ export function buildContext(
               ? `Current page (${page}) of ${label}`
               : label
           : label,
-        text: body,
+        text: focusHeader ? `${focusHeader}\n\n${body}` : body,
         source: {
           kind: slide ? 'slide' : page ? 'page' : 'material',
           label: isFocus ? `${label} — ${slide ? `slide ${slide}` : `page ${page}`}` : label,
+          courseId: course?.id,
+          topicId: topic?.id,
           materialId: material?.id,
+          courseName: course?.courseName,
+          topicName: topic?.topicName,
+          materialTitle: material?.title ?? label,
+          semester: state.student?.semester,
           page,
           slide,
         },
@@ -103,15 +137,37 @@ export function buildContext(
   }
 
   // Retrieval hits: the only mechanism allowed to pull in *other* materials,
-  // and only what the question actually matched.
+  // and only what the question actually matched. Each passage is prefixed with
+  // its own source header so the model can name where an answer came from.
   for (const hit of selection.retrieval ?? []) {
+    const where = hit.page ? `page ${hit.page}` : hit.slide ? `slide ${hit.slide}` : undefined;
+    const header = sourceHeader({
+      semester: hit.semester,
+      courseId: hit.courseId,
+      courseCode: hit.courseCode,
+      courseName: hit.courseName,
+      topicId: hit.topicId ?? '',
+      topicName: hit.topicName,
+      materialId: hit.materialId ?? '',
+      materialTitle: hit.materialTitle ?? hit.label,
+      page: hit.page,
+      slide: hit.slide,
+    });
     push(blocks, {
-      label: `Related material — ${hit.label}`,
-      text: hit.text,
+      label: `Related material — ${hit.label}${where ? ` (${where})` : ''}`,
+      text: header ? `${header}\n\n${hit.text}` : hit.text,
       source: {
         kind: 'retrieval',
-        label: `${hit.label}${hit.page ? ` (page ${hit.page})` : hit.slide ? ` (slide ${hit.slide})` : ''}`,
+        label: [hit.courseName, hit.topicName, `${hit.label}${where ? ` (${where})` : ''}`]
+          .filter(Boolean)
+          .join(' · '),
+        courseId: hit.courseId,
+        topicId: hit.topicId,
         materialId: hit.materialId,
+        courseName: hit.courseName,
+        topicName: hit.topicName,
+        materialTitle: hit.materialTitle ?? hit.label,
+        semester: hit.semester,
         page: hit.page,
         slide: hit.slide,
       },

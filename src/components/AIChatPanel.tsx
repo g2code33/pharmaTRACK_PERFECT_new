@@ -25,16 +25,19 @@ import {
   newConversation,
   profileById,
   replaceMessage,
+  retrieveForSelection,
   saveConversation,
   taskById,
   tasksInGroup,
   type AIChatMessage,
   type AIConversation,
   type AIContextSource,
+  type AIContextKind,
   type AIErrorReport,
   type AITaskId,
   type AppStateLike,
   type ContextSelection,
+  type RetrievalHit,
 } from '../ai';
 import { AIEngineError, reportFor } from '../ai/errors';
 import { useAI, useAIStatus, useOnline } from '../ai/state';
@@ -170,6 +173,30 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
     return groups;
   }, [quickTasks]);
 
+  /**
+   * Local retrieval for one question. Runs offline against the on-device index
+   * and returns only the passages that actually match — so the prompt carries
+   * the slide in front of the student plus a handful of relevant chunks, never
+   * every document in the workspace.
+   */
+  const retrieveForQuestion = useCallback(
+    async (question: string): Promise<RetrievalHit[]> => {
+      if (!question.trim()) return [];
+      if (!scope.courseId && !scope.topicId) return [];
+      try {
+        const { hits } = await retrieveForSelection(appState, scope, question, {
+          loadText: loadMaterialText,
+        });
+        return hits;
+      } catch {
+        // Retrieval is an enhancement, never a gate: a broken index must not
+        // stop the student asking a question.
+        return [];
+      }
+    },
+    [appState, scope, loadMaterialText],
+  );
+
   const ask = useCallback(
     async (question: string, taskId: AITaskId = 'chat') => {
       const trimmed = question.trim();
@@ -182,12 +209,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
       const profile = profileById(settings.profiles, taskById(taskId).profile);
       const budget = profile.contextLimitTokens ?? 12_000;
 
+      // Local retrieval first: only the matching passages are candidates.
+      const retrieval = await retrieveForQuestion(trimmed);
+
       // Context is built from the *selection*, never from the whole workspace.
       const context = buildContext(
         appState,
         {
           ...scope,
           question: trimmed,
+          retrieval,
           materialText:
             scope.materialText ??
             (materialText ? { label: materialLabel(scope), text: materialText.text } : undefined),
@@ -274,7 +305,17 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
         setRunId(undefined);
       }
     },
-    [appState, busy, conversation, materialText, onAnswered, onMessage, scope, settings.profiles],
+    [
+      appState,
+      busy,
+      conversation,
+      materialText,
+      onAnswered,
+      onMessage,
+      retrieveForQuestion,
+      scope,
+      settings.profiles,
+    ],
   );
 
   const stop = () => {
@@ -504,6 +545,30 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
 /* Pieces                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The academic source line under an answer, e.g.
+ * "Pharmacology · Autonomic drugs · Lecture 4 — slide 23".
+ *
+ * Prefers whatever the student was looking at (selection → slide/page →
+ * material) and falls back to the top retrieval hit, so a grounded answer can
+ * always be traced back to a course, topic, material and page/slide.
+ */
+function academicSourceLine(sources: AIContextSource[] | undefined): string | null {
+  if (!sources?.length) return null;
+  const priority: AIContextKind[] = ['selection', 'slide', 'page', 'material', 'retrieval'];
+  let best: AIContextSource | undefined;
+  for (const kind of priority) {
+    best = sources.find((s) => s.kind === kind);
+    if (best) break;
+  }
+  if (!best) return null;
+
+  const where = best.slide ? `slide ${best.slide}` : best.page ? `page ${best.page}` : undefined;
+  const material = [best.materialTitle, where].filter(Boolean).join(' — ');
+  const parts = [best.courseName, best.topicName, material].filter(Boolean);
+  return parts.length ? parts.join(' · ') : best.label;
+}
+
 const MessageBubble: React.FC<{ message: AIChatMessage }> = ({ message }) => {
   const isUser = message.role === 'user';
   const provider = message.providerId
@@ -511,6 +576,8 @@ const MessageBubble: React.FC<{ message: AIChatMessage }> = ({ message }) => {
     : isUser
       ? 'You'
       : 'PharmaTRACK AI';
+  /** Academic provenance of the answer, e.g. "Pharmacology · Autonomic drugs · Lecture 4 — slide 23". */
+  const source = useMemo(() => academicSourceLine(message.sources), [message.sources]);
 
   return (
     <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`} data-testid={`ai-message-${message.role}`}>
@@ -534,6 +601,17 @@ const MessageBubble: React.FC<{ message: AIChatMessage }> = ({ message }) => {
           <span className="text-[8px] text-gray-300 uppercase font-black">{message.usage.outputTokens} tokens out</span>
         ) : null}
       </div>
+
+      {!isUser && source ? (
+        <span
+          className="flex items-center gap-1 text-[9px] text-[#2D6A4F] mt-0.5 px-1 font-bold"
+          data-testid="ai-source-line"
+          title="Where this answer came from"
+        >
+          <BookOpen className="w-3 h-3 shrink-0" />
+          {source}
+        </span>
+      ) : null}
 
       {message.error && (
         <span className="text-[9px] text-amber-700 mt-0.5 px-1" data-testid="ai-message-error">
