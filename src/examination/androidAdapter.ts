@@ -50,10 +50,19 @@ export async function createAndroidKioskAdapter(
   const browser = createBrowserKioskAdapter(onViolation, requiredIds);
   return {
     matrix,
-    install: browser.install,
+    install: () => {
+      const cleanup = browser.install();
+      return () => {
+        cleanup();
+        void bridge?.exitLockTask?.();
+      };
+    },
     requestFullscreen: async () => {
+      const lockTask = bridge?.enterLockTask ? await bridge.enterLockTask() : false;
       const immersive = bridge?.setImmersiveMode ? await bridge.setImmersiveMode(true) : false;
-      return immersive || browser.requestFullscreen();
+      if (bridge?.setScreenCaptureBlocked) await bridge.setScreenCaptureBlocked(true);
+      if (bridge?.restrictExternalIntents) await bridge.restrictExternalIntents(true);
+      return lockTask || immersive || browser.requestFullscreen();
     },
   };
 }

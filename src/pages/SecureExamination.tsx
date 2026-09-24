@@ -12,6 +12,7 @@ import {
 import { ExaminationRepository } from '../examination/service';
 import { LanExamClient, LocalExamAuthority } from '../examination/network';
 import { ExaminationSyncEngine } from '../examination/sync';
+import { remainingMilliseconds } from '../examination/timer';
 import { createPlatformKioskAdapter } from '../examination/androidAdapter';
 import type { KioskAdapter } from '../examination/kioskAdapter';
 import type { ExamQuestionSnapshot, StudentAttempt } from '../examination/types';
@@ -132,7 +133,9 @@ const SecureExamination: React.FC = () => {
     if (!repository || !attempt || submitted) return;
     const timer = window.setInterval(() => {
       const deadline = attempt.timerState?.authoritativeDeadlineAt || attempt.deadlineAt;
-      const remaining = Math.max(0, new Date(deadline).getTime() - authorityNow());
+      const remaining = attempt.timerState
+        ? remainingMilliseconds(attempt.timerState, new Date(authorityNow()).toISOString())
+        : Math.max(0, new Date(deadline).getTime() - authorityNow());
       setSeconds(Math.ceil(remaining / 1000));
       if (remaining <= 0 && attempt.status === 'ACTIVE') {
         void repository.submitAttempt(attempt.id, true).then((closed) => {

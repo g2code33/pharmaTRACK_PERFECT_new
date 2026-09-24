@@ -487,6 +487,14 @@ export class ExaminationRepository {
           device.status = 'DISCONNECTED';
         }
       }
+      const owner = this.state.students.find((item) => item.id === studentId);
+      if (owner)
+        owner.activeDeviceSessionIds = [
+          ...new Set([
+            ...owner.activeDeviceSessionIds.filter((id) => id === deviceSessionId),
+            deviceSessionId,
+          ]),
+        ];
       existing.deviceSessionId = deviceSessionId;
       existing.lastSyncedAt = new Date().toISOString();
       existing.ownershipGeneration = (existing.ownershipGeneration || 0) + 1;
