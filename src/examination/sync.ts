@@ -83,6 +83,14 @@ export class ExaminationSyncEngine {
         severity: 'info',
         details: `Applied ${appliedIds.length} incremental examination event(s).`,
       });
+      await this.repository.logSecurityEvent({
+        sessionId: this.sessionId,
+        type: 'SYNC_RECONCILED',
+        severity: result.conflicts.length ? 'warning' : 'info',
+        details: result.conflicts.length
+          ? `Synchronization completed with ${result.conflicts.length} conflict(s).`
+          : 'Queued events reconciled without conflict.',
+      });
       this.consecutiveFailures = 0;
       return {
         ok: result.ok,

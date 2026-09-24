@@ -47,7 +47,7 @@ const Layout: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.1.82');
+  const [appVersion, setAppVersion] = useState('1.1.83');
   const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);

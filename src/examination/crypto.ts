@@ -23,9 +23,10 @@ function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 export function randomId(prefix = 'id'): string {
-  const uuid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const uuid =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}_${uuid}`;
 }
 
@@ -40,7 +41,10 @@ export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
 }
 
 export async function sha256(value: string | Uint8Array): Promise<string> {
@@ -55,15 +59,29 @@ export async function digestJson(value: unknown): Promise<string> {
 
 const PBKDF2_ITERATIONS = 210_000;
 
-export async function derivePasswordVerifier(password: string, salt = bytesToBase64(randomBytes(16))): Promise<{
+export async function derivePasswordVerifier(
+  password: string,
+  salt = bytesToBase64(randomBytes(16)),
+): Promise<{
   algorithm: 'PBKDF2-SHA-256';
   iterations: number;
   salt: string;
   verifier: string;
 }> {
-  const material = await crypto.subtle.importKey('raw', asArrayBuffer(textEncoder().encode(password)), 'PBKDF2', false, ['deriveBits']);
+  const material = await crypto.subtle.importKey(
+    'raw',
+    asArrayBuffer(textEncoder().encode(password)),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
   const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: asArrayBuffer(base64ToBytes(salt)), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    {
+      name: 'PBKDF2',
+      salt: asArrayBuffer(base64ToBytes(salt)),
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
     material,
     256,
   );
@@ -75,16 +93,30 @@ export async function derivePasswordVerifier(password: string, salt = bytesToBas
   };
 }
 
-export async function verifyPassword(password: string, verifier: {
-  algorithm: 'PBKDF2-SHA-256';
-  iterations: number;
-  salt: string;
-  verifier: string;
-}): Promise<boolean> {
+export async function verifyPassword(
+  password: string,
+  verifier: {
+    algorithm: 'PBKDF2-SHA-256';
+    iterations: number;
+    salt: string;
+    verifier: string;
+  },
+): Promise<boolean> {
   if (verifier.algorithm !== 'PBKDF2-SHA-256') return false;
-  const material = await crypto.subtle.importKey('raw', asArrayBuffer(textEncoder().encode(password)), 'PBKDF2', false, ['deriveBits']);
+  const material = await crypto.subtle.importKey(
+    'raw',
+    asArrayBuffer(textEncoder().encode(password)),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
   const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: asArrayBuffer(base64ToBytes(verifier.salt)), iterations: verifier.iterations, hash: 'SHA-256' },
+    {
+      name: 'PBKDF2',
+      salt: asArrayBuffer(base64ToBytes(verifier.salt)),
+      iterations: verifier.iterations,
+      hash: 'SHA-256',
+    },
     material,
     256,
   );
@@ -97,7 +129,8 @@ export async function verifyPassword(password: string, verifier: {
 }
 
 export function sequentialKioskPassword(sequence: number): string {
-  if (!Number.isInteger(sequence) || sequence < 0) throw new Error('Kiosk sequence must be a non-negative integer.');
+  if (!Number.isInteger(sequence) || sequence < 0)
+    throw new Error('Kiosk sequence must be a non-negative integer.');
   let value = sequence;
   let suffix = '';
   do {

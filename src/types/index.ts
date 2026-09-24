@@ -135,7 +135,9 @@ export interface QuizHistory {
   weakTopics: string[];
   timeTaken: number;
   completedAt: string;
-  mode?: QuizMode;
+  mode?: QuizMode | 'kiosk_exam';
+  examinationResultId?: string;
+  examinationVersionId?: string;
 }
 
 export interface StudyPlan {

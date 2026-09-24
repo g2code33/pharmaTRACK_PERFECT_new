@@ -17,6 +17,7 @@ import {
   resumeAttemptTimer,
   timerFromLegacyAttempt,
 } from './timer';
+import { buildExaminationResult } from './results';
 import {
   emptyExaminationState,
   snapshotQuestion,
@@ -34,9 +35,13 @@ import {
   type ExamSession,
   type ExamStudent,
   type ExamVersion,
+  type ExaminationResult,
   type ExaminationState,
   type RecoveryState,
   type AttemptTimerState,
+  type ExamAuthorityRecord,
+  type ExamAuthorityLeaseRecord,
+  type ExamReplicationSnapshot,
   type TimerAdjustment,
   type ViolationPolicy,
   type SecurityViolation,
@@ -246,6 +251,13 @@ export class ExaminationRepository {
     };
     this.state.exams.push(exam);
     await this.save();
+    await this.logAdminAction({
+      adminId: ownerDeviceId,
+      adminDeviceSessionId: ownerDeviceId,
+      action: 'CREATE',
+      targetId: exam.id,
+      reason: 'Examination created.',
+    });
     return exam;
   }
 
@@ -298,6 +310,13 @@ export class ExaminationRepository {
     exam.currentVersionId = version.id;
     exam.updatedAt = new Date().toISOString();
     await this.save();
+    await this.logAdminAction({
+      adminId: exam.ownerDeviceId,
+      adminDeviceSessionId: exam.ownerDeviceId,
+      action: 'CREATE',
+      targetId: version.id,
+      reason: 'Examination version created.',
+    });
     return version;
   }
 
@@ -312,6 +331,13 @@ export class ExaminationRepository {
       if (exam.lifecycle === 'DRAFT') exam.lifecycle = 'VALIDATED';
       exam.updatedAt = new Date().toISOString();
       await this.save();
+      await this.logAdminAction({
+        adminId: exam.ownerDeviceId,
+        adminDeviceSessionId: exam.ownerDeviceId,
+        action: 'VALIDATE',
+        targetId: version.id,
+        reason: 'Examination version validated.',
+      });
     }
     return { ok: errors.length === 0, errors };
   }
@@ -331,6 +357,13 @@ export class ExaminationRepository {
     if (!exam.publishedVersionIds.includes(frozen.id)) exam.publishedVersionIds.push(frozen.id);
     exam.updatedAt = new Date().toISOString();
     await this.save();
+    await this.logAdminAction({
+      adminId: exam.ownerDeviceId,
+      adminDeviceSessionId: exam.ownerDeviceId,
+      action: 'PUBLISH',
+      targetId: frozen.id,
+      reason: 'Immutable examination version published.',
+    });
     return frozen;
   }
 
@@ -342,6 +375,45 @@ export class ExaminationRepository {
     exam.updatedAt = new Date().toISOString();
     if (next === 'ARCHIVED') exam.archivedAt = exam.updatedAt;
     await this.save();
+    return exam;
+  }
+
+  async archiveExam(
+    examId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+  ): Promise<Exam> {
+    this.requireAdminDevice(adminDeviceSessionId);
+    const exam = this.requireExam(examId);
+    const pending = this.state.attempts.some(
+      (attempt) =>
+        attempt.examId === examId && !['SUBMITTED', 'CLOSED', 'LOCKED'].includes(attempt.status),
+    );
+    if (pending) throw new Error('An examination with active attempts cannot be archived.');
+    if (exam.lifecycle !== 'ARCHIVED') {
+      if (!LIFECYCLE_TRANSITIONS[exam.lifecycle].includes('ARCHIVED')) {
+        if (LIFECYCLE_TRANSITIONS[exam.lifecycle].includes('CLOSED')) exam.lifecycle = 'CLOSED';
+        else throw new Error(`Cannot archive an examination from ${exam.lifecycle}.`);
+      }
+      exam.lifecycle = 'ARCHIVED';
+      exam.archivedAt = new Date().toISOString();
+      exam.updatedAt = exam.archivedAt;
+      for (const session of this.state.sessions.filter((item) => item.examId === examId)) {
+        session.status = 'CLOSED';
+        session.endedAt = exam.archivedAt;
+      }
+      await this.save();
+      await this.logAdminAction({
+        adminId,
+        adminDeviceSessionId,
+        action: 'CLOSE',
+        targetId: examId,
+        reason,
+        previousState: 'RESULTS',
+        newState: 'ARCHIVED',
+      });
+    }
     return exam;
   }
 
@@ -411,6 +483,12 @@ export class ExaminationRepository {
     this.state.sessions.push(session);
     if (exam.lifecycle === 'PUBLISHED') exam.lifecycle = 'SCHEDULED';
     await this.save();
+    await this.logSecurityEvent({
+      sessionId: session.id,
+      type: 'SESSION_CREATED',
+      severity: 'info',
+      details: `Session created for immutable version ${version.id}.`,
+    });
     return session;
   }
 
@@ -442,6 +520,12 @@ export class ExaminationRepository {
     };
     this.state.students.push(student);
     await this.save();
+    await this.logSecurityEvent({
+      studentId: student.id,
+      type: 'IDENTITY_REGISTERED',
+      severity: 'info',
+      details: `Kiosk identity registered for ${student.level}.`,
+    });
     return { student, password };
   }
 
@@ -455,10 +539,23 @@ export class ExaminationRepository {
         item.firstName.toLocaleLowerCase() === firstName.trim().toLocaleLowerCase() &&
         item.level === normalizeLevel(level),
     );
-    if (!student || !(await verifyPassword(password, student.kioskPasswordVerifier)))
+    if (!student || !(await verifyPassword(password, student.kioskPasswordVerifier))) {
+      await this.logSecurityEvent({
+        studentId: student?.id,
+        type: 'IDENTITY_REJECTED',
+        severity: 'warning',
+        details: 'Kiosk identity authentication failed.',
+      });
       throw new Error('First name, level, or RX30 Kiosk password is incorrect.');
+    }
     student.lastAuthenticatedAt = new Date().toISOString();
     await this.save();
+    await this.logSecurityEvent({
+      studentId: student.id,
+      type: 'IDENTITY_AUTHENTICATED',
+      severity: 'info',
+      details: 'Kiosk identity authenticated.',
+    });
     return student;
   }
 
@@ -594,6 +691,15 @@ export class ExaminationRepository {
     session.status = 'ACTIVE';
     session.connectedDeviceIds = [...new Set([...session.connectedDeviceIds, deviceSessionId])];
     await this.save();
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: session.id,
+      studentId,
+      deviceSessionId,
+      type: 'ATTEMPT_STARTED',
+      severity: 'info',
+      details: 'Attempt created with encrypted local state and authoritative timer.',
+    });
     return { attempt, continued: false };
   }
 
@@ -671,6 +777,16 @@ export class ExaminationRepository {
       throw new Error('Answer could not be persisted locally. The answer was kept for retry.');
     }
     attempt.saveStatus = 'SAVED';
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'ANSWER_PERSISTED',
+      severity: 'info',
+      details: `Answer revision ${saved.revision} persisted locally for question ${saved.questionId}.`,
+      metadata: { revision: saved.revision, eventId: saved.eventId || '' },
+    });
     return saved;
   }
 
@@ -686,8 +802,11 @@ export class ExaminationRepository {
       attempt.status === 'SUBMITTED' ||
       attempt.status === 'CLOSED' ||
       attempt.status === 'LOCKED'
-    )
+    ) {
+      this.ensureResult(attempt);
+      await this.save();
       return attempt;
+    }
     attempt.status = 'SUBMITTED';
     attempt.submissionState = forced ? 'FORCE_SUBMITTED' : 'SUBMITTED';
     attempt.submittedAt = new Date().toISOString();
@@ -695,8 +814,46 @@ export class ExaminationRepository {
       attempt.synchronizationState === 'DEGRADED'
         ? 'RECOVERY_PENDING'
         : attempt.synchronizationState;
+    this.ensureResult(attempt);
     await this.save();
     return attempt;
+  }
+
+  getExaminationResult(attemptId: string): ExaminationResult | undefined {
+    const attempt = this.state.attempts.find((item) => item.id === attemptId);
+    const existing = this.state.results.find((result) => result.attemptId === attemptId);
+    if (!attempt || !existing) return existing;
+    const refreshed = buildExaminationResult(this.state, attempt, existing.submittedAt);
+    const index = this.state.results.findIndex((result) => result.id === existing.id);
+    this.state.results[index] = refreshed;
+    return refreshed;
+  }
+
+  private ensureResult(attempt: StudentAttempt): ExaminationResult {
+    const existing = this.state.results.find((result) => result.attemptId === attempt.id);
+    if (existing) return existing;
+    const result = buildExaminationResult(this.state, attempt);
+    this.state.results.push(result);
+    return result;
+  }
+
+  async saveAuthorityRecord(record: ExamAuthorityRecord): Promise<void> {
+    const index = this.state.authorities.findIndex((item) => item.serverId === record.serverId);
+    if (index >= 0) this.state.authorities[index] = { ...this.state.authorities[index], ...record };
+    else this.state.authorities.push(record);
+    await this.save();
+  }
+
+  async saveAuthorityLease(lease: ExamAuthorityLeaseRecord): Promise<void> {
+    const index = this.state.authorityLeases.findIndex((item) => item.leaseId === lease.leaseId);
+    if (index >= 0) this.state.authorityLeases[index] = lease;
+    else this.state.authorityLeases.push(lease);
+    await this.save();
+  }
+
+  async saveReplicationSnapshot(snapshot: ExamReplicationSnapshot): Promise<void> {
+    this.state.replicationSnapshots.push(snapshot);
+    await this.save();
   }
 
   async applyAuthorityTakeover(
@@ -764,6 +921,7 @@ export class ExaminationRepository {
     reason: string,
     authoritativeAt = new Date().toISOString(),
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     const attempt = this.requireAttempt(attemptId);
     const timer =
       attempt.timerState ||
@@ -804,6 +962,7 @@ export class ExaminationRepository {
     reason: string,
     authoritativeAt = new Date().toISOString(),
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     const attempt = this.requireAttempt(attemptId);
     const timer =
       attempt.timerState ||
@@ -845,6 +1004,7 @@ export class ExaminationRepository {
     reason: string,
     authoritativeAt = new Date().toISOString(),
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     if (!Number.isFinite(minutes) || minutes === 0)
       throw new Error('Time adjustment must be a non-zero number of minutes.');
     const attempt = this.requireAttempt(attemptId);
@@ -889,6 +1049,7 @@ export class ExaminationRepository {
     adminDeviceSessionId: string,
     reason: string,
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     const attempt = await this.submitAttempt(attemptId, true);
     await this.logAdminAction({
       adminId,
@@ -918,10 +1079,13 @@ export class ExaminationRepository {
     adminDeviceSessionId: string,
     reason: string,
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     const attempt = this.requireAttempt(attemptId);
     const previousState = attempt.status;
     attempt.status = 'LOCKED';
     attempt.submissionState = 'TERMINATED';
+    attempt.submittedAt = attempt.submittedAt || new Date().toISOString();
+    this.ensureResult(attempt);
     await this.logAdminAction({
       adminId,
       adminDeviceSessionId,
@@ -951,6 +1115,7 @@ export class ExaminationRepository {
     adminDeviceSessionId: string,
     reason: string,
   ): Promise<StudentAttempt> {
+    this.requireAdminDevice(adminDeviceSessionId);
     const attempt = this.requireAttempt(attemptId);
     const previous = attempt.status;
     if (attempt.status === 'LOCKED') attempt.status = 'RECOVERY_PENDING';
@@ -1213,6 +1378,18 @@ export class ExaminationRepository {
   async logSecurityEvent(event: Omit<SecurityEvent, 'id' | 'at'>): Promise<SecurityEvent> {
     const saved = { ...event, id: randomId('security'), at: new Date().toISOString() };
     this.state.securityEvents.push(saved);
+    if (saved.attemptId) {
+      const attempt = this.state.attempts.find((item) => item.id === saved.attemptId);
+      const resultIndex = this.state.results.findIndex(
+        (result) => result.attemptId === saved.attemptId,
+      );
+      if (attempt && resultIndex >= 0)
+        this.state.results[resultIndex] = buildExaminationResult(
+          this.state,
+          attempt,
+          this.state.results[resultIndex].submittedAt,
+        );
+    }
     await this.save();
     return saved;
   }
@@ -1237,6 +1414,16 @@ export class ExaminationRepository {
     this.state.recoveryStates.push(recovery);
     await this.save();
     return recovery;
+  }
+
+  private requireAdminDevice(adminDeviceSessionId: string): void {
+    const device = this.state.deviceSessions.find(
+      (item) =>
+        (item.id === adminDeviceSessionId || item.deviceId === adminDeviceSessionId) &&
+        item.role === 'ADMIN' &&
+        item.status === 'CONNECTED',
+    );
+    if (!device) throw new Error('Administrator device session is not authenticated or connected.');
   }
 
   private requireExam(id: string): Exam {

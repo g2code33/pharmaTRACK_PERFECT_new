@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useApp } from '../context/AppContext';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -10,6 +11,7 @@ import {
   WifiOff,
 } from 'lucide-react';
 import { ExaminationRepository } from '../examination/service';
+import { examinationResultToQuizHistory } from '../examination/results';
 import { LanExamClient, LocalExamAuthority } from '../examination/network';
 import { ExaminationSyncEngine } from '../examination/sync';
 import { remainingMilliseconds } from '../examination/timer';
@@ -20,6 +22,7 @@ import type { ExamQuestionSnapshot, StudentAttempt } from '../examination/types'
 const SecureExamination: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
+  const { state: appState, dispatch } = useApp();
   const [repository, setRepository] = useState<ExaminationRepository | null>(null);
   const [attempt, setAttempt] = useState<StudentAttempt | null>(null);
   const [questions, setQuestions] = useState<Record<string, ExamQuestionSnapshot>>({});
@@ -58,6 +61,21 @@ const SecureExamination: React.FC = () => {
         clock.performanceMilliseconds
       : 0;
     return clock ? clock.serverMilliseconds + elapsed : Date.now();
+  };
+  const appendQuizHistoryResult = (closed: StudentAttempt) => {
+    if (!repository) return;
+    const result = repository.getExaminationResult(closed.id);
+    const version = repository.snapshot.versions.find((item) => item.id === closed.examVersionId);
+    if (
+      !result ||
+      !version ||
+      appState.quizHistory.some((item) => item.examinationResultId === result.id)
+    )
+      return;
+    dispatch({
+      type: 'ADD_QUIZ_HISTORY',
+      payload: examinationResultToQuizHistory(result, version),
+    });
   };
 
   useEffect(() => {
@@ -140,6 +158,7 @@ const SecureExamination: React.FC = () => {
       if (remaining <= 0 && attempt.status === 'ACTIVE') {
         void repository.submitAttempt(attempt.id, true).then((closed) => {
           setAttempt(closed);
+          appendQuizHistoryResult(closed);
           setSubmitted(true);
         });
       }
@@ -280,6 +299,7 @@ const SecureExamination: React.FC = () => {
       details: 'Student submitted after local save confirmation.',
     });
     setAttempt(closed);
+    appendQuizHistoryResult(closed);
     setSubmitted(true);
     setNavigationBusy(false);
   };

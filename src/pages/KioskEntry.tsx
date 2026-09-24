@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { CheckCircle2, FileKey2, Loader2, MonitorCheck, ShieldAlert, Wifi } from 'lucide-react';
 import {
@@ -9,6 +9,7 @@ import {
 import { ExaminationRepository } from '../examination/service';
 import { LanExamClient, LocalExamAuthority, isLanEndpoint } from '../examination/network';
 import { encryptedStorageAvailable } from '../examination/secureStorage';
+import { loadStagedPharmaExam, stagePharmaExamPackage } from '../examination/packageCache';
 import { requiredCapabilitiesReady } from '../examination/kioskAdapter';
 import { createPlatformKioskAdapter } from '../examination/androidAdapter';
 import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
@@ -39,6 +40,19 @@ const KioskEntry: React.FC = () => {
     [staged, checks],
   );
 
+  useEffect(() => {
+    void loadStagedPharmaExam()
+      .then((cached) => {
+        if (cached) {
+          setStaged(cached);
+          setPackageMessage(
+            `Encrypted staged package restored: Version ${cached.exam.version} · ${cached.questions.length} questions`,
+          );
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const choosePackage = async (file: File | undefined) => {
     if (!file) return;
     setError('');
@@ -48,6 +62,7 @@ const KioskEntry: React.FC = () => {
       setPackageMessage(result.errors.join(' '));
       return;
     }
+    await stagePharmaExamPackage(result.staged);
     setStaged(result.staged);
     setPackageMessage(
       `Valid signed package: Version ${result.staged.exam.version} · ${result.staged.questions.length} questions`,

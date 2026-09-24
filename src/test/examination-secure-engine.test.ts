@@ -65,6 +65,11 @@ async function activeAttempt(security = {}) {
   });
   await repository.publishVersion(exam.id, version.id);
   const session = await repository.createSession(exam.id, version.id);
+  await repository.createDeviceSession({
+    deviceId: 'admin-device',
+    role: 'ADMIN',
+    capabilities: ['authority-control'],
+  });
   const device = await repository.createDeviceSession({
     deviceId: 'pc-a',
     studentId: student.student.id,

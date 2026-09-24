@@ -102,6 +102,7 @@ export type SessionStatus = 'CREATED' | 'READY' | 'ACTIVE' | 'CLOSING' | 'CLOSED
 export type SecurityEventType =
   | 'PACKAGE_OPENED'
   | 'PACKAGE_REJECTED'
+  | 'SESSION_CREATED'
   | 'IDENTITY_REGISTERED'
   | 'IDENTITY_AUTHENTICATED'
   | 'IDENTITY_REJECTED'
@@ -132,6 +133,7 @@ export type SecurityEventType =
   | 'ADMIN_INTERVENTION'
   | 'ANSWER_PERSISTED'
   | 'ANSWER_PERSISTENCE_FAILED'
+  | 'SYNC_RECONCILED'
   | 'DEVICE_SWITCH'
   | 'TIMER_PAUSED'
   | 'TIMER_RESUMED'
@@ -348,6 +350,36 @@ export interface SecurityEvent {
   metadata?: Record<string, string | number | boolean | null>;
 }
 
+export interface ExamQuestionResult {
+  questionId: string;
+  sourceQuestionId: string;
+  answer: string;
+  isCorrect: boolean;
+  marksAwarded: number;
+  maxMarks: number;
+}
+
+export interface ExaminationResult {
+  id: string;
+  examId: string;
+  examVersionId: string;
+  attemptId: string;
+  studentId: string;
+  assessmentType: 'KIOSK_EXAM';
+  score: number;
+  percentage: number;
+  maxMarks: number;
+  durationSeconds: number;
+  submittedAt: string;
+  answerStatistics: { answered: number; unanswered: number; correct: number; incorrect: number };
+  questionResults: ExamQuestionResult[];
+  securityEventSummary: Record<string, number>;
+  deviceHistory: string[];
+  recoveryHistory: string[];
+  administratorInterventions: string[];
+  quizHistoryId?: string;
+}
+
 export interface AdminAction {
   id: string;
   sessionId?: string;
@@ -361,6 +393,7 @@ export interface AdminAction {
     | 'START'
     | 'PAUSE'
     | 'RESUME'
+    | 'CLOSE'
     | 'ADD_TIME'
     | 'REMOVE_TIME'
     | 'FORCE_SUBMIT'
@@ -424,6 +457,41 @@ export interface RecoveryState {
   updatedAt: string;
 }
 
+export interface ExamAuthorityRecord {
+  authorityId: string;
+  serverId: string;
+  label: string;
+  role: 'PRIMARY' | 'SECONDARY';
+  endpoint: string;
+  status: 'PRIMARY' | 'SECONDARY' | 'STANDBY' | 'FAILOVER' | 'LOCKED';
+  epoch: number;
+  revision: number;
+  lastHeartbeatAt: string;
+  lastKnownGoodAt?: string;
+}
+
+export interface ExamAuthorityLeaseRecord {
+  authorityId: string;
+  serverId: string;
+  epoch: number;
+  leaseId: string;
+  acquiredAt: string;
+  expiresAt: string;
+}
+
+export interface ExamReplicationSnapshot {
+  id: string;
+  authorityId: string;
+  serverId: string;
+  authorityEpoch: number;
+  revision: number;
+  createdAt: string;
+  sessionIds: string[];
+  attemptIds: string[];
+  pendingEventIds: string[];
+  checksum: string;
+}
+
 export interface ExaminationState {
   schemaVersion: typeof EXAMINATION_SCHEMA_VERSION;
   exams: Exam[];
@@ -437,6 +505,10 @@ export interface ExaminationState {
   deviceSessions: DeviceSession[];
   syncEvents: SyncEvent[];
   recoveryStates: RecoveryState[];
+  results: ExaminationResult[];
+  authorities: ExamAuthorityRecord[];
+  authorityLeases: ExamAuthorityLeaseRecord[];
+  replicationSnapshots: ExamReplicationSnapshot[];
   importedPackageKeys: string[];
 }
 
@@ -497,6 +569,10 @@ export function emptyExaminationState(): ExaminationState {
     deviceSessions: [],
     syncEvents: [],
     recoveryStates: [],
+    results: [],
+    authorities: [],
+    authorityLeases: [],
+    replicationSnapshots: [],
     importedPackageKeys: [],
   };
 }

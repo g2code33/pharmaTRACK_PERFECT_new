@@ -17,6 +17,7 @@ export interface ExamServerIdentity {
   revision: number;
   status: AuthorityStatus;
   lastHeartbeatAt: string;
+  lastKnownGoodAt?: string;
   lockedBy?: string;
 }
 
@@ -278,6 +279,7 @@ export function createServerIdentity(input: Partial<ExamServerIdentity> = {}): E
     revision: input.revision || 0,
     status: input.status || (input.role === 'SECONDARY' ? 'SECONDARY' : 'PRIMARY'),
     lastHeartbeatAt: input.lastHeartbeatAt || now,
+    lastKnownGoodAt: input.lastKnownGoodAt,
     lockedBy: input.lockedBy,
   };
 }

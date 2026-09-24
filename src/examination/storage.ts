@@ -59,6 +59,10 @@ export function normalizeExaminationState(raw: unknown): ExaminationState {
     deviceSessions: arrayOrEmpty(value.deviceSessions),
     syncEvents: arrayOrEmpty(value.syncEvents),
     recoveryStates: arrayOrEmpty(value.recoveryStates),
+    results: arrayOrEmpty(value.results),
+    authorities: arrayOrEmpty(value.authorities),
+    authorityLeases: arrayOrEmpty(value.authorityLeases),
+    replicationSnapshots: arrayOrEmpty(value.replicationSnapshots),
     importedPackageKeys: arrayOrEmpty(value.importedPackageKeys),
   };
 }
