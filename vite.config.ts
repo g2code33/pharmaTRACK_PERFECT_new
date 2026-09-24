@@ -34,7 +34,10 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
   },
   server: {
+    host: '0.0.0.0',
     port: 5173,
+    // Arena's preview host is a subdomain of e2b.app. Vite 5 blocks unknown hosts.
+    allowedHosts: ['.e2b.app'],
     watch: {
       ignored: [
         '**/src-tauri/target/**',
