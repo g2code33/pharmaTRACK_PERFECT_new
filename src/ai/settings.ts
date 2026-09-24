@@ -66,7 +66,7 @@ export function createProviderConfig(input: SeedProviderInput): ProviderConfig {
 export function defaultProviders(): ProviderConfig[] {
   return PROVIDER_PRESETS.map((preset) =>
     createProviderConfig({ kind: preset.kind, model: MODEL_SUGGESTIONS[preset.kind][0] ?? '' }),
-  ).map((config) => ({ ...config, enabled: false, model: config.model || '' }));
+  ).map((config, index) => ({ ...config, enabled: false, model: config.model || '', priority: index + 1 }));
 }
 
 export function defaultSettings(): AISettings {
@@ -121,19 +121,43 @@ export function normalizeSettings(raw: Partial<AISettings> | null | undefined): 
     ? (raw.activeProfileId as string)
     : base.activeProfileId;
 
+  /* Priority is one list, stored twice: the ordered `providerPriority` the
+   * engine walks, and a 1-based `priority` on each provider so the settings
+   * screen can show a rank without recomputing it. They are reconciled here so
+   * a provider added by an older version can never end up unrouted. */
+  const storedPriority =
+    Array.isArray(raw.providerPriority) && raw.providerPriority.length
+      ? raw.providerPriority
+      : base.providerPriority;
+  const ids = providers.map((p) => p.id);
+  const providerPriority = [
+    ...storedPriority.filter((id) => ids.includes(id)),
+    ...ids.filter((id) => !storedPriority.includes(id)),
+  ];
+  const ranked = providers.map((p) => ({ ...p, priority: providerPriority.indexOf(p.id) + 1 }));
+
   return {
     ...base,
     ...raw,
     version: AI_SETTINGS_VERSION,
-    providers,
+    providers: ranked,
     profiles,
     activeProfileId,
     automaticFallback: raw.automaticFallback ?? base.automaticFallback,
-    providerPriority: Array.isArray(raw.providerPriority) && raw.providerPriority.length
-      ? raw.providerPriority
-      : base.providerPriority,
+    providerPriority,
     sendSelectedContextOnly: raw.sendSelectedContextOnly ?? base.sendSelectedContextOnly,
     excludeKeysFromBackups: true,
+  };
+}
+
+/** Re-ranks every provider so `priority` matches an edited priority list. */
+export function withPriority(settings: AISettings, order: ProviderId[]): AISettings {
+  const ids = settings.providers.map((p) => p.id);
+  const providerPriority = [...order.filter((id) => ids.includes(id)), ...ids.filter((id) => !order.includes(id))];
+  return {
+    ...settings,
+    providerPriority,
+    providers: settings.providers.map((p) => ({ ...p, priority: providerPriority.indexOf(p.id) + 1 })),
   };
 }
 

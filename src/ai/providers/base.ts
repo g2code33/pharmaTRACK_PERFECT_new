@@ -21,7 +21,20 @@ import type {
   AIStreamDelta,
   ModelInfo,
   ProviderConfig,
+  ProviderKind,
 } from '../types';
+
+/**
+ * Kinds that answer with no credentials at all: a model server running on this
+ * device (Ollama, llama.cpp, LM Studio). Adapters read this so a keyless
+ * endpoint is still probed instead of being reported as "missing API key".
+ */
+export const KEYLESS_KINDS: ProviderKind[] = ['local'];
+
+/** True when this kind authenticates. This is the single source of truth. */
+export function kindRequiresKey(kind: ProviderKind): boolean {
+  return !KEYLESS_KINDS.includes(kind);
+}
 
 /** Everything an adapter needs for one call. */
 export interface CallContext {

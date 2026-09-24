@@ -37,16 +37,16 @@ import {
   saveCredentials,
   clearAllCredentials,
 } from './credentials';
-import { clearAISettings, mergeModels as mergeModelLists, saveAISettings } from './settings';
+import { clearAISettings, mergeModels as mergeModelLists, saveAISettings, withPriority } from './settings';
 import { defaultSettings, normalizeSettings } from './settings';
 import { createProviderConfig } from './settings';
-import { presetFor, protocolForKind } from './providers';
+import { presetFor, protocolForKind, requiresKey } from './providers';
 import { AI_SETTINGS_KEY } from './settings';
 
 interface AIProviderState {
   settings: AISettings;
   /** Provider configs annotated with whether a key is stored (never the key). */
-  providers: Array<ProviderConfig & { hasKey: boolean }>;
+  providers: Array<ProviderConfig & { hasKey: boolean; usable: boolean }>;
   credentialsLoaded: boolean;
   /** Providers that are enabled *and* keyed, newest test result included. */
   readyCount: number;
@@ -113,7 +113,9 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       next: AISettings,
       creds?: { id: ProviderId; apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> },
     ) => {
-      const saved = saveAISettings(next);
+      // withPriority keeps each provider's rank in step with the ordered list,
+      // so adding or removing a provider cannot leave the ranks out of sync.
+      const saved = saveAISettings(withPriority(next, next.providerPriority));
       aiManager.updateSettings(saved);
       if (creds) {
         // apiKey === undefined means "leave the stored one alone"; '' clears it.
@@ -133,7 +135,16 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   );
 
   const providers = useMemo(
-    () => settings.providers.map((p) => ({ ...p, hasKey: Boolean(credentials[p.id]?.apiKey) })),
+    () =>
+      settings.providers.map((p) => {
+        const hasKey = Boolean(credentials[p.id]?.apiKey);
+        return {
+          ...p,
+          hasKey,
+          // A local server answers with no key, so "usable" is not "has a key".
+          usable: p.enabled && (hasKey || !requiresKey(p.kind)),
+        };
+      }),
     [settings.providers, credentials],
   );
 
@@ -152,9 +163,9 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     // it is usable, otherwise the first usable provider in priority order —
     // the same order the manager falls through, so the UI never claims
     // something the engine would not actually do.
-    const usable = (id: ProviderId) => providers.find((p) => p.id === id && p.enabled && p.hasKey);
+    const usable = (id: ProviderId) => providers.find((p) => p.id === id && p.usable);
     const routed = usable(activeProfile.providerId) ?? settings.providerPriority.map(usable).find(Boolean);
-    const readyCount = providers.filter((p) => p.enabled && p.hasKey).length;
+    const readyCount = providers.filter((p) => p.usable).length;
 
     return {
       settings,
@@ -284,10 +295,19 @@ export function useAI(): AIProviderState {
   return context;
 }
 
-/** Convenience: adds a provider from a preset (used by “Add provider”). */
-export function blankProvider(kind: ProviderConfig['kind']): ProviderConfig & { apiKey?: string } {
+/**
+ * Convenience: a new provider from a preset (used by “Add provider”). Several
+ * instances of the same kind are allowed — a second gateway or a second local
+ * runtime gets its own id, so it can hold its own base URL, model and priority.
+ */
+export function blankProvider(
+  kind: ProviderConfig['kind'],
+  existingIds: string[] = [],
+): ProviderConfig & { apiKey?: string } {
   const preset = presetFor(kind);
-  const config = createProviderConfig({ kind });
+  let id = kind as string;
+  for (let n = 2; existingIds.includes(id); n += 1) id = `${kind}-${n}`;
+  const config = createProviderConfig({ kind, id });
   return { ...config, protocol: protocolForKind(kind), baseUrl: preset.baseUrl, enabled: true };
 }
 

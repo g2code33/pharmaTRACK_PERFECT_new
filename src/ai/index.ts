@@ -16,6 +16,7 @@ export {
   labelForKind,
   protocolForKind,
   adapterFor,
+  requiresKey,
 } from './providers';
 export { resolveModelInfo, lookupModel, MODEL_SUGGESTIONS } from './models';
 export { PROFILE_IDS, PRESET_PROFILES, defaultProfile, profileById } from './profiles';
@@ -33,6 +34,7 @@ export {
   normalizeSettings,
   providerForLegacyKey,
   saveAISettings,
+  withPriority,
 } from './settings';
 export {
   clearAllCredentials,

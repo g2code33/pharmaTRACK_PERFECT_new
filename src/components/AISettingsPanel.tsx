@@ -19,6 +19,7 @@ import {
   adapterFor,
   modelOptions,
   presetFor,
+  requiresKey,
   resolveModelInfo,
   type AICapability,
   type AIConnectionTest,
@@ -51,7 +52,7 @@ export const AISettingsPanel: React.FC = () => {
   const setField = (id: ProviderId, patch: Partial<ProviderConfig> & { apiKey?: string }) =>
     setEditing((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
 
-  const save = async (provider: ProviderConfig & { hasKey: boolean }) => {
+  const save = async (provider: ProviderRow) => {
     const patch = crud(provider.id);
     await ai.saveProvider({
       ...provider,
@@ -68,7 +69,7 @@ export const AISettingsPanel: React.FC = () => {
     setTimeout(() => setNotice(null), 2500);
   };
 
-  const runTest = async (provider: ProviderConfig & { hasKey: boolean }) => {
+  const runTest = async (provider: ProviderRow) => {
     setTesting(provider.id);
     try {
       const patch = crud(provider.id);
@@ -85,7 +86,7 @@ export const AISettingsPanel: React.FC = () => {
     }
   };
 
-  const fetchModels = async (provider: ProviderConfig & { hasKey: boolean }) => {
+  const fetchModels = async (provider: ProviderRow) => {
     setFetching(provider.id);
     try {
       const models = await ai.fetchModels(provider.id);
@@ -113,7 +114,7 @@ export const AISettingsPanel: React.FC = () => {
       <PrivacyCard />
       <ProvidersCard
         providers={ai.providers}
-        onAdd={(kind) => void ai.saveProvider(blankProvider(kind))}
+        onAdd={(kind) => void ai.saveProvider(blankProvider(kind, ai.providers.map((p) => p.id)))}
         expanded={expanded}
         setExpanded={setExpanded}
         crud={crud}
@@ -175,6 +176,13 @@ const PrivacyCard: React.FC = () => (
           with one (including Gemini), so keys do not end up in browser history or proxy logs.
         </p>
       </div>
+      <div className="flex items-start gap-2">
+        <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+        <p>
+          <strong>One key never travels to another provider.</strong> A request is signed only with the credentials of
+          the provider answering it, including when it fell back. A local model on this device needs no key at all.
+        </p>
+      </div>
     </div>
   </div>
 );
@@ -183,8 +191,11 @@ const PrivacyCard: React.FC = () => (
 /* Providers                                                          */
 /* ------------------------------------------------------------------ */
 
+/** A provider row as the panel sees it: config plus what the engine derived. */
+type ProviderRow = ProviderConfig & { hasKey: boolean; usable: boolean };
+
 interface ProvidersCardProps {
-  providers: Array<ProviderConfig & { hasKey: boolean }>;
+  providers: ProviderRow[];
   onAdd: (kind: ProviderConfig['kind']) => void;
   expanded: ProviderId | null;
   setExpanded: (id: ProviderId | null) => void;
@@ -194,9 +205,9 @@ interface ProvidersCardProps {
   setShowKey: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   testing: ProviderId | null;
   fetching: ProviderId | null;
-  onSave: (p: ProviderConfig & { hasKey: boolean }) => void;
-  onTest: (p: ProviderConfig & { hasKey: boolean }) => void;
-  onFetchModels: (p: ProviderConfig & { hasKey: boolean }) => void;
+  onSave: (p: ProviderRow) => void;
+  onTest: (p: ProviderRow) => void;
+  onFetchModels: (p: ProviderRow) => void;
   onRemove: (id: ProviderId) => void;
 }
 
@@ -205,7 +216,7 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
   testing, fetching, onSave, onTest, onFetchModels, onRemove,
 }) => {
   const [addOpen, setAddOpen] = useState(false);
-  const configuredCount = providers.filter((p) => p.hasKey).length;
+  const configuredCount = providers.filter((p) => p.hasKey || !requiresKey(p.kind)).length;
 
   return (
     <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -223,11 +234,11 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
 
       {addOpen && (
         <div className="p-4 border-b border-gray-100 bg-[#2D6A4F]/5">
-          <p className="text-xs font-bold text-gray-700 mb-2">Add an OpenAI-compatible service</p>
+          <p className="text-xs font-bold text-gray-700 mb-2">Add another provider</p>
           <div className="flex flex-wrap gap-2">
             {PROVIDER_PRESETS.filter((p) => p.kind === 'custom' || p.kind === 'local').map((preset) => (
               <button
-                key={preset.kind}
+                key={`${preset.kind}-${providers.length}`}
                 className={btnGhost}
                 onClick={() => {
                   onAdd(preset.kind);
@@ -239,8 +250,9 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
             ))}
           </div>
           <p className="text-[11px] text-gray-500 mt-2">
-            Works with any endpoint that speaks <code>/chat/completions</code> — a university gateway, Together,
-            Fireworks, vLLM, Ollama…
+            Both slots take any endpoint that speaks <code>/chat/completions</code>. Use <strong>Custom</strong> for a
+            university gateway, Together, Fireworks or vLLM, and <strong>Local model</strong> for Ollama, llama.cpp or
+            LM Studio running on this device — those need no API key, only a base URL.
           </p>
         </div>
       )}
@@ -251,7 +263,18 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
           const patch = crud(provider.id);
           const isOpen = expanded === provider.id;
           const test = provider.lastTest;
-          const status = !provider.hasKey ? 'unconfigured' : provider.enabled ? (test?.ok ? 'connected' : test ? 'failed' : 'untested') : 'disabled';
+          const needsKey = requiresKey(provider.kind);
+          // A local server is configured without a key, so "no key" is only a
+          // problem for providers that authenticate.
+          const status = !provider.enabled
+            ? 'disabled'
+            : needsKey && !provider.hasKey
+              ? 'unconfigured'
+              : test
+                ? test.ok
+                  ? 'connected'
+                  : 'failed'
+                : 'untested';
 
           return (
             <div key={provider.id} data-testid={`ai-provider-${provider.id}`}>
@@ -262,9 +285,18 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
                 <div className="flex items-center gap-3 min-w-0">
                   <StatusDot status={status} />
                   <div className="min-w-0">
-                    <p className="font-bold text-sm text-gray-800 truncate">{provider.label}</p>
+                    <p className="font-bold text-sm text-gray-800 truncate flex items-center gap-2">
+                      {provider.label}
+                      <span
+                        className="text-[9px] font-black text-gray-400 bg-gray-100 rounded px-1.5 py-0.5"
+                        title="Tried in this order for capability routing and fallback"
+                      >
+                        #{provider.priority ?? '–'}
+                      </span>
+                    </p>
                     <p className="text-[11px] text-gray-500 truncate">
-                      {provider.hasKey ? 'Key stored' : 'No key'} · {provider.model || 'no model selected'}
+                      {needsKey ? (provider.hasKey ? 'Key stored' : 'No key') : 'Local — no key needed'} ·{' '}
+                      {provider.model || 'no model selected'}
                     </p>
                   </div>
                 </div>
@@ -279,12 +311,16 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
                   <p className="text-[11px] text-gray-500">{preset.hint}</p>
 
                   <label className="block">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">API key</span>
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                      {needsKey ? 'API key' : 'API key (optional)'}
+                    </span>
                     <div className="relative mt-1">
                       <input
                         type={showKey[provider.id] ? 'text' : 'password'}
                         value={patch.apiKey ?? ''}
-                        placeholder={provider.hasKey ? '•••••••• (saved — type to replace)' : preset.kind === 'gemini' ? 'AIza…' : 'sk-…'}
+                        placeholder={
+                          provider.hasKey ? '•••••••• (saved — type to replace)' : preset.keyPlaceholder ?? 'API key'
+                        }
                         onChange={(e) => setField(provider.id, { apiKey: e.target.value })}
                         className={inputCls}
                         autoComplete="off"
@@ -333,32 +369,36 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
                     )}
                   </div>
 
-                  {(provider.kind === 'openai' || provider.kind === 'custom') && (
+                  {(preset.configFields?.includes('organization') || preset.configFields?.includes('project')) && (
                     <div className="grid sm:grid-cols-2 gap-3">
-                      <label className="block">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                          Organization (optional)
-                        </span>
-                        <input
-                          value={patch.organization ?? provider.organization ?? ''}
-                          onChange={(e) => setField(provider.id, { organization: e.target.value })}
-                          className={`${inputCls} mt-1`}
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                          Project (optional)
-                        </span>
-                        <input
-                          value={patch.project ?? provider.project ?? ''}
-                          onChange={(e) => setField(provider.id, { project: e.target.value })}
-                          className={`${inputCls} mt-1`}
-                        />
-                      </label>
+                      {preset.configFields?.includes('organization') && (
+                        <label className="block">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                            Organization (optional)
+                          </span>
+                          <input
+                            value={patch.organization ?? provider.organization ?? ''}
+                            onChange={(e) => setField(provider.id, { organization: e.target.value })}
+                            className={`${inputCls} mt-1`}
+                          />
+                        </label>
+                      )}
+                      {preset.configFields?.includes('project') && (
+                        <label className="block">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                            Project (optional)
+                          </span>
+                          <input
+                            value={patch.project ?? provider.project ?? ''}
+                            onChange={(e) => setField(provider.id, { project: e.target.value })}
+                            className={`${inputCls} mt-1`}
+                          />
+                        </label>
+                      )}
                     </div>
                   )}
 
-                  {(provider.kind === 'custom' || provider.kind === 'local') && (
+                  {preset.configFields?.includes('label') && (
                     <label className="block">
                       <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
                         Display name
@@ -503,7 +543,7 @@ const TestReport: React.FC<{ test: AIConnectionTest }> = ({ test }) => (
 
 /** Capability chips: established facts labelled, assumptions marked as such. */
 const CapabilityChips: React.FC<{
-  provider: ProviderConfig & { hasKey: boolean };
+  provider: ProviderRow;
   patch: Partial<ProviderConfig>;
   onDeclare: (caps: AICapability[]) => void;
 }> = ({ provider, patch, onDeclare }) => {
@@ -621,7 +661,7 @@ const ProfileRow: React.FC<{
   active: boolean;
   open: boolean;
   onToggle: () => void;
-  providers: Array<ProviderConfig & { hasKey: boolean }>;
+  providers: Array<ProviderRow>;
 }> = ({ profile, active, open, onToggle, providers }) => {
   const ai = useAI();
   const [draft, setDraft] = useState<AIProfile>(profile);
@@ -802,7 +842,7 @@ const FallbackCard: React.FC = () => {
     () =>
       ai.settings.providerPriority
         .map((id) => ai.providers.find((p) => p.id === id))
-        .filter((p): p is ProviderConfig & { hasKey: boolean } => Boolean(p)),
+        .filter((p): p is ProviderRow => Boolean(p)),
     [ai.providers, ai.settings.providerPriority],
   );
 
@@ -832,7 +872,8 @@ const FallbackCard: React.FC = () => {
 
         <div>
           <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1">
-            Provider priority (used for capability routing and as the fallback order)
+            Provider priority — #1 answers first; the rest are tried in this order when it fails, and the same order
+            is used to route a capability request
           </p>
           <ol className="space-y-1">
             {ordered.map((provider, index) => (
@@ -842,7 +883,11 @@ const FallbackCard: React.FC = () => {
                     {index + 1}
                   </span>
                   <span className="font-medium text-gray-800">{provider.label}</span>
-                  {!provider.hasKey && <span className="text-[10px] text-gray-400">(no key)</span>}
+                  {index === 0 && <span className="text-[10px] font-black uppercase text-[#2D6A4F]">primary</span>}
+                  {requiresKey(provider.kind) && !provider.hasKey && (
+                    <span className="text-[10px] text-gray-400">(no key)</span>
+                  )}
+                  {!provider.usable && <span className="text-[10px] text-gray-400">(disabled)</span>}
                 </span>
                 <span className="flex gap-1">
                   <button className="p-1 text-gray-400 hover:text-gray-700" onClick={() => move(index, -1)} title="Move up">

@@ -70,6 +70,19 @@ export interface StatePlanLike {
   isCompleted?: boolean;
 }
 
+/** A question from the bank. Only the ones the user selected are ever sent. */
+export interface StateQuestionLike {
+  id: string;
+  courseId?: string;
+  topicId?: string;
+  questionText: string;
+  difficulty?: string;
+  questionType?: string;
+  correctAnswer?: string;
+  modelAnswer?: string;
+  explanation?: string;
+}
+
 /** The slice of AppState the context builder reads. */
 export interface AppStateLike {
   student?: StateStudentLike | null;
@@ -80,6 +93,8 @@ export interface AppStateLike {
   notes: StateNoteLike[];
   quizHistory: StateQuizLike[];
   studyPlans: StatePlanLike[];
+  /** Question bank entries; optional so older state shapes still build. */
+  examQuestions?: StateQuestionLike[];
 }
 
 export interface RetrievalHit {
@@ -114,6 +129,10 @@ export interface ContextSelection {
   includePerformance?: boolean;
   /** Include the study plan entries touching this course. */
   includePlan?: boolean;
+  /** Bank questions the user picked. Only these are sent, never the whole bank. */
+  questionIds?: string[];
+  /** Include bank questions for the topic when none were picked explicitly. */
+  includeQuestions?: boolean;
   /** Include this conversation's own history (default: last few turns). */
   includeHistory?: boolean;
   historyTurns?: number;

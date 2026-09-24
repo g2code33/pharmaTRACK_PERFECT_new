@@ -22,6 +22,7 @@ import {
   check,
   errorMessageFrom,
   joinUrl,
+  kindRequiresKey,
   normalizeBaseUrl,
   readJson,
   request,
@@ -198,9 +199,22 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           : 'Set a base URL starting with http:// or https:// (use “Test connection” again after saving).',
       ),
     );
-    out.push(check('API key', Boolean(ctx.config.apiKey), ctx.config.apiKey ? 'Key present' : 'No API key set'));
+    const needsKey = kindRequiresKey(ctx.config.kind);
+    out.push(
+      check(
+        'API key',
+        Boolean(ctx.config.apiKey) || !needsKey,
+        ctx.config.apiKey
+          ? 'Key present'
+          : needsKey
+            ? 'No API key set'
+            : 'No key needed — this is a local server on this device',
+      ),
+    );
 
-    if (!ctx.config.apiKey || !/^https?:\/\//i.test(base)) {
+    // A local server has no key, so it is still probed; only a genuinely
+    // unusable endpoint (or a missing key where one is required) stops here.
+    if (!/^https?:\/\//i.test(base) || (!ctx.config.apiKey && needsKey)) {
       out.push(check('Model availability', false, 'Skipped — fix the API key / endpoint first'));
       return out;
     }

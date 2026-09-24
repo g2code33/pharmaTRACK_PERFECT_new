@@ -8,7 +8,7 @@
  * one adapter) or one new adapter file registered here.
  */
 import type { AIProtocol, ProviderConfig, ProviderKind } from '../types';
-import type { ProviderAdapter } from './base';
+import { kindRequiresKey, type ProviderAdapter } from './base';
 import { createOpenAICompatibleAdapter, OPENAI_COMPATIBLE_DEFAULTS } from './openaiCompatible';
 import { GeminiAdapter } from './gemini';
 import { AnthropicAdapter } from './anthropic';
@@ -17,6 +17,7 @@ export { OpenAICompatibleAdapter, createOpenAICompatibleAdapter, OPENAI_COMPATIB
 export { GeminiAdapter } from './gemini';
 export { AnthropicAdapter } from './anthropic';
 export type { CallContext, ProviderAdapter, RawCompletion } from './base';
+export { KEYLESS_KINDS, kindRequiresKey } from './base';
 
 export interface ProviderPreset {
   kind: ProviderKind;
@@ -28,6 +29,10 @@ export interface ProviderPreset {
   keyUrl?: string;
   /** True for OpenAI-compatible services the user can point anywhere. */
   configurableBaseUrl?: boolean;
+  /** Shown in the key field. The panel does not branch on the provider name. */
+  keyPlaceholder?: string;
+  /** Extra settings fields. The panel renders these instead of switching on kind. */
+  configFields?: Array<'organization' | 'project' | 'label'>;
   /** Reject models the protocol cannot express (Anthropic needs max_tokens). */
   needsMaxTokens?: boolean;
   /** Discovery is not available everywhere; then models are typed/pasted. */
@@ -44,6 +49,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyUrl: 'https://build.nvidia.com',
     configurableBaseUrl: true,
     supportsModelList: true,
+    keyPlaceholder: 'nvapi-…',
     hint: 'NVIDIA NIM / build.nvidia.com. Keys start with nvapi-.',
   },
   {
@@ -54,6 +60,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyUrl: 'https://platform.openai.com/api-keys',
     configurableBaseUrl: true,
     supportsModelList: true,
+    keyPlaceholder: 'sk-…',
+    configFields: ['organization', 'project'],
     hint: 'Keys start with sk-. Supports organization/project headers.',
   },
   {
@@ -63,6 +71,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: OPENAI_COMPATIBLE_DEFAULTS.gemini?.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta',
     keyUrl: 'https://aistudio.google.com/app/apikey',
     supportsModelList: true,
+    keyPlaceholder: 'AIza…',
     hint: 'Google AI Studio keys start with AIza. Large context, good for whole-chapter material.',
   },
   {
@@ -73,6 +82,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyUrl: 'https://console.anthropic.com/settings/keys',
     supportsModelList: true,
     needsMaxTokens: true,
+    keyPlaceholder: 'sk-ant-…',
     hint: 'Claude keys start with sk-ant-. A max output token count is always sent.',
   },
   {
@@ -112,16 +122,20 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: '',
     configurableBaseUrl: true,
     supportsModelList: true,
+    keyPlaceholder: 'API key',
+    configFields: ['organization', 'project', 'label'],
     hint: 'Any service that speaks /chat/completions: a university gateway, Together, Fireworks, vLLM…',
   },
   {
     kind: 'local',
-    label: 'Local model (future)',
-    protocol: 'openai-compatible',
+    label: 'Local model',
+    protocol: 'local',
     baseUrl: OPENAI_COMPATIBLE_DEFAULTS.local.baseUrl,
     configurableBaseUrl: true,
     supportsModelList: true,
-    hint: 'Ollama / llama.cpp / LM Studio expose an OpenAI-compatible endpoint. Offline capable when it runs on this device.',
+    keyPlaceholder: 'Optional — only if your local server asks for one',
+    configFields: ['label'],
+    hint: 'Ollama, llama.cpp or LM Studio on this device. They speak /chat/completions, usually at http://localhost:11434/v1. A key is optional. Another local runtime can be added as an adapter without changing the UI.',
   },
 ];
 
@@ -130,28 +144,36 @@ export const presetFor = (kind: ProviderKind): ProviderPreset =>
 
 export const labelForKind = (kind: ProviderKind): string => presetFor(kind).label;
 
-/** True when the protocol is served by the shared OpenAI-compatible adapter. */
-const OPENAI_COMPATIBLE_KINDS: ProviderKind[] = ['nvidia', 'openai', 'groq', 'openrouter', 'mistral', 'custom', 'local'];
-
 const adapters = new Map<ProviderKind, ProviderAdapter>();
 
 /**
- * Returns the adapter for a config. Protocol decides the implementation, so a
- * custom provider immediately behaves like every other OpenAI-compatible one.
+ * True when a kind authenticates. Local servers (Ollama, llama.cpp, LM Studio)
+ * do not, and the same list drives the adapters, the settings screen and the
+ * routing chain — see KEYLESS_KINDS in providers/base.ts.
+ */
+export function requiresKey(kind: ProviderKind): boolean {
+  return kindRequiresKey(kind);
+}
+
+/**
+ * Returns the adapter for a config. Protocol decides the implementation.
+ * `local` is a provider *slot*, not a second API: Ollama and llama.cpp already
+ * speak the OpenAI-compatible protocol, so they reuse that adapter. A future
+ * on-device runtime that speaks something else is one new adapter file
+ * registered here — the UI and the manager never change.
  */
 export function adapterFor(config: Pick<ProviderConfig, 'kind' | 'protocol'>): ProviderAdapter {
-  const key = OPENAI_COMPATIBLE_KINDS.includes(config.kind) ? config.kind : config.kind;
-  const cached = adapters.get(key);
+  const cached = adapters.get(config.kind);
   if (cached) return cached;
 
   const adapter: ProviderAdapter =
-    config.protocol === 'gemini'
+    config.protocol === 'gemini' || config.kind === 'gemini'
       ? new GeminiAdapter()
-      : config.protocol === 'anthropic'
+      : config.protocol === 'anthropic' || config.kind === 'anthropic'
         ? new AnthropicAdapter()
         : createOpenAICompatibleAdapter(config.kind);
 
-  adapters.set(key, adapter);
+  adapters.set(config.kind, adapter);
   return adapter;
 }
 

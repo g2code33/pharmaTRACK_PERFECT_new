@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle } from 'lucide-react';
+import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles } from 'lucide-react';
 import { ExamQuestion } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import QuestionAnalytics from '../components/QuestionAnalytics';
@@ -11,7 +11,10 @@ import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYP
 const QuestionBank = () => {
   const { state, dispatch } = useApp();
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const questionId = params.get('question');
+  /** Questions the student picked to send to the AI as context. */
+  const [selectedForAI, setSelectedForAI] = useState<Set<string>>(new Set());
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const appliedQuestion = useRef('');
   
@@ -56,6 +59,29 @@ const QuestionBank = () => {
     const next = new Set(expandedTopics);
     if (next.has(id)) next.delete(id); else next.add(id);
     setExpandedTopics(next);
+  };
+
+  const toggleAiSelection = (id: string) => {
+    setSelectedForAI((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < 8) next.add(id);
+      return next;
+    });
+  };
+
+  /**
+   * Hands the picked questions to the AI workspace. Only their ids travel in the
+   * URL; the engine rebuilds the context from the bank, so nothing else is sent.
+   */
+  const askAiAboutSelected = () => {
+    const ids = [...selectedForAI].slice(0, 8);
+    if (!ids.length) return;
+    const first = state.examQuestions.find((q) => q.id === ids[0]);
+    const query = new URLSearchParams({ questions: ids.join(',') });
+    if (first?.topicId) query.set('topic', first.topicId);
+    if (first?.courseId) query.set('course', first.courseId);
+    navigate(`/ai?${query.toString()}`);
   };
 
   const handleImport = () => {
@@ -174,6 +200,15 @@ const QuestionBank = () => {
            <div><p className="font-bold text-slate-800">Total Questions</p><p className="text-xs text-slate-500 uppercase font-semibold">Across all courses</p></div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={askAiAboutSelected}
+            disabled={selectedForAI.size === 0}
+            title={selectedForAI.size ? 'Send only these questions to the AI' : 'Tick a question first'}
+            className="bg-white border border-slate-200 text-slate-800 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 disabled:opacity-40"
+          >
+            <Sparkles size={18} />
+            <span>Ask AI about {selectedForAI.size ? `${selectedForAI.size} selected` : 'questions'}</span>
+          </button>
           <button onClick={() => setShowAddModal(true)} className="bg-white border border-slate-200 text-slate-800 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50">
             <Plus size={18} /><span>Add question</span>
           </button>
@@ -229,6 +264,15 @@ const QuestionBank = () => {
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 mb-3 pr-16">
                                   <span className="bg-slate-800 text-white px-2.5 py-1 rounded text-xs font-black tracking-widest">Q{idx + 1}</span>
+                                  <label className="flex items-center gap-1.5 bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedForAI.has(q.id)}
+                                      onChange={() => toggleAiSelection(q.id)}
+                                      data-testid={`ai-select-${q.id}`}
+                                    />
+                                    Ask AI
+                                  </label>
                                   <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase">{TYPE_LABEL[q.questionType] || q.questionType}</span>
                                   <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase">{q.difficulty}</span>
                                   <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-[10px] font-black uppercase">{q.semester || course.semester || 'Semester'}</span>

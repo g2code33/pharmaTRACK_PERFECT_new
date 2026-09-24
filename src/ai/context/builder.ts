@@ -180,6 +180,40 @@ export function buildContext(
     }
   }
 
+  /* --- 3b. Questions the user picked from the bank --------------------- */
+  // Explicitly selected questions carry their answer, because the student asked
+  // about those exact questions. A topic-wide inclusion is a prompt for the
+  // model, so answers are left out and only the stems travel.
+  const picked = (selection.questionIds ?? []).slice(0, 8);
+  const bank = state.examQuestions ?? [];
+  const questions = picked.length
+    ? picked.map((id) => bank.find((q) => q.id === id)).filter((q): q is NonNullable<typeof q> => Boolean(q))
+    : selection.includeQuestions
+      ? bank.filter((q) => (topic ? q.topicId === topic.id : !course || q.courseId === course.id)).slice(0, 6)
+      : [];
+
+  if (questions.length) {
+    push(blocks, {
+      label: picked.length ? 'Selected questions' : 'Question bank questions',
+      text: questions
+        .map((q, index) => {
+          const meta = [q.questionType, q.difficulty].filter(Boolean).join(' · ');
+          const lines = [`${index + 1}. ${q.questionText}${meta ? ` [${meta}]` : ''}`];
+          if (picked.length) {
+            const answer = q.correctAnswer ?? q.modelAnswer;
+            if (answer) lines.push(`   Correct answer: ${answer}`);
+            if (q.explanation) lines.push(`   Explanation: ${q.explanation}`);
+          }
+          return lines.join('\n');
+        })
+        .join('\n'),
+      source: {
+        kind: 'question',
+        label: `${questions.length} question${questions.length === 1 ? '' : 's'} from your bank`,
+      },
+    });
+  }
+
   /* --- 4. Budgeting ---------------------------------------------------- */
   const bundle: AIContextBundle = {
     blocks,
@@ -233,6 +267,7 @@ export function applyBudget(bundle: AIContextBundle, budgetTokens: number, warni
       case 'course':
       case 'topic':
       case 'student':
+      case 'question':
         return 3;
       case 'objectives':
       case 'notes':

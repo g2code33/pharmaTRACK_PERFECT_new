@@ -30,7 +30,7 @@ import type {
   ProviderId,
 } from './types';
 import { AIEngineError, normalizeError, reportFor } from './errors';
-import { adapterFor, presetFor } from './providers';
+import { adapterFor, presetFor, requiresKey } from './providers';
 import { resolveModelInfo } from './models';
 import { profileById } from './profiles';
 import { loadAllCredentials, loadCredentials } from './credentials';
@@ -129,9 +129,9 @@ export class AIManager {
   }
 
   /**
-   * Providers that are enabled AND have a key (so they could actually answer),
-   * with their credentials attached — the routing chain is built from these, so
-   * this is the single place where a stored key is handed to an adapter.
+   * Providers that could actually answer right now: enabled, and either keyed
+   * or a local server that needs no key. Credentials are attached here, so this
+   * is the single place a stored key is handed to an adapter.
    */
   async readyProviders(): Promise<ProviderConfig[]> {
     await this.ensureCredentials();
@@ -139,7 +139,7 @@ export class AIManager {
     for (const provider of this.settings.providers) {
       if (!provider.enabled) continue;
       const creds = this.credentials[provider.id] ?? {};
-      if (!creds.apiKey) continue;
+      if (!creds.apiKey && requiresKey(provider.kind)) continue;
       ready.push({
         ...provider,
         apiKey: creds.apiKey,
@@ -381,7 +381,15 @@ export class AIManager {
         ok: /^https?:\/\//i.test(config.baseUrl || presetFor(config.kind).baseUrl),
         detail: config.baseUrl || presetFor(config.kind).baseUrl || 'No base URL set',
       },
-      { name: 'API key', ok: Boolean(config.apiKey), detail: config.apiKey ? 'Key present' : 'No API key set' },
+      {
+        name: 'API key',
+        ok: Boolean(config.apiKey) || !requiresKey(config.kind),
+        detail: config.apiKey
+          ? 'Key present'
+          : requiresKey(config.kind)
+            ? 'No API key set'
+            : 'No key needed — this is a local server on this device',
+      },
     ];
 
     const controller = new AbortController();
@@ -508,7 +516,13 @@ export class AIManager {
     const requestedLabel = requestedProvider ? displayName(this.settings, requestedProvider) : '';
 
     for (const config of chain) {
-      const model = req.model ?? (config.id === profile.providerId ? profile.model || config.model : config.model);
+      // A model id belongs to one provider. The requested/profile model is used
+      // only for the provider it was chosen for; a fallback answers with its own
+      // configured model instead of being asked for someone else's model.
+      const isRequested =
+        config.id === req.providerId || (!req.providerId && config.id === profile.providerId);
+      const model: string =
+        (isRequested ? req.model || profile.model : undefined) || config.model || req.model || '';
       const adapter = adapterFor(config);
       const attempt: AIResponse['attempts'][number] = { providerId: config.id, model, ok: false };
 

@@ -28,7 +28,8 @@ export type AIProtocol =
 
 /**
  * Provider presets PharmaTRACK ships with. `custom` covers any
- * OpenAI-compatible service, and `local` is the future on-device slot.
+ * OpenAI-compatible service. `local` is the on-device slot (Ollama, llama.cpp,
+ * LM Studio) and still speaks that same HTTP protocol.
  */
 export type ProviderKind =
   | 'nvidia'
@@ -122,6 +123,11 @@ export interface ProviderConfig {
   project?: string;
   /** Prefer streaming when the provider and model support it. */
   streaming: boolean;
+  /**
+   * 1-based rank. Lower is tried first for capability routing and fallback.
+   * Kept in step with `AISettings.providerPriority`.
+   */
+  priority?: number;
   /** Per-request timeout, ms. */
   timeoutMs?: number;
   /** User-declared capability override (kept alongside, never replaces, the registry). */
@@ -271,7 +277,8 @@ export type AIContextKind =
   | 'highlights'
   | 'retrieval'
   | 'history'
-  | 'clinical-case';
+  | 'clinical-case'
+  | 'question';
 
 export interface AIContextSource {
   kind: AIContextKind;

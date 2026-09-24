@@ -37,6 +37,11 @@ const AiAssistant: React.FC = () => {
   const materialId = params.get('material') ?? undefined;
   const courseId = params.get('course') ?? undefined;
   const conversationId = params.get('conversation') ?? undefined;
+  /** Question-bank ids handed over by “Ask AI about these” on the bank page. */
+  const questionIds = (params.get('questions') ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
 
   const replaceParams = useCallback((patch: Record<string, string | null>) => {
     const next = new URLSearchParams(params);
@@ -77,6 +82,15 @@ const AiAssistant: React.FC = () => {
 
   const appState = state as unknown as AppStateLike;
 
+  /** The bank questions the student attached, shown before anything is sent. */
+  const attachedQuestions = useMemo(
+    () =>
+      questionIds.length
+        ? (state.examQuestions ?? []).filter((q) => questionIds.includes(q.id)).slice(0, 8)
+        : [],
+    [questionIds.join(','), state.examQuestions],
+  );
+
   const scope: ContextSelection = useMemo(
     () => ({
       topicId,
@@ -85,11 +99,13 @@ const AiAssistant: React.FC = () => {
       materialText: material
         ? { label: `${material.title}`, text: materialText ?? material.contentText ?? '' }
         : undefined,
+      questionIds: questionIds.length ? questionIds : undefined,
     }),
-    [course?.id, material, materialText, topicId],
+    // questionIds is rebuilt from the URL on every render, so depend on its text.
+    [course?.id, material, materialText, topicId, questionIds.join(',')],
   );
 
-  const ready = ai.providers.filter((p) => p.hasKey && p.enabled);
+  const ready = ai.providers.filter((p) => p.usable);
 
   /*
    * Chat history. Conversations are academic data stored away from AppState and
@@ -225,6 +241,32 @@ const AiAssistant: React.FC = () => {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {attachedQuestions.length > 0 && (
+            <div className="pt-2 border-t border-gray-100">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                  Questions in scope
+                </span>
+                <button
+                  onClick={() => replaceParams({ questions: null })}
+                  className="text-[10px] font-bold text-gray-400 hover:text-red-600"
+                >
+                  Clear
+                </button>
+              </div>
+              <ul className="space-y-1">
+                {attachedQuestions.map((q) => (
+                  <li key={q.id} className="p-2 rounded-lg border border-gray-100 text-[11px] text-gray-700">
+                    {q.questionText}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[10px] text-gray-400 mt-1">
+                Only these questions are sent, with the course and topic above.
+              </p>
             </div>
           )}
 

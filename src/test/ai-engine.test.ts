@@ -31,6 +31,10 @@ import {
   resolveModelInfo,
   adapterFor,
   presetFor,
+  withPriority,
+  findLegacyKey,
+  migrateLegacySettings,
+  stripCredentials,
   type AISettings,
   type ProviderId,
 } from '../ai';
@@ -784,6 +788,26 @@ describe('academic context', () => {
     notes: [{ id: 'n1', topicId: 't1', noteText: 'Remember: beta-1 is cardiac.' }],
     quizHistory: [{ courseId: 'c1', scorePercentage: 62, weakTopics: ['t1'], completedAt: '2026-03-01T10:00:00.000Z', answersGiven: [{ isCorrect: false }, { isCorrect: true }] }],
     studyPlans: [{ courseId: 'c1', date: '2026-03-04', timeSlot: '18:00', activityType: 'revision', notes: 'Beta blockers', isCompleted: false }],
+    examQuestions: [
+      {
+        id: 'q1',
+        courseId: 'c1',
+        topicId: 't1',
+        questionText: 'Which receptor does propranolol block?',
+        questionType: 'mcq',
+        difficulty: 'medium',
+        correctAnswer: 'Beta-1 adrenergic receptor',
+      },
+      {
+        id: 'q2',
+        courseId: 'c1',
+        topicId: 't1',
+        questionText: 'An unselected question that must never be sent.',
+        questionType: 'mcq',
+        difficulty: 'easy',
+        correctAnswer: 'Never sent',
+      },
+    ],
   };
 
   it('sends the selected page/slide and identifies its source', () => {
@@ -876,5 +900,176 @@ describe('academic context', () => {
     expect(text).toContain('PHS 301');
     expect(text).toContain('Autonomic Pharmacology');
     expect(text).toContain('Lecture 4 — Autonomic Pharmacology');
+  });
+
+  it('sends only the bank questions the student selected, with their answers', () => {
+    const bundle = buildContext(state, { topicId: 't1', courseId: 'c1', questionIds: ['q1'] });
+    const block = bundle.blocks.find((b) => b.source.kind === 'question');
+    expect(block?.label).toBe('Selected questions');
+    expect(block?.text).toContain('Which receptor does propranolol block?');
+    expect(block?.text).toContain('Beta-1 adrenergic receptor');
+    const sent = bundle.blocks.map((b) => b.text).join('\n');
+    expect(sent).not.toContain('An unselected question');
+  });
+
+  it('sends stems without answers when a whole topic is in scope', () => {
+    const bundle = buildContext(state, { topicId: 't1', courseId: 'c1', includeQuestions: true });
+    const block = bundle.blocks.find((b) => b.source.kind === 'question');
+    expect(block?.text).toContain('Which receptor does propranolol block?');
+    expect(block?.text).not.toContain('Beta-1 adrenergic receptor');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Multi-provider architecture                                        */
+/* ------------------------------------------------------------------ */
+
+describe('multi-provider architecture', () => {
+  it('answers from a local server that needs no API key', async () => {
+    handler = () => json(openAiBody('answered on this device'));
+    const manager = makeManager(
+      makeSettings([{ id: 'local', kind: 'local', model: 'llama3.1', baseUrl: 'http://localhost:11434/v1' }]),
+      {},
+    );
+
+    const response = await manager.generate({ ...ask(), providerId: 'local' });
+
+    expect(response.providerId).toBe('local');
+    expect(response.model).toBe('llama3.1');
+    expect(calls[0].url).toContain('localhost:11434/v1/chat/completions');
+    // Nothing to leak: the credential header is empty and no key was stored.
+    expect(String((calls[0].init.headers as Record<string, string>).Authorization)).toBe('Bearer ');
+  });
+
+  it('keeps several providers configured at once and ranks them by priority', () => {
+    const settings = makeSettings([
+      { id: 'nvidia', model: 'meta/llama-3.3-70b-instruct' },
+      { id: 'gemini', model: 'gemini-2.5-flash' },
+      { id: 'groq', model: 'llama-3.3-70b-versatile' },
+    ]);
+
+    const normalized = normalizeSettings(settings);
+    expect(normalized.providerPriority.slice(0, 3)).toEqual(['nvidia', 'gemini', 'groq']);
+    expect(normalized.providers.find((p) => p.id === 'nvidia')?.priority).toBe(1);
+    expect(normalized.providers.find((p) => p.id === 'groq')?.priority).toBe(3);
+
+    const reordered = withPriority(normalized, ['groq', 'nvidia', 'gemini']);
+    expect(reordered.providers.find((p) => p.id === 'groq')?.priority).toBe(1);
+    expect(reordered.providers.find((p) => p.id === 'gemini')?.priority).toBe(3);
+    // Every provider still has a rank, so none can drop out of routing.
+    expect(reordered.providers.every((p) => typeof p.priority === 'number')).toBe(true);
+  });
+
+  it('lets a fallback answer with its own model, never the primary’s', async () => {
+    handler = (url) =>
+      url.includes('nvidia')
+        ? json({ error: { message: 'API key not valid' } }, 403)
+        : json(geminiBody('Gemini answered instead'));
+    const settings = makeSettings(
+      [{ id: 'nvidia', model: 'meta/llama-3.3-70b-instruct' }, { id: 'gemini', model: 'gemini-2.5-flash' }],
+      {
+        profiles: defaultSettings().profiles.map((p) =>
+          p.id === 'default'
+            ? { ...p, providerId: 'nvidia', model: 'meta/llama-3.3-70b-instruct' }
+            : p,
+        ),
+      },
+    );
+    const manager = makeManager(settings, {
+      nvidia: { apiKey: NVIDIA_KEY },
+      gemini: { apiKey: GEMINI_KEY },
+    });
+
+    const response = await manager.generate({
+      ...ask(),
+      providerId: 'nvidia',
+      model: 'meta/llama-3.3-70b-instruct',
+    });
+
+    expect(response.providerId).toBe('gemini');
+    expect(response.model).toBe('gemini-2.5-flash');
+    const geminiCall = calls.find((c) => c.url.includes('generativelanguage'));
+    expect(geminiCall?.url).toContain('gemini-2.5-flash');
+    expect(geminiCall?.url).not.toContain('llama');
+  });
+
+  it('routes a capability request to the first enabled provider that establishes it', async () => {
+    handler = (url) =>
+      url.includes('generativelanguage') ? json(geminiBody('vision answer')) : json(openAiBody('vision answer'));
+    const manager = makeManager(
+      makeSettings([
+        { id: 'nvidia', model: 'meta/llama-3.3-70b-instruct' },
+        { id: 'gemini', model: 'gemini-2.5-flash' },
+      ]),
+      { nvidia: { apiKey: NVIDIA_KEY }, gemini: { apiKey: GEMINI_KEY } },
+    );
+
+    const response = await manager.generate({ ...ask(), capability: 'vision' });
+
+    // Neither llama-3.3-70b nor the OpenAI-compatible baseline claims vision,
+    // so the engine picks Gemini, whose registry entry does.
+    expect(response.providerId).toBe('gemini');
+  });
+
+  it('tests a keyless local connection without reporting a missing key', async () => {
+    handler = (url) =>
+      String(url).endsWith('/models') ? json({ data: [{ id: 'llama3.1' }] }) : json(openAiBody('OK'));
+    const manager = makeManager(
+      makeSettings([{ id: 'local', kind: 'local', model: 'llama3.1', baseUrl: 'http://localhost:11434/v1' }]),
+      {},
+    );
+
+    const result = await manager.testConnection('local');
+
+    expect(result.ok).toBe(true);
+    const keyCheck = result.checks.find((c) => c.name === 'API key');
+    expect(keyCheck?.ok).toBe(true);
+    expect(keyCheck?.detail).toContain('No key needed');
+    expect(result.checks.find((c) => c.name === 'Model availability')?.ok).toBe(true);
+    expect(result.checks.find((c) => c.name === 'Generation')?.ok).toBe(true);
+  });
+
+  it('migrates a legacy single key into the provider architecture without losing it', () => {
+    const legacyKey = 'AIzaSyLegacyKey0123456789abcdefghijkl';
+    const found = findLegacyKey({ courses: [], openAIKey: legacyKey });
+    expect(found).toEqual({ field: 'openAIKey', key: legacyKey });
+
+    const result = migrateLegacySettings(normalizeSettings(defaultSettings()), found!.key);
+
+    expect(result.providerId).toBe('gemini');
+    const provider = result.settings.providers.find((p) => p.id === 'gemini');
+    expect(provider?.enabled).toBe(true);
+    expect(provider?.apiKey).toBe(legacyKey);
+    expect(provider?.migratedFrom).toBe('openAIKey');
+    // Behaviour is unchanged: the default profile now points at that provider.
+    expect(result.settings.profiles.find((p) => p.id === 'default')?.providerId).toBe('gemini');
+    // What is persisted is key-free; the credential goes to its own store.
+    expect(JSON.stringify(stripCredentials(result.settings.providers.find((p) => p.id === 'gemini')!))).not.toContain(
+      legacyKey,
+    );
+  });
+
+  it('serves two instances of the same protocol without either knowing about the other', async () => {
+    handler = () => json(openAiBody('gateway answer'));
+    const manager = makeManager(
+      makeSettings([
+        { id: 'gateway-a', kind: 'custom', model: 'pharma-llm-v2', baseUrl: 'https://ai.uni-a.example.edu/v1' },
+        { id: 'gateway-b', kind: 'custom', model: 'pharma-llm-v3', baseUrl: 'https://ai.uni-b.example.edu/v1' },
+      ]),
+      { 'gateway-a': { apiKey: 'sk-a-abcdefghijklmnop' }, 'gateway-b': { apiKey: 'sk-b-abcdefghijklmnop' } },
+    );
+
+    const first = await manager.generate({ ...ask(), providerId: 'gateway-a' });
+    const second = await manager.generate({ ...ask(), providerId: 'gateway-b' });
+
+    expect(calls[0].url).toContain('uni-a.example.edu');
+    expect(calls[0].body).toMatchObject({ model: 'pharma-llm-v2' });
+    expect(calls[1].url).toContain('uni-b.example.edu');
+    expect(calls[1].body).toMatchObject({ model: 'pharma-llm-v3' });
+    // Each request is signed only with its own provider's key.
+    expect(String((calls[0].init.headers as Record<string, string>).Authorization)).toBe('Bearer sk-a-abcdefghijklmnop');
+    expect(String((calls[1].init.headers as Record<string, string>).Authorization)).toBe('Bearer sk-b-abcdefghijklmnop');
+    expect(first.providerId).toBe('gateway-a');
+    expect(second.providerId).toBe('gateway-b');
   });
 });
