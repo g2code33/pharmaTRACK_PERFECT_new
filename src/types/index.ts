@@ -297,6 +297,9 @@ export type TimetableItem = {
   time: string;
   location: string;
   type: 'class' | 'quiz' | 'exam';
+  /** Optional explicit link. Name matching still works when this is absent. */
+  courseId?: string;
+  topicId?: string;
 };
 
 // ---------------------------------------------------------------------------

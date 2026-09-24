@@ -90,6 +90,7 @@ type Action =
   | { type: 'SET_LEARNING_INTERVALS'; payload: number[] }
   | { type: 'SET_OPENAI_KEY'; payload: string }
   | { type: 'ADD_TIMETABLE_ITEMS'; payload: { items: TimetableItem[], category: 'class' | 'quiz' | 'exam' } }
+  | { type: 'UPDATE_TIMETABLE_ITEM'; payload: { id: string; category: 'class' | 'quiz' | 'exam'; updates: Partial<TimetableItem> } }
   | { type: 'DELETE_TIMETABLE_ITEM'; payload: { id: string, category: 'class' | 'quiz' | 'exam' } }
   | { type: 'SET_TIMETABLE_PDF'; payload: string | null }
   | { type: 'LOGOUT' }
@@ -380,6 +381,16 @@ const appReducer = (state: AppState, action: Action): AppState => {
 
     case 'ADD_TIMETABLE_ITEMS':
       return { ...state, timetables: { ...state.timetables, [action.payload.category]: [...state.timetables[action.payload.category], ...action.payload.items] } };
+    case 'UPDATE_TIMETABLE_ITEM':
+      return {
+        ...state,
+        timetables: {
+          ...state.timetables,
+          [action.payload.category]: state.timetables[action.payload.category].map((item) =>
+            item.id === action.payload.id ? { ...item, ...action.payload.updates } : item
+          ),
+        },
+      };
     case 'DELETE_TIMETABLE_ITEM':
       return { ...state, timetables: { ...state.timetables, [action.payload.category]: state.timetables[action.payload.category].filter(i => i.id !== action.payload.id) } };
     case 'SET_TIMETABLE_PDF':

@@ -41,15 +41,16 @@ const Quiz: React.FC = () => {
   const [params] = useSearchParams();
   const quizId = params.get('quiz');
   const requestedMode = params.get('mode');
+  const requestedCount = parseInt(params.get('count') || '', 10);
   const reviewedQuiz = useRef('');
 
   // Quiz setup state
   const [settings, setSettings] = useState<QuizSettings>({
     mode: requestedMode && isQuizMode(requestedMode) ? requestedMode : 'mixed',
-    courseId: '',
-    topicId: '',
-    questionTypes: [],
-    numQuestions: 10,
+    courseId: params.get('course') || '',
+    topicId: params.get('topic') || '',
+    questionTypes: params.get('type') === 'mcq' ? ['mcq'] : [],
+    numQuestions: Number.isFinite(requestedCount) && requestedCount > 0 ? requestedCount : 10,
     difficulty: 'mixed',
     timed: requestedMode === 'timed',
     timeLimit: 30,

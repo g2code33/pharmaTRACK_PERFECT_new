@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Calendar, Upload, Trash2, FileText, X, Clock, MapPin } from 'lucide-react';
 import { TimetableItem } from '../types';
+import ClassPrepCard from '../components/ClassPrepCard';
+import { describeSession, studyBrief } from '../utils/studyDashboard';
 
 const Timetable = () => {
   const { state, dispatch } = useApp();
@@ -9,6 +12,7 @@ const Timetable = () => {
   const [importType, setImportType] = useState<'class' | 'quiz' | 'exam'>('class');
   const [jsonInput, setJsonInput] = useState('');
   const [error, setError] = useState('');
+  const brief = studyBrief(state);
 
   // Handle Visual PDF
   const handlePdfUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -40,7 +44,9 @@ const Timetable = () => {
         date: item.date,
         time: item.time,
         location: item.location,
-        type: importType
+        type: importType,
+        ...(typeof item.courseId === 'string' && item.courseId ? { courseId: item.courseId } : {}),
+        ...(typeof item.topicId === 'string' && item.topicId ? { topicId: item.topicId } : {}),
       }));
 
       dispatch({ type: 'ADD_TIMETABLE_ITEMS', payload: { items: newItems, category: importType } });
@@ -67,22 +73,42 @@ const Timetable = () => {
           <p className="text-slate-500 text-center py-4 font-medium">No schedule found for this category.</p>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {items.map((item) => (
-              <div key={item.id} className="p-5 rounded-xl border border-slate-100 bg-slate-50 relative group hover:shadow-md hover:border-[#2D6A4F]/30 transition-all">
-                <button 
+            {items.map((item) => {
+              const session = describeSession(state, item, category);
+              return (
+              <div key={item.id} className="rounded-xl border border-slate-100 bg-slate-50 relative group hover:shadow-md hover:border-[#2D6A4F]/30 transition-all overflow-hidden">
+                <button
                   onClick={() => handleDeleteItem(item.id, category)}
-                  className="absolute top-4 right-4 text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity bg-white p-1.5 rounded-lg shadow-sm"
+                  className="absolute top-4 right-4 z-10 text-slate-400 hover:text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity bg-white p-1.5 rounded-lg shadow-sm"
                 >
                   <Trash2 size={16} />
                 </button>
-                <h3 className="font-bold text-lg text-slate-800 mb-3 pr-8">{item.subject}</h3>
-                <div className="space-y-2 text-sm font-medium text-slate-600">
-                  <div className="flex items-center"><Calendar size={16} className="mr-3 text-[#2D6A4F]"/> {item.date}</div>
-                  <div className="flex items-center"><Clock size={16} className="mr-3 text-[#FFB703]"/> {item.time}</div>
-                  <div className="flex items-center"><MapPin size={16} className="mr-3 text-blue-500"/> {item.location}</div>
+                <div className="p-5 pr-12">
+                  <p className="text-xs font-black uppercase tracking-widest text-[#2D6A4F]">{session.whenLabel}</p>
+                  <h3 className="font-bold text-lg text-slate-800 mt-1">{item.subject}</h3>
+                  <div className="space-y-2 text-sm font-medium text-slate-600 mt-3">
+                    <div className="flex items-center"><Calendar size={16} className="mr-3 text-[#2D6A4F]"/> {item.date}</div>
+                    <div className="flex items-center"><Clock size={16} className="mr-3 text-[#FFB703]"/> {item.time}</div>
+                    <div className="flex items-center"><MapPin size={16} className="mr-3 text-blue-500"/> {item.location}</div>
+                  </div>
+                  <label className="block mt-4 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                    Course
+                    <select
+                      value={item.courseId || session.courseId || ''}
+                      onChange={(e) => dispatch({ type: 'UPDATE_TIMETABLE_ITEM', payload: { id: item.id, category, updates: { courseId: e.target.value || undefined } } })}
+                      className="mt-1 w-full border border-slate-200 rounded-lg p-2 text-sm font-semibold text-slate-800 bg-white"
+                    >
+                      <option value="">Match by name</option>
+                      {state.courses.map((course) => <option key={course.id} value={course.id}>{course.courseCode} — {course.courseName}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="px-3 pb-3">
+                  <ClassPrepCard session={session} open={brief.nextClass?.id === item.id} />
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -91,13 +117,23 @@ const Timetable = () => {
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
-      <div className="bg-gradient-to-r from-[#1B4332] to-[#2D6A4F] rounded-2xl p-8 text-white shadow-lg flex justify-between items-center">
+      <div className="bg-gradient-to-r from-[#1B4332] to-[#2D6A4F] rounded-2xl p-6 sm:p-8 text-white shadow-lg flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold mb-2">Offline Class Timetable</h1>
-          <p className="text-green-100">Upload Visual PDFs or Import Structured JSON schedules.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold mb-2">Offline Class Timetable</h1>
+          <p className="text-green-100">Classes link to topics, materials, and preparation. No AI required.</p>
         </div>
-        <Calendar size={48} className="opacity-50" />
+        <Calendar size={48} className="opacity-50 hidden sm:block" />
       </div>
+
+      {brief.nextClass && (
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-black text-slate-800">Next class</h2>
+            <Link to="/" className="text-sm font-bold text-[#2D6A4F]">Dashboard</Link>
+          </div>
+          <ClassPrepCard session={brief.nextClass} open />
+        </div>
+      )}
 
       <div className="flex justify-end">
         <button
@@ -166,10 +202,12 @@ const Timetable = () => {
     "subject": "Organic Chemistry 101",
     "date": "2026-06-10",
     "time": "10:00 AM",
-    "location": "Science Lab A"
+    "location": "Science Lab A",
+    "courseId": "optional-course-id"
   }
 ]`}
               </pre>
+              <p className="mt-3 text-xs text-slate-500">Date can be a weekday such as Monday for a weekly class. courseId is optional — the subject is matched to a course name when you leave it out.</p>
             </div>
 
             {error && <div className="mb-4 p-3 bg-red-50 text-red-600 border border-red-200 rounded-xl text-sm font-semibold">{error}</div>}

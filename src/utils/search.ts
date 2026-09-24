@@ -71,7 +71,7 @@ export interface SearchResult {
 
 /** Static destinations so the bar doubles as a command palette. */
 const PAGES: { title: string; link: string; keywords: string }[] = [
-  { title: 'Dashboard', link: '/', keywords: 'home overview' },
+  { title: 'Dashboard', link: '/', keywords: 'home overview what should I do now today priorities' },
   { title: 'Academic Search', link: '/search', keywords: 'find search archive global' },
   { title: 'Study Materials', link: '/materials', keywords: 'upload pdf slides documents' },
   { title: 'Material Library', link: '/library', keywords: 'files powerpoint pdf favorites tags library' },
