@@ -41,6 +41,9 @@ const AcademicSearch = React.lazy(() => import('./pages/Search'));
 const Today = React.lazy(() => import('./pages/Today'));
 const Clinical = React.lazy(() => import('./pages/Clinical'));
 const AiAssistant = React.lazy(() => import('./pages/AiAssistant'));
+const ExaminationBuilder = React.lazy(() => import('./pages/ExaminationBuilder'));
+const KioskEntry = React.lazy(() => import('./pages/KioskEntry'));
+const SecureExamination = React.lazy(() => import('./pages/SecureExamination'));
 
 import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
@@ -91,49 +94,54 @@ const App = () => {
     // Outer boundary catches anything outside the Layout (Login, Onboarding)
     // and any crash in the router itself.
     <ErrorBoundary>
-    <AIProvider>
-    <HashRouter>
-      <Suspense fallback={<PageLoading />}>
-      <Routes>
-        {needsOnboarding ? (
-          // First run. No login wall: just ask their name/level so the app is
-          // personalised, then let them straight in.
-          <Route path="*" element={<Onboarding />} />
-        ) : (
-          <Route element={<Layout />}>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/materials" element={<StudyMaterials />} />
-            <Route path="/search" element={<AcademicSearch />} />
-            <Route path="/library" element={<MaterialLibrary />} />
-            <Route path="/highlights" element={<Highlights />} />
-            <Route path="/courses" element={<Courses />} />
-            <Route path="/course/:courseId" element={<CourseDetail />} />
-            {/* FIXED THIS ROUTE TO /read/:topicId to match your buttons! */}
-            <Route path="/read/:topicId" element={<SlideReader />} />
-            <Route path="/objectives" element={<LearningObjectives />} />
-            <Route path="/questions" element={<QuestionBank />} />
-            <Route path="/quiz" element={<Quiz />} />
-            <Route path="/planner" element={<Planner />} />
-            <Route path="/learn" element={<Today />} />
-            <Route path="/clinical" element={<Clinical />} />
-            <Route path="/notes" element={<Notes />} />
-            <Route path="/analytics" element={<Analytics />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/profile" element={<Profile />} />
-            {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
-            <Route path="/login" element={<Login />} />
-            <Route path="/timetable" element={<Timetable />} />
-            <Route path="/ai" element={<AiAssistant />} />
-            <Route path="/archive" element={<AcademicArchive />} />
-            <Route path="/archive/:id" element={<ArchiveViewer />} />
-            <Route path="/storage" element={<StorageManager />} />
-            <Route path="*" element={<Navigate to="/" />} />
-          </Route>
-        )}
-      </Routes>
-      </Suspense>
-    </HashRouter>
-    </AIProvider>
+      <AIProvider>
+        <HashRouter>
+          <Suspense fallback={<PageLoading />}>
+            <Routes>
+              {needsOnboarding ? (
+                // First run. No login wall: just ask their name/level so the app is
+                // personalised, then let them straight in.
+                <Route path="*" element={<Onboarding />} />
+              ) : (
+                <>
+                  <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
+                  <Route element={<Layout />}>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/materials" element={<StudyMaterials />} />
+                    <Route path="/search" element={<AcademicSearch />} />
+                    <Route path="/library" element={<MaterialLibrary />} />
+                    <Route path="/highlights" element={<Highlights />} />
+                    <Route path="/courses" element={<Courses />} />
+                    <Route path="/course/:courseId" element={<CourseDetail />} />
+                    {/* FIXED THIS ROUTE TO /read/:topicId to match your buttons! */}
+                    <Route path="/read/:topicId" element={<SlideReader />} />
+                    <Route path="/objectives" element={<LearningObjectives />} />
+                    <Route path="/questions" element={<QuestionBank />} />
+                    <Route path="/quiz" element={<Quiz />} />
+                    <Route path="/examinations/builder" element={<ExaminationBuilder />} />
+                    <Route path="/examinations/kiosk" element={<KioskEntry />} />
+                    <Route path="/planner" element={<Planner />} />
+                    <Route path="/learn" element={<Today />} />
+                    <Route path="/clinical" element={<Clinical />} />
+                    <Route path="/notes" element={<Notes />} />
+                    <Route path="/analytics" element={<Analytics />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="/profile" element={<Profile />} />
+                    {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
+                    <Route path="/login" element={<Login />} />
+                    <Route path="/timetable" element={<Timetable />} />
+                    <Route path="/ai" element={<AiAssistant />} />
+                    <Route path="/archive" element={<AcademicArchive />} />
+                    <Route path="/archive/:id" element={<ArchiveViewer />} />
+                    <Route path="/storage" element={<StorageManager />} />
+                    <Route path="*" element={<Navigate to="/" />} />
+                  </Route>
+                </>
+              )}
+            </Routes>
+          </Suspense>
+        </HashRouter>
+      </AIProvider>
     </ErrorBoundary>
   );
 };

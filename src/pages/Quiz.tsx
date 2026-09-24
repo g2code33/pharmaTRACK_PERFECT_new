@@ -5,7 +5,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { ExamQuestion, QuizHistory, QuizMode } from '../types';
 import { Link, useSearchParams } from 'react-router-dom';
-import { gradeAnswer, isQuizMode, questionsForQuiz, quizReview, QUIZ_MODES } from '../utils/questionBank';
+import {
+  gradeAnswer,
+  isQuizMode,
+  questionsForQuiz,
+  quizReview,
+  QUIZ_MODES,
+} from '../utils/questionBank';
 import {
   Brain,
   Play,
@@ -59,9 +65,11 @@ const Quiz: React.FC = () => {
   // Quiz state
   const [quizStarted, setQuizStarted] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
-    const [quizQuestions, setQuizQuestions] = useState<ExamQuestion[]>([]);
+  const [quizQuestions, setQuizQuestions] = useState<ExamQuestion[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [answers, setAnswers] = useState<Map<string, { answer: string; flagged: boolean }>>(new Map());
+  const [answers, setAnswers] = useState<Map<string, { answer: string; flagged: boolean }>>(
+    new Map(),
+  );
   const [showAnswer, setShowAnswer] = useState(false);
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [quizFinished, setQuizFinished] = useState(false);
@@ -76,8 +84,9 @@ const Quiz: React.FC = () => {
     questionTypes: settings.questionTypes,
     difficulty: settings.difficulty,
   });
-  const modeReady = (settings.mode !== 'topic' || Boolean(settings.topicId))
-    && (settings.mode !== 'course' || Boolean(settings.courseId));
+  const modeReady =
+    (settings.mode !== 'topic' || Boolean(settings.topicId)) &&
+    (settings.mode !== 'course' || Boolean(settings.courseId));
   const modeHelp = QUIZ_MODES.find((mode) => mode.id === settings.mode);
 
   // Timer effect
@@ -97,18 +106,17 @@ const Quiz: React.FC = () => {
     return () => clearInterval(timer);
   }, [quizStarted, settings.timed, timeRemaining, quizFinished]);
 
-  
-    const reviewQuiz = (history: QuizHistory) => {
-    const qs = state.examQuestions.filter(q => history.questionsUsed.includes(q.id));
+  const reviewQuiz = (history: QuizHistory) => {
+    const qs = state.examQuestions.filter((q) => history.questionsUsed.includes(q.id));
     setQuizQuestions(qs);
-    
+
     // We recreate the answers map exactly as it was during the quiz so the Results screen can read it
     const prevAnswers = new Map();
-    history.answersGiven.forEach(a => { 
-       prevAnswers.set(a.questionId, { answer: a.answer, flagged: false }); 
+    history.answersGiven.forEach((a) => {
+      prevAnswers.set(a.questionId, { answer: a.answer, flagged: false });
     });
     setAnswers(prevAnswers);
-    
+
     // Bypass the active quiz mode and jump straight to the Results screen
     setResults(history);
     setQuizStarted(true);
@@ -136,7 +144,7 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
-          };
+  };
 
   const saveAnswer = (questionId: string, answer: string) => {
     const newAnswers = new Map(answers);
@@ -217,6 +225,20 @@ const Quiz: React.FC = () => {
           </div>
           <h1 className="text-2xl font-bold text-gray-800">Quiz Mode</h1>
           <p className="text-gray-500">Test your knowledge with practice questions</p>
+          <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
+            <Link
+              to="/examinations/kiosk"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-700 text-white rounded-lg font-bold"
+            >
+              Enter Kiosk Examination
+            </Link>
+            <Link
+              to="/examinations/builder"
+              className="inline-flex items-center gap-2 px-4 py-2 border border-emerald-700 text-emerald-800 rounded-lg font-bold"
+            >
+              Examination Builder
+            </Link>
+          </div>
         </div>
 
         {state.examQuestions.length === 0 ? (
@@ -240,14 +262,21 @@ const Quiz: React.FC = () => {
                   <button
                     key={mode.id}
                     type="button"
-                    onClick={() => setSettings({
-                      ...settings,
-                      mode: mode.id,
-                      timed: mode.id === 'timed' ? true : settings.timed,
-                      topicId: mode.id === 'course' || mode.id === 'mixed' || mode.id === 'timed' ? '' : settings.topicId,
-                    })}
+                    onClick={() =>
+                      setSettings({
+                        ...settings,
+                        mode: mode.id,
+                        timed: mode.id === 'timed' ? true : settings.timed,
+                        topicId:
+                          mode.id === 'course' || mode.id === 'mixed' || mode.id === 'timed'
+                            ? ''
+                            : settings.topicId,
+                      })
+                    }
                     className={`px-3 py-2 rounded-lg text-sm font-semibold text-left ${
-                      settings.mode === mode.id ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      settings.mode === mode.id
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
                     {mode.label}
@@ -269,7 +298,11 @@ const Quiz: React.FC = () => {
                 }
                 className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
               >
-                <option value="">{settings.mode === 'topic' || settings.mode === 'course' ? 'Choose a course' : 'All Courses'}</option>
+                <option value="">
+                  {settings.mode === 'topic' || settings.mode === 'course'
+                    ? 'Choose a course'
+                    : 'All Courses'}
+                </option>
                 {state.courses.map((course) => (
                   <option key={course.id} value={course.id}>
                     {course.courseCode} - {course.courseName}
@@ -281,7 +314,9 @@ const Quiz: React.FC = () => {
             {/* Topic filter */}
             {settings.courseId && settings.mode !== 'course' && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Topic{settings.mode === 'topic' ? ' (required)' : ''}</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Topic{settings.mode === 'topic' ? ' (required)' : ''}
+                </label>
                 <select
                   value={settings.topicId}
                   onChange={(e) => setSettings({ ...settings, topicId: e.target.value })}
@@ -350,13 +385,17 @@ const Quiz: React.FC = () => {
                 ))}
               </div>
               <div className="flex items-center gap-3 bg-gray-50 p-3 rounded-xl border border-gray-100">
-                <span className="text-xs font-black text-gray-400 uppercase tracking-widest whitespace-nowrap">Custom Count:</span>
-                <input 
+                <span className="text-xs font-black text-gray-400 uppercase tracking-widest whitespace-nowrap">
+                  Custom Count:
+                </span>
+                <input
                   type="number"
                   min="1"
                   max={Math.max(1, availableQuestions.length)}
                   value={settings.numQuestions}
-                  onChange={(e) => setSettings({ ...settings, numQuestions: parseInt(e.target.value) || 1 })}
+                  onChange={(e) =>
+                    setSettings({ ...settings, numQuestions: parseInt(e.target.value) || 1 })
+                  }
                   className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
@@ -429,8 +468,12 @@ const Quiz: React.FC = () => {
               <Play className="w-5 h-5" />
               {modeHelp ? `Start ${modeHelp.label}` : 'Start Quiz'}
             </button>
-            {!modeReady && <p className="text-xs text-amber-700">Choose the course or topic this mode needs.</p>}
-            {modeReady && availableQuestions.length === 0 && <p className="text-xs text-amber-700">No questions match this mode yet.</p>}
+            {!modeReady && (
+              <p className="text-xs text-amber-700">Choose the course or topic this mode needs.</p>
+            )}
+            {modeReady && availableQuestions.length === 0 && (
+              <p className="text-xs text-amber-700">No questions match this mode yet.</p>
+            )}
           </div>
         )}
 
@@ -449,7 +492,9 @@ const Quiz: React.FC = () => {
                     <div>
                       <p className="font-medium text-gray-800">
                         {course?.courseCode || 'Mixed'} - {quiz.questionsUsed.length} questions
-                        {quiz.mode ? ` · ${QUIZ_MODES.find((mode) => mode.id === quiz.mode)?.label || quiz.mode}` : ''}
+                        {quiz.mode
+                          ? ` · ${QUIZ_MODES.find((mode) => mode.id === quiz.mode)?.label || quiz.mode}`
+                          : ''}
                       </p>
                       <p className="text-sm text-gray-500">
                         {new Date(quiz.completedAt).toLocaleDateString()}
@@ -461,13 +506,18 @@ const Quiz: React.FC = () => {
                           quiz.scorePercentage >= 70
                             ? 'text-green-600'
                             : quiz.scorePercentage >= 50
-                            ? 'text-yellow-600'
-                            : 'text-red-600'
+                              ? 'text-yellow-600'
+                              : 'text-red-600'
                         }`}
                       >
                         {quiz.scorePercentage}%
                       </div>
-                      <button onClick={() => reviewQuiz(quiz)} className="text-sm font-bold text-[#2D6A4F] bg-[#2D6A4F]/10 px-3 py-1.5 rounded-lg hover:bg-[#2D6A4F]/20 transition-colors">Review</button>
+                      <button
+                        onClick={() => reviewQuiz(quiz)}
+                        className="text-sm font-bold text-[#2D6A4F] bg-[#2D6A4F]/10 px-3 py-1.5 rounded-lg hover:bg-[#2D6A4F]/20 transition-colors"
+                      >
+                        Review
+                      </button>
                     </div>
                   </div>
                 );
@@ -490,8 +540,8 @@ const Quiz: React.FC = () => {
               results.scorePercentage >= 70
                 ? 'bg-green-100'
                 : results.scorePercentage >= 50
-                ? 'bg-yellow-100'
-                : 'bg-red-100'
+                  ? 'bg-yellow-100'
+                  : 'bg-red-100'
             }`}
           >
             {results.scorePercentage >= 70 ? (
@@ -508,15 +558,15 @@ const Quiz: React.FC = () => {
 
         {/* Score card */}
         <div className="bg-white rounded-xl p-6 border border-gray-100 shadow-sm">
-          <div className="grid grid-cols-3 gap-3 sm:gap-6 text-center">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-6 text-center">
             <div>
               <p
                 className={`text-4xl font-bold ${
                   results.scorePercentage >= 70
                     ? 'text-green-600'
                     : results.scorePercentage >= 50
-                    ? 'text-yellow-600'
-                    : 'text-red-600'
+                      ? 'text-yellow-600'
+                      : 'text-red-600'
                 }`}
               >
                 {results.scorePercentage}%
@@ -525,7 +575,8 @@ const Quiz: React.FC = () => {
             </div>
             <div>
               <p className="text-4xl font-bold text-gray-800">
-                {results.answersGiven.filter((a) => a.isCorrect).length}/{results.answersGiven.length}
+                {results.answersGiven.filter((a) => a.isCorrect).length}/
+                {results.answersGiven.length}
               </p>
               <p className="text-sm text-gray-500">Correct</p>
             </div>
@@ -538,7 +589,9 @@ const Quiz: React.FC = () => {
           </div>
         </div>
 
-        <div className={`rounded-xl p-5 border ${review.mistakes.length ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
+        <div
+          className={`rounded-xl p-5 border ${review.mistakes.length ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}
+        >
           <h3 className="font-semibold text-gray-800 mb-2 flex items-center gap-2">
             <AlertTriangle className="w-5 h-5" />
             {review.mistakes.length ? 'Weak topics' : 'Nothing to revise'}
@@ -552,15 +605,26 @@ const Quiz: React.FC = () => {
                   to={`/learn?topic=${topic.id}`}
                   className="px-3 py-1 bg-white text-yellow-900 rounded-lg text-sm font-semibold border border-yellow-200"
                 >
-                  Revise {topic.name}{topic.courseCode ? ` · ${topic.courseCode}` : ''}
+                  Revise {topic.name}
+                  {topic.courseCode ? ` · ${topic.courseCode}` : ''}
                 </Link>
               ))}
             </div>
           )}
           {review.mistakes.length > 0 && (
             <div className="flex flex-wrap gap-2">
-              <Link to="/quiz?mode=revision" className="px-3 py-1.5 bg-[#2D6A4F] text-white rounded-lg text-sm font-semibold">Revision quiz</Link>
-              <Link to="/quiz?mode=weak" className="px-3 py-1.5 bg-white text-[#2D6A4F] border border-[#2D6A4F] rounded-lg text-sm font-semibold">Weak-topic quiz</Link>
+              <Link
+                to="/quiz?mode=revision"
+                className="px-3 py-1.5 bg-[#2D6A4F] text-white rounded-lg text-sm font-semibold"
+              >
+                Revision quiz
+              </Link>
+              <Link
+                to="/quiz?mode=weak"
+                className="px-3 py-1.5 bg-white text-[#2D6A4F] border border-[#2D6A4F] rounded-lg text-sm font-semibold"
+              >
+                Weak-topic quiz
+              </Link>
             </div>
           )}
         </div>
@@ -573,10 +637,20 @@ const Quiz: React.FC = () => {
             <div className="divide-y">
               {review.mistakes.map((item, idx) => (
                 <div key={item.questionId} className="p-4 space-y-2">
-                  <p className="font-medium text-gray-800">{idx + 1}. {item.questionText}</p>
-                  <p className="text-sm text-red-700"><strong>Your answer:</strong> {item.yourAnswer}</p>
-                  <p className="text-sm text-green-800"><strong>Correct answer:</strong> {item.correctAnswer || 'Not recorded'}</p>
-                  {item.explanation && <p className="text-sm text-gray-700 bg-blue-50 rounded-lg p-3">{item.explanation}</p>}
+                  <p className="font-medium text-gray-800">
+                    {idx + 1}. {item.questionText}
+                  </p>
+                  <p className="text-sm text-red-700">
+                    <strong>Your answer:</strong> {item.yourAnswer}
+                  </p>
+                  <p className="text-sm text-green-800">
+                    <strong>Correct answer:</strong> {item.correctAnswer || 'Not recorded'}
+                  </p>
+                  {item.explanation && (
+                    <p className="text-sm text-gray-700 bg-blue-50 rounded-lg p-3">
+                      {item.explanation}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -589,15 +663,25 @@ const Quiz: React.FC = () => {
           </div>
           <div className="divide-y">
             {review.items.map((item, idx) => {
-              const question = quizQuestions.find((q) => q.id === item.questionId) || state.examQuestions.find((q) => q.id === item.questionId);
+              const question =
+                quizQuestions.find((q) => q.id === item.questionId) ||
+                state.examQuestions.find((q) => q.id === item.questionId);
               return (
                 <div key={item.questionId} className="p-4">
                   <div className="flex items-start gap-3">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${item.correct ? 'bg-green-100' : 'bg-red-100'}`}>
-                      {item.correct ? <Check className="w-4 h-4 text-green-600" /> : <X className="w-4 h-4 text-red-600" />}
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${item.correct ? 'bg-green-100' : 'bg-red-100'}`}
+                    >
+                      {item.correct ? (
+                        <Check className="w-4 h-4 text-green-600" />
+                      ) : (
+                        <X className="w-4 h-4 text-red-600" />
+                      )}
                     </div>
                     <div className="flex-1">
-                      <p className="font-medium text-gray-800">Q{idx + 1}. {item.questionText}</p>
+                      <p className="font-medium text-gray-800">
+                        Q{idx + 1}. {item.questionText}
+                      </p>
                       {question?.questionType === 'mcq' && question.options && (
                         <div className="mt-2 space-y-1">
                           {question.options.map((opt, optIdx) => (
@@ -615,10 +699,18 @@ const Quiz: React.FC = () => {
                           ))}
                         </div>
                       )}
-                      <p className="mt-2 text-sm text-gray-600"><strong>Your answer:</strong> {item.yourAnswer}</p>
-                      {!item.correct && <p className="mt-1 text-sm text-green-800"><strong>Correct answer:</strong> {item.correctAnswer || 'Not recorded'}</p>}
+                      <p className="mt-2 text-sm text-gray-600">
+                        <strong>Your answer:</strong> {item.yourAnswer}
+                      </p>
+                      {!item.correct && (
+                        <p className="mt-1 text-sm text-green-800">
+                          <strong>Correct answer:</strong> {item.correctAnswer || 'Not recorded'}
+                        </p>
+                      )}
                       {item.explanation && (
-                        <p className="mt-2 p-3 bg-blue-50 rounded-lg text-sm text-gray-700">{item.explanation}</p>
+                        <p className="mt-2 p-3 bg-blue-50 rounded-lg text-sm text-gray-700">
+                          {item.explanation}
+                        </p>
                       )}
                     </div>
                   </div>
@@ -694,9 +786,7 @@ const Quiz: React.FC = () => {
                     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
                     .join(' ')}
             </span>
-            <span className="text-sm text-gray-500">
-              {currentQuestion.marksAllocation} marks
-            </span>
+            <span className="text-sm text-gray-500">{currentQuestion.marksAllocation} marks</span>
           </div>
 
           {/* Question text */}
@@ -736,14 +826,15 @@ const Quiz: React.FC = () => {
             <textarea
               value={answers.get(currentQuestion.id)?.answer || ''}
               onChange={(e) => saveAnswer(currentQuestion.id, e.target.value)}
-              placeholder="Type your answer here..." readOnly={isReviewMode}
+              placeholder="Type your answer here..."
+              readOnly={isReviewMode}
               rows={6}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none"
             />
           )}
 
           {/* Show answer toggle */}
-                    <div className="mt-6 pt-4 border-t">
+          <div className="mt-6 pt-4 border-t">
             <button
               onClick={() => setShowAnswer(!showAnswer)}
               className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700"
@@ -753,7 +844,9 @@ const Quiz: React.FC = () => {
             </button>
             {showAnswer && (
               <div className="mt-3 p-4 bg-blue-50 rounded-lg">
-                <p className="text-gray-700">{currentQuestion.explanation || currentQuestion.modelAnswer}</p>
+                <p className="text-gray-700">
+                  {currentQuestion.explanation || currentQuestion.modelAnswer}
+                </p>
               </div>
             )}
           </div>
@@ -816,10 +909,10 @@ const Quiz: React.FC = () => {
                 currentIndex === idx
                   ? 'bg-blue-600 text-white'
                   : answer?.flagged
-                  ? 'bg-yellow-400 text-yellow-900'
-                  : answer?.answer
-                  ? 'bg-green-100 text-green-700 border border-green-300'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    ? 'bg-yellow-400 text-yellow-900'
+                    : answer?.answer
+                      ? 'bg-green-100 text-green-700 border border-green-300'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
               {idx + 1}
