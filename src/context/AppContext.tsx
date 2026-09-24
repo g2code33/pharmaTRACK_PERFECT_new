@@ -42,6 +42,7 @@ import {
   setTopicImportance,
   setTopicStatus,
 } from '../utils/learningEngine';
+import { flagAttemptedQuestions } from '../utils/questionBank';
 import { TimetableItem, LearningStatus } from '../types';
 
 type Action =
@@ -291,7 +292,8 @@ const appReducer = (state: AppState, action: Action): AppState => {
       };
 
     case 'ADD_QUIZ_HISTORY': {
-      const next = { ...state, quizHistory: [...state.quizHistory, action.payload] };
+      const examQuestions = flagAttemptedQuestions(state.examQuestions, action.payload);
+      const next = { ...state, examQuestions, quizHistory: [...state.quizHistory, action.payload] };
       return { ...next, learningRecords: applyQuiz(next, action.payload) };
     }
 

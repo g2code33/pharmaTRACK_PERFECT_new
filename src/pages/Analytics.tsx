@@ -4,6 +4,8 @@ import { useApp } from '../context/AppContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from 'recharts';
 import { format, parseISO, subDays, isAfter } from 'date-fns';
 import { BarChart3, TrendingUp, Target, Brain, BookOpen, FileQuestion, CheckCircle2, AlertTriangle, Clock, Award, Printer } from 'lucide-react';
+import QuestionAnalytics from '../components/QuestionAnalytics';
+import { bankAnalytics } from '../utils/questionBank';
 
 const Analytics: React.FC = () => {
   const { state, getCourseProgress, getLOProgress } = useApp();
@@ -136,9 +138,11 @@ const Analytics: React.FC = () => {
               <ResponsiveContainer width="50%" height={200}><PieChart><Pie data={questionTypeData} cx="50%" cy="50%" outerRadius={70} paddingAngle={3} dataKey="value">{questionTypeData.map((_, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}</Pie><Tooltip /></PieChart></ResponsiveContainer>
               <div className="space-y-2">{questionTypeData.map((item, idx) => (<div key={item.name} className="flex items-center gap-2"><div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} /><span className="text-sm font-bold text-gray-600">{item.name}: {item.value}</span></div>))}</div>
             </div>
-          ) : <div className="h-[200px] flex items-center justify-center text-gray-400">No questions generated yet</div>}
+          ) : <div className="h-[200px] flex items-center justify-center text-gray-400">No questions yet</div>}
         </div>
       </div>
+
+      <QuestionAnalytics analytics={bankAnalytics(state)} />
 
       <div className="grid lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">

@@ -261,6 +261,8 @@ export const searchAll = (state: AppState, rawQuery: string, limit = 20): Search
     const score = Math.max(
       scoreField(q.questionText, terms, 55),
       scoreField(q.modelAnswer ?? '', terms, 20),
+      scoreField(q.explanation ?? '', terms, 20),
+      scoreField(q.correctAnswer ?? '', terms, 20),
       scoreField((q.tags ?? []).join(' '), terms, 30),
     );
     push({
@@ -268,7 +270,7 @@ export const searchAll = (state: AppState, rawQuery: string, limit = 20): Search
       title: clip(q.questionText, 70),
       category: 'Question',
       link: `/questions?question=${q.id}`,
-      snippet: makeSnippet(q.questionText, terms[0]) || makeSnippet(q.modelAnswer ?? '', terms[0]),
+      snippet: makeSnippet(q.questionText, terms[0]) || makeSnippet(q.explanation ?? q.modelAnswer ?? '', terms[0]),
       score,
       courseId: course?.id ?? q.courseId,
       courseCode: course?.courseCode,

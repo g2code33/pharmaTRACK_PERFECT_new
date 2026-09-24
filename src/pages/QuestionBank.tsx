@@ -1,9 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { FileQuestion, Upload, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle } from 'lucide-react';
+import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle } from 'lucide-react';
 import { ExamQuestion } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import QuestionAnalytics from '../components/QuestionAnalytics';
+import AddQuestionModal from '../components/AddQuestionModal';
+import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYPE_LABEL } from '../utils/questionBank';
 
 const QuestionBank = () => {
   const { state, dispatch } = useApp();
@@ -14,6 +17,7 @@ const QuestionBank = () => {
   
   // Import Modal State
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
   const [jsonInput, setJsonInput] = useState('');
   const [error, setError] = useState('');
   const [selectedCourseId, setSelectedCourseId] = useState('');
@@ -21,7 +25,7 @@ const QuestionBank = () => {
 
   // Edit Modal State
   const [editingQuestion, setEditingQuestion] = useState<ExamQuestion | null>(null);
-  const [editForm, setEditForm] = useState({ questionText: '', options: ['', '', '', ''], correctOption: 0, modelAnswer: '' });
+  const [editForm, setEditForm] = useState({ questionText: '', options: ['', '', '', ''], correctOption: 0, modelAnswer: '', difficulty: 'medium' as ExamQuestion['difficulty'], semester: '', questionType: 'mcq' as ExamQuestion['questionType'], correctAnswer: '' });
 
   // Accordion State
   const [expandedCourses, setExpandedCourses] = useState<Set<string>>(new Set());
@@ -63,15 +67,27 @@ const QuestionBank = () => {
       const parsed = JSON.parse(jsonInput);
       if (!Array.isArray(parsed)) throw new Error('JSON must be an array of objects.');
       
+      const course = state.courses.find((item) => item.id === selectedCourseId);
+      const allowedTypes = ['mcq', 'short_answer', 'structured', 'essay', 'case_study'];
       const newQuestions: ExamQuestion[] = parsed.map((q: any) => {
         if (!q.question_text || !q.choices || q.correct_answer === undefined) throw new Error('Missing required fields in one or more questions.');
-        return {
-          id: uuidv4(), courseId: selectedCourseId, topicId: selectedTopicId,
-          questionText: q.question_text, questionType: q.question_type === 'multiple_choice' ? 'mcq' : q.question_type || 'mcq',
-          options: q.choices, correctOption: q.correct_answer, modelAnswer: q.explanation || '',
-          marksAllocation: 1, difficulty: 'medium', probability: 'medium', tags: ['imported'],
-          isPracticed: false, needsReview: false, isSaved: false, createdAt: new Date().toISOString(), isImported: true
-        } as unknown as ExamQuestion;
+        const rawType = q.question_type === 'multiple_choice' ? 'mcq' : q.question_type || 'mcq';
+        const difficulty = q.difficulty === 'easy' || q.difficulty === 'hard' || q.difficulty === 'medium' ? q.difficulty : 'medium';
+        return createQuestion({
+          id: uuidv4(),
+          courseId: selectedCourseId,
+          topicId: selectedTopicId,
+          semester: typeof q.semester === 'string' && q.semester.trim() ? q.semester : course?.semester,
+          questionText: q.question_text,
+          questionType: allowedTypes.includes(rawType) ? rawType : 'mcq',
+          difficulty,
+          options: q.choices,
+          correctOption: Number(q.correct_answer),
+          explanation: q.explanation || '',
+          source: { origin: 'imported', label: 'Imported JSON' },
+          tags: ['imported'],
+          isImported: true,
+        });
       });
 
       dispatch({ type: 'ADD_EXAM_QUESTIONS', payload: newQuestions });
@@ -98,12 +114,34 @@ const QuestionBank = () => {
 
   const openEditModal = (q: ExamQuestion) => {
     setEditingQuestion(q);
-    setEditForm({ questionText: q.questionText, options: q.options || ['', '', '', ''], correctOption: q.correctOption || 0, modelAnswer: q.modelAnswer || '' });
+    setEditForm({
+      questionText: q.questionText,
+      options: q.options?.length ? q.options : ['', '', '', ''],
+      correctOption: q.correctOption || 0,
+      modelAnswer: q.explanation || q.modelAnswer || '',
+      difficulty: q.difficulty,
+      semester: q.semester || state.courses.find((course) => course.id === q.courseId)?.semester || '',
+      questionType: q.questionType,
+      correctAnswer: q.correctAnswer || '',
+    });
   };
 
   const saveEdit = () => {
     if (!editingQuestion) return;
-    dispatch({ type: 'UPDATE_EXAM_QUESTION', payload: { id: editingQuestion.id, updates: { questionText: editForm.questionText, options: editForm.options, correctOption: editForm.correctOption, modelAnswer: editForm.modelAnswer } } });
+    const correctAnswer = editForm.questionType === 'mcq'
+      ? (editForm.options[editForm.correctOption] || editForm.correctAnswer)
+      : editForm.correctAnswer;
+    dispatch({ type: 'UPDATE_EXAM_QUESTION', payload: { id: editingQuestion.id, updates: {
+      questionText: editForm.questionText,
+      questionType: editForm.questionType,
+      difficulty: editForm.difficulty,
+      semester: editForm.semester,
+      options: editForm.questionType === 'mcq' ? editForm.options : editingQuestion.options,
+      correctOption: editForm.questionType === 'mcq' ? editForm.correctOption : editingQuestion.correctOption,
+      correctAnswer,
+      modelAnswer: editForm.modelAnswer,
+      explanation: editForm.modelAnswer,
+    } } });
     setEditingQuestion(null);
   };
 
@@ -116,6 +154,8 @@ const QuestionBank = () => {
   }).filter(c => c.totalQs > 0);
 
   const uncategorizedQs = state.examQuestions.filter(q => !state.courses.find(c => c.id === q.courseId));
+  const analytics = useMemo(() => bankAnalytics(state), [state]);
+  const questionStats = useMemo(() => allQuestionPerformance(state), [state.examQuestions, state.quizHistory]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-12">
@@ -124,7 +164,7 @@ const QuestionBank = () => {
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-2"><span className="px-3 py-1 bg-white/20 rounded-full text-xs font-black tracking-widest uppercase backdrop-blur-md">Question Engine</span></div>
           <h1 className="text-4xl font-black mb-3 tracking-tight">Question Bank</h1>
-          <p className="text-purple-200 text-lg max-w-xl leading-relaxed">Smart management for your imported test banks. Grouped, organized, and editable.</p>
+          <p className="text-purple-200 text-lg max-w-xl leading-relaxed">Add or import questions. Generated questions are optional — the bank works without them.</p>
         </div>
       </div>
 
@@ -133,17 +173,24 @@ const QuestionBank = () => {
            <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-bold text-lg">{state.examQuestions.length}</div>
            <div><p className="font-bold text-slate-800">Total Questions</p><p className="text-xs text-slate-500 uppercase font-semibold">Across all courses</p></div>
         </div>
-        <button onClick={() => setShowImportModal(true)} className="bg-[#2D6A4F] hover:bg-[#1B4332] text-white px-8 py-3.5 rounded-xl shadow-lg shadow-[#2D6A4F]/30 transition-all flex items-center space-x-2 font-bold hover:scale-105">
-          <Upload size={20} /><span>Import JSON Bank</span>
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setShowAddModal(true)} className="bg-white border border-slate-200 text-slate-800 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50">
+            <Plus size={18} /><span>Add question</span>
+          </button>
+          <button onClick={() => setShowImportModal(true)} className="bg-[#2D6A4F] hover:bg-[#1B4332] text-white px-8 py-3.5 rounded-xl shadow-lg shadow-[#2D6A4F]/30 transition-all flex items-center space-x-2 font-bold hover:scale-105">
+            <Upload size={20} /><span>Import JSON Bank</span>
+          </button>
+        </div>
       </div>
+
+      <QuestionAnalytics analytics={analytics} />
 
       <div className="space-y-4">
         {groupedData.length === 0 && uncategorizedQs.length === 0 ? (
           <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100">
             <FileQuestion className="mx-auto h-20 w-20 text-slate-200 mb-6" />
             <h3 className="text-2xl font-black text-slate-700 mb-2">Your Bank is Empty</h3>
-            <p className="text-slate-500 font-medium">Click "Import JSON Bank" to upload your first set of questions!</p>
+            <p className="text-slate-500 font-medium">Add a question or import a JSON bank. You do not need a generator.</p>
           </div>
         ) : (
           groupedData.map(course => (
@@ -180,8 +227,24 @@ const QuestionBank = () => {
                                    <button onClick={() => openEditModal(q)} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"><Edit2 size={16} /></button>
                                    <button onClick={() => handleDelete(q.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={16} /></button>
                                 </div>
-                                <div className="flex items-center gap-2 mb-3"><span className="bg-slate-800 text-white px-2.5 py-1 rounded text-xs font-black tracking-widest">Q{idx + 1}</span>{(q as any).isImported && <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1"><CheckCircle2 size={12} /> Imported</span>}</div>
-                                <h4 className="text-lg font-bold text-slate-800 mb-4 pr-20">{q.questionText}</h4>
+                                <div className="flex flex-wrap items-center gap-2 mb-3 pr-16">
+                                  <span className="bg-slate-800 text-white px-2.5 py-1 rounded text-xs font-black tracking-widest">Q{idx + 1}</span>
+                                  <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase">{TYPE_LABEL[q.questionType] || q.questionType}</span>
+                                  <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase">{q.difficulty}</span>
+                                  <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-[10px] font-black uppercase">{q.semester || course.semester || 'Semester'}</span>
+                                  <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1"><CheckCircle2 size={12} /> {sourceLabel(q)}</span>
+                                  {questionStats.get(q.id)?.weak && <span className="bg-red-50 text-red-600 px-2 py-1 rounded text-[10px] font-black uppercase">Needs review</span>}
+                                </div>
+                                <h4 className="text-lg font-bold text-slate-800 mb-2 pr-20">{q.questionText}</h4>
+                                <p className="text-xs font-semibold text-slate-500 mb-4">
+                                  {questionStats.get(q.id)?.attempts
+                                    ? `${questionStats.get(q.id)?.attempts} attempts · ${questionStats.get(q.id)?.accuracy}% accuracy · last ${new Date(questionStats.get(q.id)!.lastAttempted || '').toLocaleDateString()}`
+                                    : 'Not attempted yet'}
+                                  {questionStats.get(q.id)?.improvement != null && questionStats.get(q.id)?.improvement !== 0
+                                    ? ` · ${((questionStats.get(q.id)?.improvement || 0) > 0 ? '+' : '') + questionStats.get(q.id)?.improvement} pts`
+                                    : ''}
+                                </p>
+                                {q.questionType !== 'mcq' && q.correctAnswer && <p className="text-sm text-green-800 mb-3"><strong>Correct answer:</strong> {q.correctAnswer}</p>}
                                 {q.options && (
                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
                                     {q.options.map((opt, oIdx) => (
@@ -189,7 +252,17 @@ const QuestionBank = () => {
                                     ))}
                                   </div>
                                 )}
-                                {q.modelAnswer && <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 text-sm text-blue-900"><strong className="text-blue-700 uppercase text-xs tracking-widest block mb-1">Explanation</strong>{q.modelAnswer}</div>}
+                                {(q.explanation || q.modelAnswer) && <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 text-sm text-blue-900"><strong className="text-blue-700 uppercase text-xs tracking-widest block mb-1">Explanation</strong>{q.explanation || q.modelAnswer}</div>}
+                                {(questionStats.get(q.id)?.history.length || 0) > 0 && (
+                                  <details className="mt-3 text-sm text-slate-600">
+                                    <summary className="cursor-pointer font-bold text-slate-500">Attempt history</summary>
+                                    <ul className="mt-2 space-y-1">
+                                      {questionStats.get(q.id)?.history.slice().reverse().map((attempt) => (
+                                        <li key={`${attempt.quizId}-${attempt.at}`}>{new Date(attempt.at).toLocaleDateString()} · {attempt.isCorrect ? 'Correct' : 'Incorrect'}</li>
+                                      ))}
+                                    </ul>
+                                  </details>
+                                )}
                              </div>
                            ))}
                          </div>
@@ -266,12 +339,39 @@ const QuestionBank = () => {
             </div>
             
             <div className="space-y-5">
+              <div className="grid sm:grid-cols-3 gap-3">
+                <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase">Type
+                  <select value={editForm.questionType} onChange={(e) => setEditForm({...editForm, questionType: e.target.value as ExamQuestion['questionType']})} className="mt-1 w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold">
+                    <option value="mcq">MCQ</option>
+                    <option value="short_answer">Short answer</option>
+                    <option value="structured">Structured</option>
+                    <option value="essay">Essay</option>
+                    <option value="case_study">Case study</option>
+                  </select>
+                </label>
+                <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase">Difficulty
+                  <select value={editForm.difficulty} onChange={(e) => setEditForm({...editForm, difficulty: e.target.value as ExamQuestion['difficulty']})} className="mt-1 w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold">
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </label>
+                <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase">Semester
+                  <input value={editForm.semester} onChange={(e) => setEditForm({...editForm, semester: e.target.value})} className="mt-1 w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-bold" />
+                </label>
+              </div>
               <div>
                 <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase mb-2">Question Text</label>
                 <textarea value={editForm.questionText} onChange={(e) => setEditForm({...editForm, questionText: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-4 font-semibold text-slate-800 outline-none focus:border-blue-500 min-h-[100px]" />
               </div>
 
-              <div>
+              {editForm.questionType !== 'mcq' && (
+                <div>
+                  <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase mb-2">Correct answer</label>
+                  <input value={editForm.correctAnswer} onChange={(e) => setEditForm({...editForm, correctAnswer: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm font-semibold" />
+                </div>
+              )}
+              {editForm.questionType === 'mcq' && <div>
                 <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase mb-2">Options & Correct Answer</label>
                 <div className="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-100">
                    {editForm.options.map((opt, idx) => (
@@ -282,7 +382,7 @@ const QuestionBank = () => {
                       </div>
                    ))}
                 </div>
-              </div>
+              </div>}
 
               <div>
                 <label className="block text-[10px] font-black tracking-widest text-slate-500 uppercase mb-2">Explanation (Model Answer)</label>
@@ -297,6 +397,15 @@ const QuestionBank = () => {
           </div>
         </div>
       )}
+
+      <AddQuestionModal
+        open={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        onAdded={(question) => {
+          setExpandedCourses((prev) => new Set([...prev, question.courseId]));
+          if (question.topicId) setExpandedTopics((prev) => new Set([...prev, question.topicId]));
+        }}
+      />
     </div>
   );
 };

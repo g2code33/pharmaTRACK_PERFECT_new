@@ -73,37 +73,69 @@ export interface LearningObjective {
   avatar_url?: string;
 }
 
+/**
+ * Where a question came from. Manual and imported questions are complete
+ * without a generator. `ai` is reserved for a later generator and is never
+ * required for the bank to work.
+ */
+export type QuestionOrigin = 'manual' | 'imported' | 'ai' | 'pdf' | 'slide' | 'objective';
+
+export type GenerationKind = 'course' | 'topic' | 'pdf' | 'slide' | 'objective';
+
+export interface QuestionSourceRef {
+  origin: QuestionOrigin;
+  label?: string;
+  /** Set when a future generator built this question from one of those sources. */
+  from?: GenerationKind;
+  materialId?: string;
+  /** 1-based PDF page or presentation slide. */
+  page?: number;
+  objectiveId?: string;
+}
+
 export interface ExamQuestion {
   id: string;
   courseId: string;
   topicId: string;
+  /** Copied from the course at creation so analytics stay stable if the course moves. */
+  semester?: string;
   questionText: string;
   questionType: 'short_answer' | 'structured' | 'essay' | 'mcq' | 'case_study';
   marksAllocation: number;
   difficulty: 'easy' | 'medium' | 'hard';
   probability: 'high' | 'medium' | 'low';
   modelAnswer: string;
+  /** Explanation shown after a quiz. Falls back to modelAnswer. */
+  explanation?: string;
+  /** Text of the correct answer. MCQs also keep correctOption. */
+  correctAnswer?: string;
+  source?: QuestionSourceRef;
   tags: string[];
   isPracticed: boolean;
   needsReview: boolean;
   isSaved: boolean;
   createdAt: string;
   avatar_url?: string;
+  isImported?: boolean;
   // For MCQ
   options?: string[];
   correctOption?: number;
 }
 
+export type QuizMode = 'topic' | 'course' | 'weak' | 'revision' | 'mixed' | 'timed';
+
 export interface QuizHistory {
   id: string;
   studentId: string;
   courseId: string;
+  topicId?: string;
   questionsUsed: string[];
   answersGiven: { questionId: string; answer: string; isCorrect: boolean }[];
   scorePercentage: number;
   weakTopics: string[];
   timeTaken: number;
   completedAt: string;
+  mode?: QuizMode;
 }
 
 export interface StudyPlan {
