@@ -4,6 +4,7 @@
  */
 
 import * as mammoth from 'mammoth';
+import { readHead } from './fileGuard';
 
 export interface WordDocumentResult {
   text: string;
@@ -26,8 +27,12 @@ export const parseWordDocument = async (file: File): Promise<WordDocumentResult>
         const arrayBuffer = loadEvent.target?.result as ArrayBuffer;
         
         // Parse with mammoth
-        const result = await mammoth.extractRawText({ arrayBuffer });
-        const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
+        // Mammoth's browser build calls this `arrayBuffer`; its Node build calls
+        // it `buffer`. Supplying both keeps tests and browser builds on the same
+        // path without requiring a Buffer polyfill in the browser.
+        const mammothInput = { arrayBuffer, buffer: arrayBuffer as unknown as Buffer };
+        const result = await mammoth.extractRawText(mammothInput);
+        const htmlResult = await mammoth.convertToHtml(mammothInput);
         
         // Split into pages (approximate by paragraphs)
         const paragraphs = result.value.split(/\n\s*\n/).filter(p => p.trim().length > 0);
@@ -86,12 +91,9 @@ export const validateWordDocument = async (file: File): Promise<boolean> => {
     }
     
     // Try to parse first few bytes (DOCX files are ZIP files)
-    const startBytes = file.slice(0, 4);
-    const buffer = await startBytes.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    
-    // ZIP files (including .docx) start with PK (0x50 0x4B 0x03 0x04)
-    if (bytes[0] !== 0x50 || bytes[1] !== 0x4B) {
+    const bytes = await readHead(file, 4);
+    // ZIP files (including .docx) start with PK (0x50 0x4B).
+    if (!bytes || bytes[0] !== 0x50 || bytes[1] !== 0x4B) {
       return false;
     }
     

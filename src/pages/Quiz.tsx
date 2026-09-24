@@ -333,7 +333,7 @@ const Quiz: React.FC = () => {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Number of Questions
               </label>
-              <div className="grid grid-cols-5 gap-2 mb-3">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-3">
                 {[5, 10, 25, 50, 100].map((num) => (
                   <button
                     key={num}
@@ -508,7 +508,7 @@ const Quiz: React.FC = () => {
 
         {/* Score card */}
         <div className="bg-white rounded-xl p-6 border border-gray-100 shadow-sm">
-          <div className="grid grid-cols-3 gap-6 text-center">
+          <div className="grid grid-cols-3 gap-3 sm:gap-6 text-center">
             <div>
               <p
                 className={`text-4xl font-bold ${

@@ -58,7 +58,7 @@ const Analytics: React.FC = () => {
       <div className="hidden print:block mb-8 text-center border-b-2 border-gray-800 pb-4">
         <img src="/logo.png" className="h-16 mx-auto mb-4" alt="PharmaTRACK Logo" />
         <h1 className="text-3xl font-black text-gray-900 mb-2">PharmaTRACK Progress Report</h1>
-        <div className="grid grid-cols-2 gap-4 text-left text-sm mt-6 mb-2 mx-auto max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left text-sm mt-6 mb-2 mx-auto max-w-2xl bg-gray-50 p-4 rounded-lg border border-gray-200">
            <div><span className="font-bold text-gray-500">Student Name:</span> <span className="font-semibold text-gray-800">{state.student?.name || 'N/A'}</span></div>
            <div><span className="font-bold text-gray-500">University:</span> <span className="font-semibold text-gray-800">{state.student?.university || 'N/A'}</span></div>
            <div><span className="font-bold text-gray-500">Program:</span> <span className="font-semibold text-gray-800">{state.student?.program || 'N/A'}</span></div>
@@ -186,7 +186,7 @@ const Analytics: React.FC = () => {
           <span className="flex items-center gap-2"><Target className="w-5 h-5 text-[#FFB703]" /> Learning Objectives Summary</span>
           <span className="text-xs font-bold text-gray-400 group-hover:text-[#FFB703] uppercase tracking-widest transition-colors">View All ➔</span>
         </h3>
-        <div className="grid grid-cols-3 gap-4 text-center">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
           <div className="p-4 bg-green-50 rounded-lg border border-green-100"><p className="text-3xl font-black text-green-600">{masteredLOs}</p><p className="text-xs font-bold text-gray-600 uppercase tracking-widest mt-1">Mastered</p></div>
           <div className="p-4 bg-yellow-50 rounded-lg border border-yellow-100"><p className="text-3xl font-black text-yellow-600">{state.learningObjectives.filter((lo) => lo.status === 'partial').length}</p><p className="text-xs font-bold text-gray-600 uppercase tracking-widest mt-1">Partial</p></div>
           <div className="p-4 bg-red-50 rounded-lg border border-red-100"><p className="text-3xl font-black text-red-600">{state.learningObjectives.filter((lo) => lo.status === 'not_covered').length}</p><p className="text-xs font-bold text-gray-600 uppercase tracking-widest mt-1">Not Covered</p></div>

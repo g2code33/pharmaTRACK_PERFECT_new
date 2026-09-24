@@ -1,36 +1,56 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import StudyMaterials from './pages/StudyMaterials';
-import Highlights from './pages/Highlights';
-import Login from './pages/Login';
-import Courses from './pages/Courses';
-import LearningObjectives from './pages/LearningObjectives';
-import QuestionBank from './pages/QuestionBank';
-import Quiz from './pages/Quiz';
-import Planner from './pages/Planner';
-import Notes from './pages/Notes';
-import Analytics from './pages/Analytics';
-import Settings from './pages/Settings';
-import CourseDetail from './pages/CourseDetail';
-import SlideReader from './pages/SlideReader';
-import Timetable from './pages/Timetable';
-import Profile from './pages/Profile';
-import Onboarding from './pages/Onboarding';
-import AcademicArchive from './pages/AcademicArchive';
-import ArchiveViewer from './pages/ArchiveViewer';
-import StorageManager from './pages/StorageManager';
-import MaterialLibrary from './pages/MaterialLibrary';
-import AcademicSearch from './pages/Search';
-import Today from './pages/Today';
-import Clinical from './pages/Clinical';
-import AiAssistant from './pages/AiAssistant';
 import ErrorBoundary from './components/ErrorBoundary';
 import StorageNoticeBanner from './components/StorageNoticeBanner';
+// First paint: these three are what a student sees before anything else, so
+// they stay in the main chunk.
+import Dashboard from './pages/Dashboard';
+import Onboarding from './pages/Onboarding';
+import Login from './pages/Login';
+
+/**
+ * Everything else loads on demand. Startup was paying to parse the PDF reader,
+ * the presentation renderer, the archive viewer and the charts on every visit,
+ * even for a student who only opened the dashboard.
+ *
+ * Each import is written out in full rather than built from a template string:
+ * a computed `import(`./pages/${name}`)` silently resolves to nothing at build
+ * time and the pages never reach the bundle.
+ */
+const StudyMaterials = React.lazy(() => import('./pages/StudyMaterials'));
+const Highlights = React.lazy(() => import('./pages/Highlights'));
+const Courses = React.lazy(() => import('./pages/Courses'));
+const LearningObjectives = React.lazy(() => import('./pages/LearningObjectives'));
+const QuestionBank = React.lazy(() => import('./pages/QuestionBank'));
+const Quiz = React.lazy(() => import('./pages/Quiz'));
+const Planner = React.lazy(() => import('./pages/Planner'));
+const Notes = React.lazy(() => import('./pages/Notes'));
+const Analytics = React.lazy(() => import('./pages/Analytics'));
+const Settings = React.lazy(() => import('./pages/Settings'));
+const CourseDetail = React.lazy(() => import('./pages/CourseDetail'));
+const SlideReader = React.lazy(() => import('./pages/SlideReader'));
+const Timetable = React.lazy(() => import('./pages/Timetable'));
+const Profile = React.lazy(() => import('./pages/Profile'));
+const AcademicArchive = React.lazy(() => import('./pages/AcademicArchive'));
+const ArchiveViewer = React.lazy(() => import('./pages/ArchiveViewer'));
+const StorageManager = React.lazy(() => import('./pages/StorageManager'));
+const MaterialLibrary = React.lazy(() => import('./pages/MaterialLibrary'));
+const AcademicSearch = React.lazy(() => import('./pages/Search'));
+const Today = React.lazy(() => import('./pages/Today'));
+const Clinical = React.lazy(() => import('./pages/Clinical'));
+const AiAssistant = React.lazy(() => import('./pages/AiAssistant'));
+
 import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
+
+/** Shown only for the few hundred milliseconds a page chunk takes to arrive. */
+const PageLoading: React.FC = () => (
+  <div className="flex items-center justify-center py-16" data-testid="page-loading">
+    <div className="w-6 h-6 border-2 border-[#2D6A4F]/20 border-t-[#2D6A4F] rounded-full animate-spin" />
+  </div>
+);
 
 const App = () => {
   const { state } = useApp();
@@ -73,6 +93,7 @@ const App = () => {
     <ErrorBoundary>
     <AIProvider>
     <HashRouter>
+      <Suspense fallback={<PageLoading />}>
       <Routes>
         {needsOnboarding ? (
           // First run. No login wall: just ask their name/level so the app is
@@ -110,6 +131,7 @@ const App = () => {
           </Route>
         )}
       </Routes>
+      </Suspense>
     </HashRouter>
     </AIProvider>
     </ErrorBoundary>

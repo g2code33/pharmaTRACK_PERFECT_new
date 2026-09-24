@@ -29,8 +29,12 @@ export function tokenize(text: string): string[] {
 
 /** Materials considered in one sync pass. Bounds worst-case work offline. */
 const MAX_SYNC_MATERIALS = 200;
-/** Chunks kept per material; truncation is fine — retrieval only needs the hits. */
-const MAX_CHUNKS_PER_MATERIAL = 400;
+/**
+ * Chunks kept per material. Bounds the index, but generously: a 900-slide deck
+ * is a real thing in a pharmacy course, and truncating it to a few hundred
+ * passages would put most of the semester out of the AI's reach.
+ */
+const MAX_CHUNKS_PER_MATERIAL = 1_200;
 
 /**
  * Brings the index up to date for `sources`. Text is loaded lazily and only for

@@ -93,6 +93,20 @@ export function looksUnsafe(bytes: Uint8Array): string | null {
   return null;
 }
 
+/** Reads a Blob in both modern browsers and runtimes without Blob.arrayBuffer. */
+export async function readBlobArrayBuffer(blob: Blob): Promise<ArrayBuffer> {
+  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+  if (typeof FileReader !== 'undefined') {
+    return new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error ?? new Error('Could not read file bytes'));
+      reader.readAsArrayBuffer(blob);
+    });
+  }
+  throw new Error('This runtime cannot read file bytes');
+}
+
 /**
  * Reads the first bytes of a file, without demanding the whole thing.
  *

@@ -604,7 +604,7 @@ const AcademicArchive: React.FC = () => {
               <ShieldCheck className="w-3.5 h-3.5 text-green-600" />
               Deleting the local archive never affects backup files you already downloaded.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 onClick={() => { const t = deleteTarget; setDeleteTarget(null); void exportArchive(t); }}
                 className="py-2.5 border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 text-sm font-bold flex items-center justify-center gap-1.5"
@@ -794,7 +794,7 @@ const AcademicArchive: React.FC = () => {
                 {showDetails && parsed?.kind === 'semester' && parsed.staged && (
                   <details className="border border-gray-200 rounded-xl p-3 text-sm" open>
                     <summary className="cursor-pointer font-semibold text-gray-700 flex items-center gap-1.5"><Eye className="w-4 h-4" /> What's inside this backup</summary>
-                    <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-600">
                       {[
                         ['Courses', parsed.staged.snapshot.courses.length],
                         ['Topics', parsed.staged.snapshot.topics.length],
@@ -824,7 +824,7 @@ const AcademicArchive: React.FC = () => {
                   <>
                     {parsed.kind === 'semester' && parsed.staged ? (
                       collision && (collision.byId || collision.byPosition) ? (
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           <button
                             onClick={resetImport}
                             className="py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium"
@@ -847,7 +847,7 @@ const AcademicArchive: React.FC = () => {
                           </button>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           <button
                             onClick={() => setShowDetails((v) => !v)}
                             className="py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium flex items-center justify-center gap-1.5"

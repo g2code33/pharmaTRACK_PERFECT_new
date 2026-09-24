@@ -214,7 +214,7 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
                   Your new workspace will start as
                 </p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Level</label>
                     <select
