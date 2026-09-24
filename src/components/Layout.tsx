@@ -8,7 +8,7 @@ import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, Library } from 'lucide-react';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, Library, GraduationCap } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
 const navItems = [
@@ -22,6 +22,7 @@ const navItems = [
   { path: '/questions', icon: FileQuestion, label: 'Question Bank' },
   { path: '/quiz', icon: Brain, label: 'Quiz Mode' },
   { path: '/planner', icon: Calendar, label: 'Study Planner' },
+  { path: '/learn', icon: GraduationCap, label: 'Study Today' },
   { path: '/notes', icon: StickyNote, label: 'My Notes' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/timetable', icon: Calendar, label: 'Offline Timetable' },

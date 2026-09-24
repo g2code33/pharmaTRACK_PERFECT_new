@@ -81,6 +81,7 @@ const PAGES: { title: string; link: string; keywords: string }[] = [
   { title: 'Question Bank', link: '/questions', keywords: 'exam questions practice' },
   { title: 'Quiz Mode', link: '/quiz', keywords: 'test practice mcq' },
   { title: 'Study Planner', link: '/planner', keywords: 'schedule plan revision' },
+  { title: 'What Should I Study Today', link: '/learn', keywords: 'revision spaced review due weak topics learning status' },
   { title: 'My Notes', link: '/notes', keywords: 'notes writing' },
   { title: 'Analytics', link: '/analytics', keywords: 'progress stats charts performance' },
   { title: 'Offline Timetable', link: '/timetable', keywords: 'schedule classes exams' },

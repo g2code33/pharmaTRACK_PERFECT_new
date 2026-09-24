@@ -15,7 +15,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { loadArchive, loadArchivedFile, loadArchivedRecords, loadArchivedSlideText, type ArchiveRecord } from '../utils/semesterArchive';
 import { extractWordText } from '../utils/wordProcessor';
-import type { AppState, Slide } from '../types';
+import type { AppState, LearningStatus, Slide, TopicLearningRecord } from '../types';
+import { STATUS_LABEL } from '../utils/learningEngine';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import { format } from 'date-fns';
@@ -375,6 +376,24 @@ const ArchiveViewer: React.FC = () => {
                   ) : null}
                 </div>
               </Section>
+
+              {has(((snapshot.learningRecords as TopicLearningRecord[] | undefined) || []).length) && (
+                <Section title="Learning status" icon={GraduationCap}>
+                  <div className="space-y-1.5">
+                    {((snapshot.learningRecords as TopicLearningRecord[]) || []).map((row) => {
+                      const topic = (snapshot.topics || []).find((t) => t.id === row.topicId);
+                      const status = row.status as LearningStatus;
+                      return (
+                        <div key={row.topicId} data-archive-focus={`learn:${row.topicId}`} className="flex items-center gap-2 text-sm bg-gray-50 rounded-lg px-3 py-2">
+                          <span className="font-semibold text-gray-700 truncate">{topic?.topicName || row.topicId}</span>
+                          <span className="text-[10px] font-black uppercase text-gray-500">{STATUS_LABEL[status] || row.status}</span>
+                          {row.nextReviewAt && <span className="text-xs text-gray-400 ml-auto">next {row.nextReviewAt.slice(0, 10)}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Section>
+              )}
 
               {has((snapshot.learningObjectives || []).length) && (
                 <Section title="Learning Objectives" icon={ListChecks}>

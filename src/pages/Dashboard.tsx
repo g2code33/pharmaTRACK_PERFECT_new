@@ -17,6 +17,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useAI } from '../ai/state';
+import { dailyPriorities, PRIORITY_LABEL } from '../utils/learningEngine';
 
 const Dashboard: React.FC = () => {
   const {
@@ -56,6 +57,8 @@ const Dashboard: React.FC = () => {
     .sort((a, b) => a.progress - b.progress);
 
   // Weekly study plans
+  const todayStudy = dailyPriorities(state).slice(0, 4);
+
   const weekPlans = state.studyPlans
     .filter((sp) => {
       if (!sp.date) return false;
@@ -187,6 +190,30 @@ const Dashboard: React.FC = () => {
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Left column */}
         <div className="lg:col-span-2 space-y-6">
+
+          <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm" data-testid="study-today">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-gray-800">What Should I Study Today?</h2>
+              <Link to="/learn" className="text-sm font-bold text-[#2D6A4F] hover:underline flex items-center gap-1">
+                Open <ArrowRight className="w-4 h-4" />
+              </Link>
+            </div>
+            {todayStudy.length === 0 ? (
+              <p className="text-sm text-gray-500">Nothing is due. Start a topic or add an exam date.</p>
+            ) : (
+              <div className="space-y-2">
+                {todayStudy.map((item) => (
+                  <Link key={item.id} to={item.href} className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200">
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm text-gray-800 truncate">{item.title}</p>
+                      <p className="text-[11px] text-gray-500 truncate">{PRIORITY_LABEL[item.reason]} · {item.detail}</p>
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-gray-400 shrink-0" />
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
           
           <div className="bg-white rounded-2xl p-6 border border-gray-100 shadow-sm">
             <div className="flex items-center justify-between mb-4">

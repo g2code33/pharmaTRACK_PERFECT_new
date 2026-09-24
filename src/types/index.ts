@@ -193,6 +193,47 @@ export interface SavedInsight {
   timestamp: string;
 }
 
+/**
+ * Where a topic is in the learning loop. Stored on the device with the
+ * semester — not derived from a provider.
+ */
+export type LearningStatus = 'not_started' | 'learning' | 'reviewed' | 'mastered' | 'needs_revision';
+
+export interface RevisionEvent {
+  id: string;
+  at: string;
+  kind: 'studied' | 'reviewed' | 'quiz' | 'status';
+  status?: LearningStatus;
+  /** Quiz accuracy for this topic, 0–100, when the event came from a quiz. */
+  scorePercentage?: number;
+  confidence?: number;
+  missed?: number;
+  quizId?: string;
+  note?: string;
+}
+
+/** One row per topic. Absence means Not Started. */
+export interface TopicLearningRecord {
+  topicId: string;
+  status: LearningStatus;
+  /** 1–5. 3 is neutral. */
+  confidence: number;
+  /** 1–5. 3 is normal. Higher topics sort earlier when other factors tie. */
+  importance: number;
+  lastStudiedAt?: string;
+  lastReviewedAt?: string;
+  nextReviewAt?: string;
+  /** Index into the interval list that produced nextReviewAt. -1 if none yet. */
+  intervalIndex: number;
+  history: RevisionEvent[];
+  updatedAt: string;
+}
+
+/** Spaced-revision gaps, in days. Default 1, 3, 7, 14, 30. */
+export interface LearningSettings {
+  intervals: number[];
+}
+
 export interface AppState {
   isLoggedIn: boolean;
   student: Student | null;
@@ -209,6 +250,9 @@ export interface AppState {
   chatHistory: ChatMessageStore[];
   highlights: Highlight[];
   savedInsights: SavedInsight[];
+  /** Local learning loop. Not provider data. Old saves simply omit these. */
+  learningRecords?: TopicLearningRecord[];
+  learningSettings?: LearningSettings;
   openAIKey: string;
   timetables: { class: TimetableItem[]; quiz: TimetableItem[]; exam: TimetableItem[]; };
   timetablePdf: string | null;

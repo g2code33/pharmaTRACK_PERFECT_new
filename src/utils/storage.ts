@@ -1,4 +1,5 @@
 import { AppState, Course, Topic, Slide, LearningObjective, ExamQuestion, QuizHistory, StudyPlan, Note, ExamDate, Activity } from '../types';
+import { DEFAULT_LEARNING_SETTINGS } from './learningEngine';
 import * as idb from 'idb-keyval';
 import {
   allowWorkspacePersist,
@@ -52,6 +53,8 @@ export const initialState: AppState = {
   chatHistory: [],
   highlights: [],
   savedInsights: [],
+  learningRecords: [],
+  learningSettings: DEFAULT_LEARNING_SETTINGS,
   openAIKey: '',
   timetables: { class: [], quiz: [], exam: [] },
   timetablePdf: null,

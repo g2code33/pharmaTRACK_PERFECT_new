@@ -4,7 +4,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-import { Topic, Slide } from '../types';
+import { Topic, Slide, LearningStatus } from '../types';
+import { LEARNING_STATUSES, STATUS_LABEL, topicProgress } from '../utils/learningEngine';
 import { saveFile, loadFile, deleteFile, loadSlideText, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
 import { materialMetaFromUpload } from '../utils/materialKind';
@@ -422,7 +423,8 @@ const CourseDetail: React.FC = () => {
             const slides = getSlidesForTopic(topic.id);
             const isExpanded = expandedTopics.has(topic.id);
             const completedSlides = slides.filter((s) => s.status === 'completed').length;
-            const topicProgress = slides.length > 0 ? Math.round((completedSlides / slides.length) * 100) : 0;
+            const topicProgressPct = slides.length > 0 ? Math.round((completedSlides / slides.length) * 100) : 0;
+            const learning = topicProgress(state, topic.id);
 
             return (
               <div key={topic.id} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -435,6 +437,9 @@ const CourseDetail: React.FC = () => {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <h3 className="font-semibold text-gray-800">{topic.topicName}</h3>
+                      {learning && (
+                        <span className="text-[10px] font-black uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">{STATUS_LABEL[learning.status]}</span>
+                      )}
                       <span className="text-xs text-gray-400">
                         {slides.length} {slides.length === 1 ? 'slide' : 'slides'}
                       </span>
@@ -443,16 +448,27 @@ const CourseDetail: React.FC = () => {
                       <div className="flex items-center gap-2 mt-1">
                         <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden max-w-[200px]">
                           <div
-                            className={`h-full ${getProgressColor(topicProgress)}`}
-                            style={{ width: `${topicProgress}%` }}
+                            className={`h-full ${getProgressColor(topicProgressPct)}`}
+                            style={{ width: `${topicProgressPct}%` }}
                           />
                         </div>
-                        <span className="text-xs text-gray-500">{topicProgress}%</span>
+                        <span className="text-xs text-gray-500">{topicProgressPct}%</span>
                       </div>
                     )}
                   </div>
 
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <select
+                      aria-label={`Status for ${topic.topicName}`}
+                      value={learning?.status ?? 'not_started'}
+                      onChange={(e) => dispatch({ type: 'SET_TOPIC_STATUS', payload: { topicId: topic.id, status: e.target.value as LearningStatus } })}
+                      className="text-[11px] font-bold border border-gray-200 rounded-lg px-1.5 py-1 text-gray-600"
+                    >
+                      {LEARNING_STATUSES.map((status) => (
+                        <option key={status} value={status}>{STATUS_LABEL[status]}</option>
+                      ))}
+                    </select>
+                    <Link to={`/learn?topic=${topic.id}`} className="text-[11px] font-bold text-[#2D6A4F] hover:underline">Progress</Link>
                     {slides.length > 0 && (
                       <Link
                         to={`/read/${topic.id}`}

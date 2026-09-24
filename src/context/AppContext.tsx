@@ -32,7 +32,17 @@ import { supabase, purgeStoredSession } from '../utils/supabase';
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
-import { TimetableItem } from '../types';
+import {
+  applyQuiz,
+  markReviewed,
+  markStudied,
+  recordsOf,
+  setIntervals,
+  setTopicConfidence,
+  setTopicImportance,
+  setTopicStatus,
+} from '../utils/learningEngine';
+import { TimetableItem, LearningStatus } from '../types';
 
 type Action =
   | { type: 'SET_STUDENT'; payload: Student }
@@ -71,6 +81,12 @@ type Action =
   | { type: 'DELETE_HIGHLIGHT'; payload: string }
   | { type: 'SAVE_INSIGHT'; payload: Omit<SavedInsight, 'id' | 'timestamp'> }
   | { type: 'DELETE_INSIGHT'; payload: string }
+  | { type: 'SET_TOPIC_STATUS'; payload: { topicId: string; status: LearningStatus } }
+  | { type: 'SET_TOPIC_CONFIDENCE'; payload: { topicId: string; confidence: number } }
+  | { type: 'SET_TOPIC_IMPORTANCE'; payload: { topicId: string; importance: number } }
+  | { type: 'MARK_TOPIC_STUDIED'; payload: { topicId: string } }
+  | { type: 'MARK_TOPIC_REVIEWED'; payload: { topicId: string } }
+  | { type: 'SET_LEARNING_INTERVALS'; payload: number[] }
   | { type: 'SET_OPENAI_KEY'; payload: string }
   | { type: 'ADD_TIMETABLE_ITEMS'; payload: { items: TimetableItem[], category: 'class' | 'quiz' | 'exam' } }
   | { type: 'DELETE_TIMETABLE_ITEM'; payload: { id: string, category: 'class' | 'quiz' | 'exam' } }
@@ -88,7 +104,12 @@ const appReducer = (state: AppState, action: Action): AppState => {
       // (e.g. showing "End Session" to a signed-out user). The real session
       // lives in the Supabase token; checkSession() sets this flag from that,
       // and that is the only thing allowed to turn it on.
-      return { ...action.payload, isLoggedIn: false };
+      return {
+        ...action.payload,
+        isLoggedIn: false,
+        learningRecords: recordsOf(action.payload),
+        learningSettings: setIntervals(action.payload.learningSettings?.intervals),
+      };
 
     case 'SET_LOGGED_IN':
       return { ...state, isLoggedIn: action.payload };
@@ -172,12 +193,15 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
-    case 'DELETE_COURSE':
+    case 'DELETE_COURSE': {
+      const gone = new Set(state.topics.filter((t) => t.courseId === action.payload).map((t) => t.id));
       return {
         ...state,
         courses: state.courses.filter((c) => c.id !== action.payload),
         topics: state.topics.filter((t) => t.courseId !== action.payload),
+        learningRecords: recordsOf(state).filter((r) => !gone.has(r.topicId)),
       };
+    }
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -194,6 +218,7 @@ const appReducer = (state: AppState, action: Action): AppState => {
       return {
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
+        learningRecords: recordsOf(state).filter((r) => r.topicId !== action.payload),
       };
 
     case 'REORDER_TOPICS':
@@ -265,8 +290,31 @@ const appReducer = (state: AppState, action: Action): AppState => {
         examQuestions: state.examQuestions.filter((eq) => eq.id !== action.payload),
       };
 
-    case 'ADD_QUIZ_HISTORY':
-      return { ...state, quizHistory: [...state.quizHistory, action.payload] };
+    case 'ADD_QUIZ_HISTORY': {
+      const next = { ...state, quizHistory: [...state.quizHistory, action.payload] };
+      return { ...next, learningRecords: applyQuiz(next, action.payload) };
+    }
+
+    case 'SET_TOPIC_STATUS':
+      return { ...state, learningRecords: setTopicStatus(state, action.payload.topicId, action.payload.status) };
+
+    case 'SET_TOPIC_CONFIDENCE':
+      return { ...state, learningRecords: setTopicConfidence(state, action.payload.topicId, action.payload.confidence) };
+
+    case 'SET_TOPIC_IMPORTANCE':
+      return { ...state, learningRecords: setTopicImportance(state, action.payload.topicId, action.payload.importance) };
+
+    case 'MARK_TOPIC_STUDIED': {
+      const learningRecords = markStudied(state, action.payload.topicId);
+      if (learningRecords === recordsOf(state)) return state;
+      return { ...state, learningRecords };
+    }
+
+    case 'MARK_TOPIC_REVIEWED':
+      return { ...state, learningRecords: markReviewed(state, action.payload.topicId) };
+
+    case 'SET_LEARNING_INTERVALS':
+      return { ...state, learningSettings: setIntervals(action.payload) };
 
     case 'ADD_STUDY_PLAN':
       return { ...state, studyPlans: [...state.studyPlans, action.payload] };
@@ -365,6 +413,8 @@ const initialState: AppState = {
   chatHistory: [],
   highlights: [],
   savedInsights: [],
+  learningRecords: [],
+  learningSettings: { intervals: [1, 3, 7, 14, 30] },
   openAIKey: '',
   timetables: { class: [], quiz: [], exam: [] },
   timetablePdf: null,
@@ -612,6 +662,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.studyPlans.length > 0 ||
         state.examDates.length > 0 ||
         state.learningObjectives.length > 0 ||
+        (state.learningRecords?.length ?? 0) > 0 ||
         state.activities.length > 0 ||
         state.timetablePdf !== null ||
         state.timetables.class.length > 0 ||

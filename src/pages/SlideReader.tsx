@@ -347,6 +347,12 @@ const SlideReader: React.FC = () => {
     setSelection('');
   }, [currentMaterial?.id]);
 
+  // Opening the reader is study. Once per day; does not advance the revision interval.
+  useEffect(() => {
+    if (!topicId) return;
+    dispatch({ type: 'MARK_TOPIC_STUDIED', payload: { topicId } });
+  }, [topicId, dispatch]);
+
   // Recently opened. Does not touch the file, so a failed render still counts.
   useEffect(() => {
     const id = currentMaterial?.id;
