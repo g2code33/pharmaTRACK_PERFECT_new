@@ -32,6 +32,7 @@ const TYPES: { id: string; label: string }[] = [
   { id: 'highlight', label: 'Highlights' },
   { id: 'topic', label: 'Topics' },
   { id: 'course', label: 'Courses' },
+  { id: 'case', label: 'Clinical cases' },
 ];
 
 const AcademicSearch: React.FC = () => {
@@ -160,7 +161,7 @@ const AcademicSearch: React.FC = () => {
               <Search className="w-6 h-6 text-[#FFB703]" /> Academic Search
             </h1>
             <p className="text-white/80 text-sm mt-1 max-w-xl">
-              Courses, topics, notes, PDFs, PowerPoint, Word, OCR text, slides, objectives, questions, quizzes, insights and chats — current semester and archives. No AI provider is used.
+              Courses, topics, notes, PDFs, PowerPoint, Word, OCR text, slides, objectives, questions, clinical cases, quizzes, insights and chats — current semester and archives. No AI provider is used.
             </p>
           </div>
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white/10 rounded-full text-xs font-bold">

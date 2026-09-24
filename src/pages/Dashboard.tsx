@@ -69,7 +69,10 @@ const Dashboard: React.FC = () => {
             <p className="text-xs font-black uppercase tracking-widest text-[#2D6A4F]">Today</p>
             <h2 className="text-xl sm:text-2xl font-black text-gray-900">What should I do now?</h2>
           </div>
-          <Link to="/learn" className="text-sm font-bold text-[#2D6A4F] shrink-0">Spaced revision</Link>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <Link to="/learn" className="text-sm font-bold text-[#2D6A4F]">Spaced revision</Link>
+            <Link to="/clinical" className="text-sm font-bold text-[#2D6A4F]">Clinical cases</Link>
+          </div>
         </div>
         {brief.now.length === 0 ? (
           <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-600">

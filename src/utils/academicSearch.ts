@@ -20,7 +20,7 @@ export interface AcademicSearchFilters {
   topicId?: string;
   /**
    * pdf | pptx | docx | image | text | ocr | note | question | quiz |
-   * insight | chat | objective | highlight | topic | course
+   * insight | chat | objective | highlight | topic | course | case
    */
   materialType?: string;
   dateFrom?: string;
@@ -58,6 +58,7 @@ function matchesType(result: SearchResult, type: string): boolean {
   if (type === 'highlight') return result.category === 'Highlight';
   if (type === 'topic') return result.category === 'Topic';
   if (type === 'course') return result.category === 'Course';
+  if (type === 'case') return result.category === 'Case' || result.materialType === 'case';
   return result.materialType === type;
 }
 

@@ -266,6 +266,122 @@ export interface LearningSettings {
   intervals: number[];
 }
 
+/**
+ * Clinical learning is a study exercise. Every case is fictional.
+ * `fictional` cannot be turned off — the mode must not store a real patient.
+ */
+export type ClinicalStepId =
+  | 'what'
+  | 'where'
+  | 'why'
+  | 'how'
+  | 'assess'
+  | 'therapy'
+  | 'monitoring'
+  | 'counseling';
+
+export type PharmacyTopicId =
+  | 'mechanism'
+  | 'indications'
+  | 'contraindications'
+  | 'adverse-effects'
+  | 'interactions'
+  | 'monitoring'
+  | 'counseling'
+  | 'dose-calculation'
+  | 'therapeutic-reasoning'
+  | 'differential';
+
+export interface ClinicalMedicine {
+  name: string;
+  detail?: string;
+}
+
+export interface ClinicalStep {
+  id: ClinicalStepId;
+  explanation: string;
+}
+
+export interface PharmacyPoint {
+  id: PharmacyTopicId;
+  text: string;
+}
+
+export interface ClinicalQuestion {
+  id: string;
+  prompt: string;
+  /** Short phrases separated by | . Used for offline review. Optional. */
+  answerKey?: string;
+  modelAnswer: string;
+  topic?: PharmacyTopicId;
+  step?: ClinicalStepId;
+}
+
+/** Worksheet arithmetic only. Never a dose for a real person. */
+export interface DoseExercise {
+  id: string;
+  prompt: string;
+  working: string;
+  expected: number;
+  unit: string;
+  tolerance?: number;
+}
+
+export interface ClinicalCase {
+  id: string;
+  title: string;
+  fictional: true;
+  origin: 'builtin' | 'manual';
+  courseId?: string;
+  topicId?: string;
+  semester?: string;
+  presentation: string;
+  symptoms: string;
+  history: string;
+  findings: string;
+  labs: string;
+  medicines: ClinicalMedicine[];
+  problems: string[];
+  steps: ClinicalStep[];
+  pharmacy: PharmacyPoint[];
+  questions: ClinicalQuestion[];
+  doseExercise?: DoseExercise;
+  safetyNote?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ClinicalCaseDraft {
+  id?: string;
+  title: string;
+  presentation: string;
+  symptoms?: string;
+  history?: string;
+  findings?: string;
+  labs?: string;
+  medicines?: ClinicalMedicine[];
+  problems?: string[];
+  steps?: ClinicalStep[];
+  pharmacy?: PharmacyPoint[];
+  questions?: ClinicalQuestion[];
+  doseExercise?: DoseExercise;
+  courseId?: string;
+  topicId?: string;
+  semester?: string;
+  safetyNote?: string;
+  createdAt?: string;
+}
+
+export interface ClinicalAttempt {
+  id: string;
+  caseId: string;
+  questionId: string;
+  answer: string;
+  matched: boolean | null;
+  refused: boolean;
+  at: string;
+}
+
 export interface AppState {
   isLoggedIn: boolean;
   student: Student | null;
@@ -285,6 +401,9 @@ export interface AppState {
   /** Local learning loop. Not provider data. Old saves simply omit these. */
   learningRecords?: TopicLearningRecord[];
   learningSettings?: LearningSettings;
+  /** Fictional study cases. Not provider data. Old saves simply omit these. */
+  clinicalCases?: ClinicalCase[];
+  clinicalAttempts?: ClinicalAttempt[];
   openAIKey: string;
   timetables: { class: TimetableItem[]; quiz: TimetableItem[]; exam: TimetableItem[]; };
   timetablePdf: string | null;

@@ -25,6 +25,7 @@ import StorageManager from './pages/StorageManager';
 import MaterialLibrary from './pages/MaterialLibrary';
 import AcademicSearch from './pages/Search';
 import Today from './pages/Today';
+import Clinical from './pages/Clinical';
 import AiAssistant from './pages/AiAssistant';
 import ErrorBoundary from './components/ErrorBoundary';
 import StorageNoticeBanner from './components/StorageNoticeBanner';
@@ -93,6 +94,7 @@ const App = () => {
             <Route path="/quiz" element={<Quiz />} />
             <Route path="/planner" element={<Planner />} />
             <Route path="/learn" element={<Today />} />
+            <Route path="/clinical" element={<Clinical />} />
             <Route path="/notes" element={<Notes />} />
             <Route path="/analytics" element={<Analytics />} />
             <Route path="/settings" element={<Settings />} />

@@ -18,6 +18,7 @@
 import type { AppState, Slide } from '../types';
 import { inferMaterialKind, isPresentationSlide } from './materialKind';
 import { searchDeep } from './searchIndex';
+import { caseSearchText, visibleCases } from './clinicalLearning';
 
 export type SearchCategory =
   | 'Course'
@@ -31,7 +32,8 @@ export type SearchCategory =
   | 'In document'
   | 'Quiz'
   | 'Insight'
-  | 'Chat';
+  | 'Chat'
+  | 'Case';
 
 export type SearchScope = 'current' | 'archive';
 
@@ -82,6 +84,7 @@ const PAGES: { title: string; link: string; keywords: string }[] = [
   { title: 'Quiz Mode', link: '/quiz', keywords: 'test practice mcq' },
   { title: 'Study Planner', link: '/planner', keywords: 'schedule plan revision' },
   { title: 'What Should I Study Today', link: '/learn', keywords: 'revision spaced review due weak topics learning status' },
+  { title: 'Clinical Learning', link: '/clinical', keywords: 'clinical case fictional pharmacy mechanism counseling monitoring dose' },
   { title: 'My Notes', link: '/notes', keywords: 'notes writing' },
   { title: 'Analytics', link: '/analytics', keywords: 'progress stats charts performance' },
   { title: 'Offline Timetable', link: '/timetable', keywords: 'schedule classes exams' },
@@ -280,6 +283,28 @@ export const searchAll = (state: AppState, rawQuery: string, limit = 20): Search
       materialType: 'question',
       action: 'Open Question',
       date: q.createdAt || undefined,
+    });
+  }
+
+  for (const item of visibleCases(state)) {
+    const { topic, course } = place(item.topicId, item.courseId);
+    const text = caseSearchText(item);
+    const score = Math.max(scoreField(item.title, terms, 60), scoreField(text, terms, 24));
+    push({
+      id: `case-${item.id}`,
+      title: item.title,
+      category: 'Case',
+      link: `/clinical?case=${encodeURIComponent(item.id)}`,
+      snippet: makeSnippet(item.presentation, terms[0]) || makeSnippet(text, terms[0]),
+      score,
+      courseId: course?.id ?? item.courseId,
+      courseCode: course?.courseCode,
+      courseName: course?.courseName,
+      topicId: topic?.id ?? item.topicId,
+      topicName: topic?.topicName,
+      materialType: 'case',
+      action: 'Open case',
+      date: item.createdAt || undefined,
     });
   }
 

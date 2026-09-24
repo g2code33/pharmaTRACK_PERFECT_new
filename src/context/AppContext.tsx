@@ -16,6 +16,8 @@ import {
   Highlight,
   SavedInsight,
   ChatMessageStore,
+  ClinicalAttempt,
+  ClinicalCase,
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
 import { ensureSchema } from '../utils/storageManager';
@@ -43,6 +45,7 @@ import {
   setTopicStatus,
 } from '../utils/learningEngine';
 import { flagAttemptedQuestions } from '../utils/questionBank';
+import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
 type Action =
@@ -88,6 +91,10 @@ type Action =
   | { type: 'MARK_TOPIC_STUDIED'; payload: { topicId: string } }
   | { type: 'MARK_TOPIC_REVIEWED'; payload: { topicId: string } }
   | { type: 'SET_LEARNING_INTERVALS'; payload: number[] }
+  | { type: 'ADD_CLINICAL_CASE'; payload: ClinicalCase }
+  | { type: 'UPDATE_CLINICAL_CASE'; payload: { id: string; updates: Partial<ClinicalCase> } }
+  | { type: 'DELETE_CLINICAL_CASE'; payload: string }
+  | { type: 'ADD_CLINICAL_ATTEMPT'; payload: ClinicalAttempt }
   | { type: 'SET_OPENAI_KEY'; payload: string }
   | { type: 'ADD_TIMETABLE_ITEMS'; payload: { items: TimetableItem[], category: 'class' | 'quiz' | 'exam' } }
   | { type: 'UPDATE_TIMETABLE_ITEM'; payload: { id: string; category: 'class' | 'quiz' | 'exam'; updates: Partial<TimetableItem> } }
@@ -111,6 +118,8 @@ const appReducer = (state: AppState, action: Action): AppState => {
         isLoggedIn: false,
         learningRecords: recordsOf(action.payload),
         learningSettings: setIntervals(action.payload.learningSettings?.intervals),
+        clinicalCases: Array.isArray(action.payload.clinicalCases) ? action.payload.clinicalCases : [],
+        clinicalAttempts: Array.isArray(action.payload.clinicalAttempts) ? action.payload.clinicalAttempts : [],
       };
 
     case 'SET_LOGGED_IN':
@@ -319,6 +328,35 @@ const appReducer = (state: AppState, action: Action): AppState => {
     case 'SET_LEARNING_INTERVALS':
       return { ...state, learningSettings: setIntervals(action.payload) };
 
+    case 'ADD_CLINICAL_CASE': {
+      const item = { ...action.payload, fictional: true as const, origin: 'manual' as const };
+      if (isBuiltinCase(item.id) || !caseIsStudyMaterial(item)) return state;
+      return { ...state, clinicalCases: [...(state.clinicalCases ?? []), item] };
+    }
+
+    case 'UPDATE_CLINICAL_CASE': {
+      if (isBuiltinCase(action.payload.id)) return state;
+      const current = (state.clinicalCases ?? []).find((item) => item.id === action.payload.id);
+      if (!current) return state;
+      const next = { ...current, ...action.payload.updates, fictional: true as const, origin: 'manual' as const, updatedAt: new Date().toISOString() };
+      if (!caseIsStudyMaterial(next)) return state;
+      return {
+        ...state,
+        clinicalCases: (state.clinicalCases ?? []).map((item) => item.id === next.id ? next : item),
+      };
+    }
+
+    case 'DELETE_CLINICAL_CASE':
+      if (isBuiltinCase(action.payload)) return state;
+      return {
+        ...state,
+        clinicalCases: (state.clinicalCases ?? []).filter((item) => item.id !== action.payload),
+        clinicalAttempts: (state.clinicalAttempts ?? []).filter((item) => item.caseId !== action.payload),
+      };
+
+    case 'ADD_CLINICAL_ATTEMPT':
+      return { ...state, clinicalAttempts: [...(state.clinicalAttempts ?? []), action.payload] };
+
     case 'ADD_STUDY_PLAN':
       return { ...state, studyPlans: [...state.studyPlans, action.payload] };
 
@@ -428,6 +466,8 @@ const initialState: AppState = {
   savedInsights: [],
   learningRecords: [],
   learningSettings: { intervals: [1, 3, 7, 14, 30] },
+  clinicalCases: [],
+  clinicalAttempts: [],
   openAIKey: '',
   timetables: { class: [], quiz: [], exam: [] },
   timetablePdf: null,
@@ -676,6 +716,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.examDates.length > 0 ||
         state.learningObjectives.length > 0 ||
         (state.learningRecords?.length ?? 0) > 0 ||
+        (state.clinicalCases?.length ?? 0) > 0 ||
+        (state.clinicalAttempts?.length ?? 0) > 0 ||
         state.activities.length > 0 ||
         state.timetablePdf !== null ||
         state.timetables.class.length > 0 ||

@@ -287,7 +287,8 @@ export const buildSnapshot = (state: AppState): SemesterSnapshot => {
 const KNOWN_STATE_KEYS = new Set([
   'isLoggedIn', 'student', 'courses', 'topics', 'slides', 'learningObjectives',
   'examQuestions', 'quizHistory', 'studyPlans', 'notes', 'examDates', 'activities',
-  'chatHistory', 'highlights', 'savedInsights', 'learningRecords', 'learningSettings', 'openAIKey', 'timetables', 'timetablePdf',
+  'chatHistory', 'highlights', 'savedInsights', 'learningRecords', 'learningSettings',
+  'clinicalCases', 'clinicalAttempts', 'openAIKey', 'timetables', 'timetablePdf',
 ]);
 
 /** Does this workspace hold anything a user would care to keep? */

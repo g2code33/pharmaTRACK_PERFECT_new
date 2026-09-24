@@ -405,7 +405,7 @@ describe('complete semester → fresh workspace', () => {
 describe('acceptance: complete semester', () => {
   it('archives every semester record, verifies, then starts a clean workspace', async () => {
     const state = makeState() as AppState & { clinicalCases: { id: string; title: string }[] };
-    state.clinicalCases = [{ id: 'cc1', title: 'Digoxin toxicity case' }];
+    state.clinicalCases = [{ id: 'cc1', title: 'Digoxin toxicity case' } as unknown as (typeof state.clinicalCases)[number]];
     state.slides = [
       ...state.slides,
       {

@@ -270,7 +270,8 @@ export type AIContextKind =
   | 'study-plan'
   | 'highlights'
   | 'retrieval'
-  | 'history';
+  | 'history'
+  | 'clinical-case';
 
 export interface AIContextSource {
   kind: AIContextKind;

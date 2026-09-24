@@ -68,6 +68,12 @@ export interface AITaskDefinition {
   prompt?: (ctx?: { material?: string; page?: number; slide?: number }) => string;
 }
 
+/** Future clinical generation must name its sources and must not prescribe. */
+export const CLINICAL_SOURCE_RULE =
+  'Name the labelled PharmaTRACK source you used. Do not give a dose or a treatment plan for a real patient.';
+
+const withClinicalRule = (instruction: string) => `${instruction} ${CLINICAL_SOURCE_RULE}`;
+
 const asMCQ = (count = 5) =>
   `Write ${count} multiple-choice questions from the material above. For each: the stem, options A–D, the correct ` +
   `answer, and a one-sentence rationale. Use only content present in the material.`;
@@ -157,13 +163,15 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
   'clinical-case': {
     id: 'clinical-case',
     label: 'Clinical case',
-    hint: 'A patient-based question using this material',
+    hint: 'A fictional study case from this material',
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'practice',
     structured: true,
-    instruction:
-      'Write one short clinical case that requires the material above, then ask 3 questions about it with model answers.',
+    instruction: withClinicalRule(
+      'Write one short fictional study case from the labelled material, then 3 practice questions with model answers. ' +
+      'Mark it as a study case, not a real patient. Do not tell the student to treat anyone from the reply.',
+    ),
   },
   'mark-answer': {
     id: 'mark-answer',
@@ -266,7 +274,7 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction: 'State the mechanism of action precisely, receptor/enzyme/target included, at molecular level.',
+    instruction: withClinicalRule('State the mechanism of action precisely, receptor/enzyme/target included, at molecular level.'),
   },
   indications: {
     id: 'indications',
@@ -275,7 +283,7 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction: 'List indications with a one-line clinical justification for each, first-line before second-line.',
+    instruction: withClinicalRule('List indications a student should know, with a one-line teaching justification for each. Do not choose a medicine for a real person.'),
   },
   contraindications: {
     id: 'contraindications',
@@ -284,7 +292,7 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction: 'List absolute and relative contraindications, with the reason each one matters.',
+    instruction: withClinicalRule('List absolute and relative contraindications a student should know, with the reason each one matters. Do not clear a real person to take the medicine.'),
   },
   'adverse-effects': {
     id: 'adverse-effects',
@@ -293,8 +301,9 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction:
+    instruction: withClinicalRule(
       'List adverse effects by frequency (common → rare), and explain the mechanism behind the important ones.',
+    ),
   },
   interactions: {
     id: 'interactions',
@@ -303,7 +312,9 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction: 'List clinically significant interactions with mechanism, severity and what to do about each.',
+    instruction: withClinicalRule(
+      'List interactions that matter in a teaching discussion, with mechanism and severity. Say what a student should raise with a prescriber. Do not turn this into instructions for a real patient.',
+    ),
   },
   monitoring: {
     id: 'monitoring',
@@ -312,7 +323,9 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction: 'List the monitoring parameters, with target values and the frequency a pharmacist would check.',
+    instruction: withClinicalRule(
+      'List monitoring parameters a student should know, including why each one matters. Do not set a monitoring plan for a real patient.',
+    ),
   },
   counselling: {
     id: 'counselling',
@@ -321,8 +334,9 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     profile: PROFILE_IDS.clinical,
     capabilities: ['text_generation'],
     group: 'pharmacy',
-    instruction:
-      'Write patient counselling points in plain language: how to take it, what to expect, what to report, when to come back.',
+    instruction: withClinicalRule(
+      'Write counseling points a student can rehearse, in plain language. These are class points, not instructions to give a real patient tonight.',
+    ),
   },
   'clinical-reasoning': {
     id: 'clinical-reasoning',
@@ -332,9 +346,10 @@ export const AI_TASKS: Record<AITaskId, AITaskDefinition> = {
     capabilities: ['text_generation'],
     group: 'pharmacy',
     structured: true,
-    instruction:
-      'Reason clinically step by step: presenting problem → relevant pharmacology → therapeutic options → risks → ' +
-      'monitoring plan. Show the reasoning, not just the answer.',
+    instruction: withClinicalRule(
+      'Work this as a fictional study case, not a consultation. Follow What, Where, Why, How, what should be assessed, ' +
+      'therapeutic considerations, monitoring, then counseling. Show the reasoning. Use only the labelled context blocks.',
+    ),
   },
   chat: {
     id: 'chat',

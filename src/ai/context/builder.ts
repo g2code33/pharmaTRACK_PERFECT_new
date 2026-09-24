@@ -226,6 +226,7 @@ export function applyBudget(bundle: AIContextBundle, budgetTokens: number, warni
         return 0;
       case 'page':
       case 'slide':
+      case 'clinical-case':
         return 1;
       case 'material':
         return 2;
