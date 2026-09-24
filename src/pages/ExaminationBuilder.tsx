@@ -11,7 +11,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import type { AssessmentType, ExamBuilderDraft } from '../examination/types';
+import type { AssessmentType, ExamBuilderDraft, ExamSecuritySettings } from '../examination/types';
 import {
   defaultExamBuilderDraft,
   ExaminationRepository,
@@ -21,6 +21,18 @@ import { parseExamQuestionJson, reorderQuestionIds } from '../examination/builde
 import { createPharmaExamPackage, generateExamSigningKeyPair } from '../examination/package';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
+const violationTypes = [
+  'FOCUS_LOST',
+  'ATTEMPTED_EXIT',
+  'ATTEMPTED_NAVIGATION',
+  'ATTEMPTED_PRINT',
+  'ATTEMPTED_COPY_PASTE',
+  'EXTERNAL_LINK_ATTEMPT',
+  'DEVELOPER_TOOL_ATTEMPT',
+  'NETWORK_LOSS',
+  'DEVICE_DISCONNECT',
+  'SERVER_DISCONNECT',
+] as const;
 
 const ExaminationBuilder: React.FC = () => {
   const { state, dispatch } = useApp();
@@ -168,6 +180,12 @@ const ExaminationBuilder: React.FC = () => {
               className="px-4 py-2 rounded-lg bg-emerald-400 text-slate-950 font-black text-sm"
             >
               Open Kiosk
+            </Link>
+            <Link
+              to="/examinations/admin"
+              className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 font-bold text-sm"
+            >
+              Live Admin
             </Link>
           </div>
         </div>
@@ -366,6 +384,79 @@ const ExaminationBuilder: React.FC = () => {
                 </label>
               );
             })}
+            <label className="block text-sm font-bold mt-3">
+              Unavailable capability policy
+              <select
+                value={draft.security.capabilityFailurePolicy || 'ALLOW_WITH_WARNING'}
+                onChange={(event) =>
+                  updateDraft({
+                    security: {
+                      ...draft.security,
+                      capabilityFailurePolicy: event.target
+                        .value as ExamSecuritySettings['capabilityFailurePolicy'],
+                    },
+                  })
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              >
+                <option value="ALLOW_WITH_WARNING">Allow with warning</option>
+                <option value="PREVENT_START">Prevent exam start</option>
+                <option value="REQUIRE_ADMIN_APPROVAL">Require admin approval</option>
+              </select>
+            </label>
+            <label className="block text-sm font-bold">
+              Required capability IDs
+              <input
+                value={(draft.security.requiredCapabilities || []).join(', ')}
+                onChange={(event) =>
+                  updateDraft({
+                    security: {
+                      ...draft.security,
+                      requiredCapabilities: event.target.value
+                        .split(',')
+                        .map((item) => item.trim())
+                        .filter(Boolean),
+                    },
+                  })
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+                placeholder="copy-paste-block, printing-block"
+              />
+            </label>
+            <div className="border-t pt-3 mt-3">
+              <p className="text-sm font-black mb-2">Violation policy</p>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {violationTypes.map((violation) => (
+                  <label key={violation} className="text-xs font-bold">
+                    {violation.replace(/_/g, ' ')}
+                    <select
+                      value={draft.security.violationPolicies?.[violation] || 'LOG_ONLY'}
+                      onChange={(event) =>
+                        updateDraft({
+                          security: {
+                            ...draft.security,
+                            violationPolicies: {
+                              ...draft.security.violationPolicies,
+                              [violation]: event.target.value as NonNullable<
+                                ExamSecuritySettings['violationPolicies']
+                              >[string],
+                            },
+                          },
+                        })
+                      }
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1"
+                    >
+                      <option value="LOG_ONLY">Log only</option>
+                      <option value="WARNING">Warning</option>
+                      <option value="LOCK_TEMPORARILY">Lock temporarily</option>
+                      <option value="REQUIRE_ADMIN_UNLOCK">Require admin unlock</option>
+                      <option value="TERMINATE_ATTEMPT">Terminate attempt</option>
+                      <option value="FORCE_SUBMIT">Force submit</option>
+                    </select>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
 

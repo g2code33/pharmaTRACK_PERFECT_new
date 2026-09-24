@@ -10,6 +10,14 @@ import {
 } from './crypto';
 import { loadExaminationState, saveExaminationState } from './storage';
 import {
+  adjustAttemptTimer,
+  createAttemptTimer,
+  pauseAttemptTimer,
+  remainingMilliseconds,
+  resumeAttemptTimer,
+  timerFromLegacyAttempt,
+} from './timer';
+import {
   emptyExaminationState,
   snapshotQuestion,
   type AdminAction,
@@ -28,6 +36,11 @@ import {
   type ExamVersion,
   type ExaminationState,
   type RecoveryState,
+  type AttemptTimerState,
+  type TimerAdjustment,
+  type ViolationPolicy,
+  type SecurityViolation,
+  type SyncEvent,
   type SecurityEvent,
   type StudentAttempt,
 } from './types';
@@ -35,6 +48,7 @@ import type { ExamQuestion } from '../types';
 
 const DEFAULT_SECURITY: ExamSecuritySettings = {
   lockdown: false,
+  capabilityFailurePolicy: 'ALLOW_WITH_WARNING',
   kioskMode: false,
   allowBackNavigation: true,
   allowQuestionNavigation: true,
@@ -45,7 +59,31 @@ const DEFAULT_SECURITY: ExamSecuritySettings = {
   requireLanAuthority: false,
   detectFocusLoss: true,
   maxFocusLosses: 3,
-  policyVersion: 1,
+  disableNavigation: true,
+  disableCopyPaste: true,
+  disablePrinting: true,
+  disableExternalLinks: true,
+  disableDeveloperTools: true,
+  restrictWindowControls: true,
+  restrictScreenCapture: true,
+  restrictExit: true,
+  requiredCapabilities: [],
+  violationPolicies: {
+    FOCUS_LOST: 'LOG_ONLY',
+    ATTEMPTED_EXIT: 'REQUIRE_ADMIN_UNLOCK',
+    ATTEMPTED_NAVIGATION: 'WARNING',
+    ATTEMPTED_PRINT: 'WARNING',
+    ATTEMPTED_COPY_PASTE: 'WARNING',
+    EXTERNAL_LINK_ATTEMPT: 'WARNING',
+    DEVELOPER_TOOL_ATTEMPT: 'LOG_ONLY',
+    SUSPICIOUS_STATE_TRANSITION: 'REQUIRE_ADMIN_UNLOCK',
+    NETWORK_LOSS: 'LOG_ONLY',
+    DEVICE_DISCONNECT: 'LOG_ONLY',
+    SERVER_DISCONNECT: 'LOG_ONLY',
+    RECOVERY: 'LOG_ONLY',
+    ADMIN_INTERVENTION: 'LOG_ONLY',
+  },
+  policyVersion: 2,
 };
 
 const DEFAULT_SCORING: ExamScoringSettings = {
@@ -350,6 +388,7 @@ export class ExaminationRepository {
     examId: string,
     versionId?: string,
     serverId = 'local-authority',
+    authorityEndpoint?: string,
   ): Promise<ExamSession> {
     const exam = this.requireExam(examId);
     const version = this.requireVersion(examId, versionId);
@@ -361,6 +400,7 @@ export class ExaminationRepository {
       examVersionId: version.id,
       status: 'CREATED',
       authoritativeServerId: serverId,
+      authorityEndpoint,
       authorityEpoch: 1,
       createdAt: new Date().toISOString(),
       connectedDeviceIds: [],
@@ -426,6 +466,7 @@ export class ExaminationRepository {
     sessionId: string,
     studentId: string,
     deviceSessionId: string,
+    authoritativeStartedAt?: string,
   ): Promise<AttemptCreationResult> {
     const session = this.requireSession(sessionId);
     const version = this.requireVersion(session.examId, session.examVersionId);
@@ -433,12 +474,51 @@ export class ExaminationRepository {
       (attempt) =>
         attempt.sessionId === sessionId &&
         attempt.studentId === studentId &&
-        ['READY', 'ACTIVE', 'PAUSED', 'RECOVERY_PENDING'].includes(attempt.status),
+        ['READY', 'ACTIVE', 'PAUSED', 'DEVICE_LOST', 'RECOVERY_PENDING'].includes(attempt.status),
     );
     if (existing) {
+      const previousDeviceSessionId = existing.deviceSessionId;
+      for (const device of this.state.deviceSessions) {
+        if (
+          device.sessionId === sessionId &&
+          device.id !== deviceSessionId &&
+          device.status === 'CONNECTED'
+        ) {
+          device.status = 'DISCONNECTED';
+        }
+      }
       existing.deviceSessionId = deviceSessionId;
       existing.lastSyncedAt = new Date().toISOString();
+      existing.ownershipGeneration = (existing.ownershipGeneration || 0) + 1;
+      existing.status = 'ACTIVE';
+      existing.securityState = 'NORMAL';
+      existing.synchronizationState = 'RECOVERY_PENDING';
+      const switchNow = new Date().toISOString();
+      const switchRecovery = {
+        id: randomId('recovery'),
+        sessionId,
+        attemptId: existing.id,
+        state: 'RECOVERED' as const,
+        lastKnownRevision: existing.serverRevision,
+        localEncryptedStateAvailable: true,
+        reason: 'Device ownership switched after Continue Exam.',
+        createdAt: switchNow,
+        updatedAt: switchNow,
+      };
+      this.state.recoveryStates.push(switchRecovery);
+      existing.recoveryStateId = switchRecovery.id;
       session.connectedDeviceIds = [...new Set([...session.connectedDeviceIds, deviceSessionId])];
+      this.state.securityEvents.push({
+        id: randomId('security'),
+        sessionId,
+        attemptId: existing.id,
+        studentId,
+        deviceSessionId,
+        type: 'DEVICE_SWITCH',
+        severity: 'info',
+        at: new Date().toISOString(),
+        details: `Attempt ownership moved from ${previousDeviceSessionId} to ${deviceSessionId}.`,
+      });
       await this.save();
       return { attempt: existing, continued: true };
     }
@@ -465,6 +545,11 @@ export class ExaminationRepository {
           : indexes;
     }
     const startedAt = new Date();
+    const timerState = createAttemptTimer(
+      version.availability.durationMinutes,
+      authoritativeStartedAt || startedAt.toISOString(),
+      session.authorityEpoch,
+    );
     const attempt: StudentAttempt = {
       id: randomId('attempt'),
       sessionId,
@@ -474,9 +559,9 @@ export class ExaminationRepository {
       deviceSessionId,
       status: 'ACTIVE',
       startedAt: startedAt.toISOString(),
-      deadlineAt: new Date(
-        startedAt.getTime() + version.availability.durationMinutes * 60_000,
-      ).toISOString(),
+      deadlineAt: timerState.authoritativeDeadlineAt,
+      timerState,
+      currentQuestionId: questionOrder[0],
       questionOrder,
       optionOrders,
       randomizationSeed,
@@ -488,6 +573,11 @@ export class ExaminationRepository {
       },
       answers: [],
       focusLosses: 0,
+      securityState: 'NORMAL',
+      synchronizationState: 'LOCAL_ONLY',
+      saveStatus: 'SAVED',
+      submissionState: 'NOT_SUBMITTED',
+      ownershipGeneration: 1,
       localRevision: 0,
       serverRevision: 0,
     };
@@ -506,11 +596,25 @@ export class ExaminationRepository {
     const attempt = this.requireAttempt(attemptId);
     if (!['ACTIVE', 'PAUSED', 'RECOVERY_PENDING'].includes(attempt.status))
       throw new Error('This attempt no longer accepts answers.');
+    const knownDeviceSession = this.state.deviceSessions.some(
+      (item) => item.id === answer.deviceSessionId,
+    );
+    if (knownDeviceSession && answer.deviceSessionId !== attempt.deviceSessionId)
+      throw new Error(
+        'This device session no longer owns the active attempt. Continue Exam on the active device.',
+      );
+    const previousAnswers = [...attempt.answers];
+    const previousAllAnswers = [...this.state.answers];
+    const previousSyncEvents = [...this.state.syncEvents];
+    const previousRevision = attempt.localRevision;
+    const session = this.state.sessions.find((item) => item.id === attempt.sessionId);
     const saved: ExamAnswer = {
       ...answer,
+      eventId: answer.eventId || randomId('answer_event'),
       answeredAt: new Date().toISOString(),
       revision: ++attempt.localRevision,
     };
+    attempt.saveStatus = 'SAVING';
     attempt.answers = [
       ...attempt.answers.filter((item) => item.questionId !== saved.questionId),
       saved,
@@ -526,17 +630,548 @@ export class ExaminationRepository {
       ),
       saved,
     ];
-    await this.save();
+    if (session) {
+      this.state.syncEvents.push({
+        id: randomId('sync_event'),
+        eventId: saved.eventId,
+        sessionId: session.id,
+        entity: 'ANSWER',
+        entityId: saved.eventId || saved.questionId,
+        sourceServerId: 'local-device',
+        authorityEpoch: session.authorityEpoch,
+        revision: saved.revision,
+        at: saved.answeredAt,
+        direction: 'LOCAL_TO_SERVER',
+        status: 'PENDING',
+        questionId: saved.questionId,
+        answerRevision: saved.revision,
+        payload: {
+          attemptId: attempt.id,
+          answer: saved.answer,
+          selectedOption: saved.selectedOption,
+          deviceSessionId: saved.deviceSessionId,
+        },
+      });
+    }
+    const persisted = await this.save();
+    if (!persisted) {
+      attempt.answers = previousAnswers;
+      this.state.answers = previousAllAnswers;
+      this.state.syncEvents = previousSyncEvents;
+      attempt.localRevision = previousRevision;
+      attempt.saveStatus = 'SAVE_PROBLEM';
+      throw new Error('Answer could not be persisted locally. The answer was kept for retry.');
+    }
+    attempt.saveStatus = 'SAVED';
     return saved;
   }
 
-  async submitAttempt(attemptId: string): Promise<StudentAttempt> {
+  async submitAttempt(
+    attemptId: string,
+    forced = false,
+    deviceSessionId?: string,
+  ): Promise<StudentAttempt> {
     const attempt = this.requireAttempt(attemptId);
-    if (attempt.status === 'SUBMITTED' || attempt.status === 'CLOSED') return attempt;
+    if (!forced && deviceSessionId && deviceSessionId !== attempt.deviceSessionId)
+      throw new Error('This device session no longer owns the active attempt.');
+    if (
+      attempt.status === 'SUBMITTED' ||
+      attempt.status === 'CLOSED' ||
+      attempt.status === 'LOCKED'
+    )
+      return attempt;
     attempt.status = 'SUBMITTED';
+    attempt.submissionState = forced ? 'FORCE_SUBMITTED' : 'SUBMITTED';
     attempt.submittedAt = new Date().toISOString();
+    attempt.synchronizationState =
+      attempt.synchronizationState === 'DEGRADED'
+        ? 'RECOVERY_PENDING'
+        : attempt.synchronizationState;
     await this.save();
     return attempt;
+  }
+
+  async applyAuthorityTakeover(
+    sessionId: string,
+    serverId: string,
+    authorityEpoch: number,
+    authoritativeAt: string,
+  ): Promise<void> {
+    const session = this.requireSession(sessionId);
+    if (authorityEpoch < session.authorityEpoch)
+      throw new Error('Stale authority takeover was rejected.');
+    session.authoritativeServerId = serverId;
+    session.authorityEpoch = authorityEpoch;
+    session.synchronizationStatus = 'recovery';
+    for (const attempt of this.state.attempts.filter(
+      (item) => item.sessionId === sessionId && item.timerState,
+    )) {
+      attempt.timerState = {
+        ...attempt.timerState!,
+        authorityEpoch,
+        lastAuthorityAt: authoritativeAt,
+      };
+      attempt.synchronizationState = 'RECOVERY_PENDING';
+      attempt.status = attempt.status === 'ACTIVE' ? 'RECOVERY_PENDING' : attempt.status;
+    }
+    await this.logSecurityEvent({
+      sessionId,
+      type: 'FAILOVER_COMPLETED',
+      severity: 'warning',
+      details: `Authority ${serverId} took over at epoch ${authorityEpoch}.`,
+    });
+  }
+
+  async getAttemptTimer(
+    attemptId: string,
+    authoritativeNow = new Date().toISOString(),
+  ): Promise<{
+    remainingMilliseconds: number;
+    deadlineAt: string;
+    paused: boolean;
+    timer: AttemptTimerState;
+  }> {
+    const attempt = this.requireAttempt(attemptId);
+    const timer =
+      attempt.timerState ||
+      timerFromLegacyAttempt(
+        attempt.startedAt,
+        attempt.deadlineAt,
+        attempt.settingsSnapshot.availability.durationMinutes,
+      );
+    attempt.timerState = timer;
+    attempt.deadlineAt = timer.authoritativeDeadlineAt;
+    return {
+      remainingMilliseconds: remainingMilliseconds(timer, authoritativeNow),
+      deadlineAt: timer.authoritativeDeadlineAt,
+      paused: Boolean(timer.pausedAt),
+      timer,
+    };
+  }
+
+  async pauseAttempt(
+    attemptId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+    authoritativeAt = new Date().toISOString(),
+  ): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    const timer =
+      attempt.timerState ||
+      timerFromLegacyAttempt(
+        attempt.startedAt,
+        attempt.deadlineAt,
+        attempt.settingsSnapshot.availability.durationMinutes,
+      );
+    attempt.timerState = pauseAttemptTimer(timer, authoritativeAt);
+    attempt.deadlineAt = attempt.timerState.authoritativeDeadlineAt;
+    attempt.status = 'PAUSED';
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: 'PAUSE',
+      targetId: attempt.id,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState: 'ACTIVE',
+      newState: 'PAUSED',
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'TIMER_PAUSED',
+      severity: 'info',
+      details: reason,
+    });
+    return attempt;
+  }
+
+  async resumeAttempt(
+    attemptId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+    authoritativeAt = new Date().toISOString(),
+  ): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    const timer =
+      attempt.timerState ||
+      timerFromLegacyAttempt(
+        attempt.startedAt,
+        attempt.deadlineAt,
+        attempt.settingsSnapshot.availability.durationMinutes,
+      );
+    attempt.timerState = resumeAttemptTimer(timer, authoritativeAt);
+    attempt.deadlineAt = attempt.timerState.authoritativeDeadlineAt;
+    attempt.status = 'ACTIVE';
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: 'RESUME',
+      targetId: attempt.id,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState: 'PAUSED',
+      newState: 'ACTIVE',
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'TIMER_RESUMED',
+      severity: 'info',
+      details: reason,
+    });
+    return attempt;
+  }
+
+  async adjustAttemptTime(
+    attemptId: string,
+    minutes: number,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+    authoritativeAt = new Date().toISOString(),
+  ): Promise<StudentAttempt> {
+    if (!Number.isFinite(minutes) || minutes === 0)
+      throw new Error('Time adjustment must be a non-zero number of minutes.');
+    const attempt = this.requireAttempt(attemptId);
+    const timer =
+      attempt.timerState ||
+      timerFromLegacyAttempt(
+        attempt.startedAt,
+        attempt.deadlineAt,
+        attempt.settingsSnapshot.availability.durationMinutes,
+      );
+    const next = adjustAttemptTimer(timer, minutes, adminId, reason, authoritativeAt);
+    if (new Date(next.authoritativeDeadlineAt).getTime() < new Date(authoritativeAt).getTime())
+      throw new Error('Time cannot be reduced below the authoritative current time.');
+    attempt.timerState = next;
+    attempt.deadlineAt = next.authoritativeDeadlineAt;
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: minutes > 0 ? 'ADD_TIME' : 'REMOVE_TIME',
+      targetId: attempt.id,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState: attempt.status,
+      newState: attempt.status,
+      timeAdjustmentMinutes: minutes,
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'TIMER_ADJUSTED',
+      severity: 'info',
+      details: `${minutes} minute adjustment: ${reason}`,
+    });
+    return attempt;
+  }
+
+  async forceSubmitAttempt(
+    attemptId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+  ): Promise<StudentAttempt> {
+    const attempt = await this.submitAttempt(attemptId, true);
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: 'FORCE_SUBMIT',
+      targetId: attemptId,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState: 'ACTIVE',
+      newState: 'SUBMITTED',
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'FORCE_SUBMITTED',
+      severity: 'warning',
+      details: reason,
+    });
+    return attempt;
+  }
+
+  async terminateAttempt(
+    attemptId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+  ): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    const previousState = attempt.status;
+    attempt.status = 'LOCKED';
+    attempt.submissionState = 'TERMINATED';
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: 'TERMINATE',
+      targetId: attemptId,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState,
+      newState: 'LOCKED',
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'ATTEMPT_TERMINATED',
+      severity: 'critical',
+      details: reason,
+    });
+    await this.save();
+    return attempt;
+  }
+
+  async unlockAttempt(
+    attemptId: string,
+    adminId: string,
+    adminDeviceSessionId: string,
+    reason: string,
+  ): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    const previous = attempt.status;
+    if (attempt.status === 'LOCKED') attempt.status = 'RECOVERY_PENDING';
+    attempt.securityState = 'ADMIN_REVIEW';
+    await this.logAdminAction({
+      adminId,
+      adminDeviceSessionId,
+      action: 'UNLOCK',
+      targetId: attemptId,
+      targetStudentId: attempt.studentId,
+      reason,
+      previousState: previous,
+      newState: attempt.status,
+    });
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'ADMIN_INTERVENTION',
+      severity: 'warning',
+      details: reason,
+    });
+    await this.save();
+    return attempt;
+  }
+
+  async recordSecurityViolation(
+    attemptId: string,
+    violation: SecurityViolation,
+    detail: string,
+  ): Promise<{ policy: ViolationPolicy; attempt: StudentAttempt }> {
+    const attempt = this.requireAttempt(attemptId);
+    const policy =
+      attempt.settingsSnapshot.security.violationPolicies?.[violation] ||
+      (violation === 'NETWORK_LOSS' || violation === 'SERVER_DISCONNECT' ? 'LOG_ONLY' : 'WARNING');
+    const severity = policy === 'LOG_ONLY' ? 'info' : policy === 'WARNING' ? 'warning' : 'critical';
+    const eventType =
+      violation === 'FOCUS_LOST'
+        ? 'FOCUS_LOST'
+        : violation === 'RECOVERY'
+          ? 'RECOVERY_COMPLETED'
+          : violation === 'NETWORK_LOSS'
+            ? 'NETWORK_LOSS'
+            : violation === 'DEVICE_DISCONNECT'
+              ? 'DEVICE_DISCONNECT'
+              : violation === 'SERVER_DISCONNECT'
+                ? 'SERVER_DISCONNECT'
+                : violation === 'ATTEMPTED_EXIT'
+                  ? 'ATTEMPTED_EXIT'
+                  : violation === 'ATTEMPTED_NAVIGATION'
+                    ? 'ATTEMPTED_NAVIGATION'
+                    : violation === 'ATTEMPTED_PRINT'
+                      ? 'ATTEMPTED_PRINT'
+                      : violation === 'ATTEMPTED_COPY_PASTE'
+                        ? 'ATTEMPTED_COPY_PASTE'
+                        : violation === 'EXTERNAL_LINK_ATTEMPT'
+                          ? 'EXTERNAL_LINK_ATTEMPT'
+                          : violation === 'DEVELOPER_TOOL_ATTEMPT'
+                            ? 'DEVELOPER_TOOL_ATTEMPT'
+                            : 'SUSPICIOUS_STATE_TRANSITION';
+    await this.logSecurityEvent({
+      attemptId,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: eventType,
+      severity,
+      details: `${policy}: ${detail}`,
+    });
+    if (violation === 'FOCUS_LOST') attempt.focusLosses += 1;
+    if (policy === 'LOCK_TEMPORARILY' || policy === 'REQUIRE_ADMIN_UNLOCK') {
+      attempt.status = 'LOCKED';
+      attempt.securityState = policy === 'REQUIRE_ADMIN_UNLOCK' ? 'ADMIN_REVIEW' : 'LOCKED';
+    }
+    if (policy === 'TERMINATE_ATTEMPT') {
+      attempt.status = 'LOCKED';
+      attempt.submissionState = 'TERMINATED';
+    }
+    if (policy === 'FORCE_SUBMIT') {
+      attempt.status = 'SUBMITTED';
+      attempt.submissionState = 'FORCE_SUBMITTED';
+      attempt.submittedAt = new Date().toISOString();
+    }
+    await this.save();
+    return { policy, attempt };
+  }
+
+  pendingSyncEvents(sessionId: string): SyncEvent[] {
+    return this.state.syncEvents.filter(
+      (event) => event.sessionId === sessionId && event.status === 'PENDING',
+    );
+  }
+
+  async acknowledgeSyncEvents(
+    sessionId: string,
+    eventIds: string[],
+    serverRevision: number,
+    receiptAt = new Date().toISOString(),
+  ): Promise<number> {
+    let acknowledged = 0;
+    const ids = new Set(eventIds);
+    for (const event of this.state.syncEvents) {
+      if (event.sessionId === sessionId && ids.has(event.id) && event.status === 'PENDING') {
+        event.status = 'APPLIED';
+        event.serverReceiptAt = receiptAt;
+        acknowledged += 1;
+      }
+    }
+    for (const attempt of this.state.attempts.filter((item) => item.sessionId === sessionId)) {
+      attempt.serverRevision = Math.max(attempt.serverRevision, serverRevision);
+      attempt.lastSyncedAt = receiptAt;
+      attempt.synchronizationState = 'SYNCHRONIZED';
+      if (attempt.status === 'RECOVERY_PENDING' || attempt.status === 'DEVICE_LOST')
+        attempt.status = 'ACTIVE';
+      if (attempt.recoveryStateId) {
+        const recovery = this.state.recoveryStates.find(
+          (item) => item.id === attempt.recoveryStateId,
+        );
+        if (recovery) {
+          recovery.state = 'RECOVERED';
+          recovery.updatedAt = receiptAt;
+        }
+      }
+    }
+    const session = this.state.sessions.find((item) => item.id === sessionId);
+    if (session) {
+      session.lastReplicationRevision = Math.max(session.lastReplicationRevision, serverRevision);
+      session.synchronizationStatus = 'connected';
+    }
+    await this.save();
+    return acknowledged;
+  }
+
+  async markDeviceDisconnected(
+    deviceSessionId: string,
+    reason = 'Student device disconnected.',
+  ): Promise<void> {
+    const device = this.state.deviceSessions.find((item) => item.id === deviceSessionId);
+    if (device) {
+      device.status = 'DISCONNECTED';
+      device.lastHeartbeatAt = new Date().toISOString();
+    }
+    for (const attempt of this.state.attempts.filter(
+      (item) =>
+        item.deviceSessionId === deviceSessionId && ['ACTIVE', 'PAUSED'].includes(item.status),
+    )) {
+      attempt.status = 'DEVICE_LOST';
+      attempt.synchronizationState = 'RECOVERY_PENDING';
+      const now = new Date().toISOString();
+      const recovery = {
+        id: randomId('recovery'),
+        sessionId: attempt.sessionId,
+        attemptId: attempt.id,
+        state: 'PENDING' as const,
+        lastKnownRevision: attempt.serverRevision,
+        localEncryptedStateAvailable: true,
+        reason,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.state.recoveryStates.push(recovery);
+      attempt.recoveryStateId = recovery.id;
+      await this.logSecurityEvent({
+        attemptId: attempt.id,
+        sessionId: attempt.sessionId,
+        studentId: attempt.studentId,
+        deviceSessionId,
+        type: 'DEVICE_DISCONNECT',
+        severity: 'info',
+        details: reason,
+      });
+    }
+    await this.save();
+  }
+
+  async markSynchronizationUnavailable(
+    sessionId: string,
+    reason: string,
+    pendingTooLong = false,
+  ): Promise<void> {
+    const session = this.state.sessions.find((item) => item.id === sessionId);
+    if (session) {
+      session.synchronizationStatus = pendingTooLong ? 'recovery' : 'degraded';
+    }
+    for (const attempt of this.state.attempts.filter(
+      (item) => item.sessionId === sessionId && ['ACTIVE', 'PAUSED'].includes(item.status),
+    )) {
+      attempt.synchronizationState = pendingTooLong ? 'RECOVERY_PENDING' : 'DEGRADED';
+      if (pendingTooLong) {
+        attempt.status = 'RECOVERY_PENDING';
+        const now = new Date().toISOString();
+        const recovery = {
+          id: randomId('recovery'),
+          sessionId,
+          attemptId: attempt.id,
+          state: 'PENDING' as const,
+          lastKnownRevision: attempt.serverRevision,
+          localEncryptedStateAvailable: true,
+          primaryServerId: session?.authoritativeServerId,
+          reason,
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.state.recoveryStates.push(recovery);
+        attempt.recoveryStateId = recovery.id;
+      }
+    }
+    await this.save();
+    await this.logSecurityEvent({
+      sessionId,
+      type: 'SERVER_DISCONNECT',
+      severity: pendingTooLong ? 'warning' : 'info',
+      details: reason,
+    });
+  }
+
+  async updateCurrentQuestion(attemptId: string, questionId: string): Promise<boolean> {
+    const attempt = this.requireAttempt(attemptId);
+    if (!attempt.questionOrder.includes(questionId))
+      throw new Error('Question is not part of this attempt.');
+    const previous = attempt.currentQuestionId;
+    attempt.currentQuestionId = questionId;
+    const persisted = await this.save();
+    if (!persisted) {
+      attempt.currentQuestionId = previous;
+      throw new Error('Question position could not be persisted locally.');
+    }
+    return true;
   }
 
   async createDeviceSession(
@@ -551,6 +1186,11 @@ export class ExaminationRepository {
       status: 'CONNECTED',
     };
     this.state.deviceSessions.push(session);
+    if (input.role === 'STUDENT') {
+      const student = this.state.students.find((item) => item.id === input.studentId);
+      if (student && !student.activeDeviceSessionIds.includes(session.id))
+        student.activeDeviceSessionIds.push(session.id);
+    }
     if (input.sessionId) {
       const examSession = this.state.sessions.find((item) => item.id === input.sessionId);
       if (examSession)

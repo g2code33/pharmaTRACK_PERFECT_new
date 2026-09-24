@@ -48,6 +48,7 @@ export interface LanHealth {
   activeSessions: number;
   activeAttempts: number;
   checkedAt: string;
+  serverNowAt?: string;
 }
 
 export interface LanExamTransport {
@@ -65,7 +66,13 @@ export interface LanExamTransport {
   sync(
     sessionId: string,
     events: SyncEvent[],
-  ): Promise<{ ok: boolean; applied: number; conflicts: string[]; revision: number }>;
+  ): Promise<{
+    ok: boolean;
+    applied: number;
+    conflicts: string[];
+    revision: number;
+    acknowledgedEventIds?: string[];
+  }>;
   recover(
     sessionId: string,
     attemptId: string,
@@ -116,13 +123,16 @@ export class LanExamClient implements LanExamTransport {
   }
 
   sync(sessionId: string, events: SyncEvent[]) {
-    return this.call<{ ok: boolean; applied: number; conflicts: string[]; revision: number }>(
-      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/sync`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ events, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
-      },
-    );
+    return this.call<{
+      ok: boolean;
+      applied: number;
+      conflicts: string[];
+      revision: number;
+      acknowledgedEventIds?: string[];
+    }>(`/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/sync`, {
+      method: 'POST',
+      body: JSON.stringify({ events, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
+    });
   }
 
   recover(sessionId: string, attemptId: string, state: RecoveryState) {
@@ -165,6 +175,7 @@ export class LocalExamAuthority implements LanExamTransport {
         ['READY', 'ACTIVE', 'PAUSED', 'RECOVERY_PENDING'].includes(attempt.status),
       ).length,
       checkedAt: new Date().toISOString(),
+      serverNowAt: new Date().toISOString(),
     };
   }
 
@@ -193,13 +204,29 @@ export class LocalExamAuthority implements LanExamTransport {
 
   async sync(_sessionId: string, events: SyncEvent[]) {
     const conflicts: string[] = [];
-    const applied = events.filter((event) => event.status !== 'CONFLICT').length;
+    const alreadyApplied = new Set(
+      this.repository.snapshot.syncEvents
+        .filter((event) => event.status === 'APPLIED')
+        .map((event) => event.id),
+    );
+    const fresh = events.filter(
+      (event) => !alreadyApplied.has(event.id) && event.status !== 'CONFLICT',
+    );
+    const applied = fresh.length;
     this.identity = {
       ...this.identity,
       revision: this.identity.revision + applied,
       lastHeartbeatAt: new Date().toISOString(),
     };
-    return { ok: conflicts.length === 0, applied, conflicts, revision: this.identity.revision };
+    return {
+      ok: conflicts.length === 0,
+      applied,
+      conflicts,
+      revision: this.identity.revision,
+      acknowledgedEventIds: events
+        .filter((event) => event.status !== 'CONFLICT')
+        .map((event) => event.id),
+    };
   }
 
   async recover(_sessionId: string, attemptId: string, _state: RecoveryState) {

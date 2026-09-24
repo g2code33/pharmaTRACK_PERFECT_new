@@ -11,11 +11,71 @@ import type { ExamQuestion, QuestionSourceRef } from '../types';
 export const EXAMINATION_SCHEMA_VERSION = 1 as const;
 export const EXAM_PACKAGE_FORMAT_VERSION = 1 as const;
 
-export type AssessmentType =
-  | 'PRACTICE_QUIZ'
-  | 'NORMAL_ASSESSMENT'
-  | 'FORMAL_EXAM'
-  | 'KIOSK_EXAM';
+export type KioskPlatform = 'PC_WEB' | 'ANDROID_WEB' | 'TAURI_PC' | 'ANDROID_NATIVE' | 'UNKNOWN';
+export type ViolationPolicy =
+  | 'LOG_ONLY'
+  | 'WARNING'
+  | 'LOCK_TEMPORARILY'
+  | 'REQUIRE_ADMIN_UNLOCK'
+  | 'TERMINATE_ATTEMPT'
+  | 'FORCE_SUBMIT';
+export type SecurityViolation =
+  | 'FOCUS_LOST'
+  | 'ATTEMPTED_EXIT'
+  | 'ATTEMPTED_NAVIGATION'
+  | 'ATTEMPTED_PRINT'
+  | 'ATTEMPTED_COPY_PASTE'
+  | 'EXTERNAL_LINK_ATTEMPT'
+  | 'DEVELOPER_TOOL_ATTEMPT'
+  | 'SUSPICIOUS_STATE_TRANSITION'
+  | 'NETWORK_LOSS'
+  | 'DEVICE_DISCONNECT'
+  | 'SERVER_DISCONNECT'
+  | 'RECOVERY'
+  | 'ADMIN_INTERVENTION';
+
+export interface PlatformCapability {
+  id: string;
+  label: string;
+  supported: boolean;
+  enforceable: boolean;
+  detected: boolean;
+  required: boolean;
+  notes: string;
+}
+
+export interface PlatformCapabilityMatrix {
+  platform: KioskPlatform;
+  generatedAt: string;
+  capabilities: PlatformCapability[];
+}
+
+export interface AttemptTimerState {
+  originalDurationMinutes: number;
+  authoritativeStartedAt: string;
+  authoritativeDeadlineAt: string;
+  lastAuthorityAt: string;
+  authorityEpoch: number;
+  pausedAt?: string;
+  accumulatedPauseMilliseconds: number;
+  adjustments: TimerAdjustment[];
+}
+
+export interface TimerAdjustment {
+  id: string;
+  minutes: number;
+  at: string;
+  adminId: string;
+  reason: string;
+  previousDeadlineAt: string;
+  newDeadlineAt: string;
+}
+
+export interface ViolationPolicyMap {
+  [violation: string]: ViolationPolicy;
+}
+
+export type AssessmentType = 'PRACTICE_QUIZ' | 'NORMAL_ASSESSMENT' | 'FORMAL_EXAM' | 'KIOSK_EXAM';
 
 export type ExamLifecycle =
   | 'DRAFT'
@@ -33,15 +93,11 @@ export type AttemptStatus =
   | 'PAUSED'
   | 'SUBMITTED'
   | 'CLOSED'
-  | 'RECOVERY_PENDING';
+  | 'DEVICE_LOST'
+  | 'RECOVERY_PENDING'
+  | 'LOCKED';
 
-export type SessionStatus =
-  | 'CREATED'
-  | 'READY'
-  | 'ACTIVE'
-  | 'CLOSING'
-  | 'CLOSED'
-  | 'RECOVERY';
+export type SessionStatus = 'CREATED' | 'READY' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'RECOVERY';
 
 export type SecurityEventType =
   | 'PACKAGE_OPENED'
@@ -61,12 +117,33 @@ export type SecurityEventType =
   | 'RECOVERY_COMPLETED'
   | 'SUBMITTED'
   | 'FAILOVER_REQUESTED'
-  | 'FAILOVER_COMPLETED';
+  | 'FAILOVER_COMPLETED'
+  | 'FOCUS_RESTORED'
+  | 'ATTEMPTED_EXIT'
+  | 'ATTEMPTED_NAVIGATION'
+  | 'ATTEMPTED_PRINT'
+  | 'ATTEMPTED_COPY_PASTE'
+  | 'EXTERNAL_LINK_ATTEMPT'
+  | 'DEVELOPER_TOOL_ATTEMPT'
+  | 'SUSPICIOUS_STATE_TRANSITION'
+  | 'NETWORK_LOSS'
+  | 'DEVICE_DISCONNECT'
+  | 'SERVER_DISCONNECT'
+  | 'ADMIN_INTERVENTION'
+  | 'ANSWER_PERSISTED'
+  | 'ANSWER_PERSISTENCE_FAILED'
+  | 'DEVICE_SWITCH'
+  | 'TIMER_PAUSED'
+  | 'TIMER_RESUMED'
+  | 'TIMER_ADJUSTED'
+  | 'FORCE_SUBMITTED'
+  | 'ATTEMPT_TERMINATED';
 
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
 export interface ExamSecuritySettings {
   lockdown: boolean;
+  capabilityFailurePolicy?: 'PREVENT_START' | 'ALLOW_WITH_WARNING' | 'REQUIRE_ADMIN_APPROVAL';
   kioskMode: boolean;
   allowBackNavigation: boolean;
   allowQuestionNavigation: boolean;
@@ -77,6 +154,17 @@ export interface ExamSecuritySettings {
   requireLanAuthority: boolean;
   detectFocusLoss: boolean;
   maxFocusLosses?: number;
+  /** Browser-enforced and native-adapter restrictions are explicit policy, not a guarantee. */
+  disableNavigation?: boolean;
+  disableCopyPaste?: boolean;
+  disablePrinting?: boolean;
+  disableExternalLinks?: boolean;
+  disableDeveloperTools?: boolean;
+  restrictWindowControls?: boolean;
+  restrictScreenCapture?: boolean;
+  restrictExit?: boolean;
+  requiredCapabilities?: string[];
+  violationPolicies?: ViolationPolicyMap;
   /** Security policy version is captured with every attempt. */
   policyVersion: number;
 }
@@ -185,6 +273,7 @@ export interface ExamSession {
   examVersionId: string;
   status: SessionStatus;
   authoritativeServerId: string;
+  authorityEndpoint?: string;
   authorityEpoch: number;
   createdAt: string;
   scheduledStartAt?: string;
@@ -208,6 +297,8 @@ export interface StudentAttempt {
   submittedAt?: string;
   /** Timer is attempt-owned and survives device changes. */
   deadlineAt: string;
+  timerState?: AttemptTimerState;
+  currentQuestionId?: string;
   questionOrder: string[];
   optionOrders: Record<string, number[]>;
   randomizationSeed?: string;
@@ -219,6 +310,12 @@ export interface StudentAttempt {
   };
   answers: ExamAnswer[];
   focusLosses: number;
+  securityState?: 'NORMAL' | 'WARNING' | 'LOCKED' | 'ADMIN_REVIEW';
+  synchronizationState?:
+    'LOCAL_ONLY' | 'SYNCING' | 'SYNCHRONIZED' | 'DEGRADED' | 'RECOVERY_PENDING';
+  saveStatus?: 'SAVED' | 'SAVING' | 'SAVE_PROBLEM';
+  submissionState?: 'NOT_SUBMITTED' | 'SUBMITTED' | 'FORCE_SUBMITTED' | 'TERMINATED';
+  ownershipGeneration?: number;
   lastSyncedAt?: string;
   localRevision: number;
   serverRevision: number;
@@ -231,8 +328,11 @@ export interface ExamAnswer {
   selectedOption?: number;
   answeredAt: string;
   revision: number;
+  eventId?: string;
   deviceSessionId: string;
   isFinal: boolean;
+  serverReceiptAt?: string;
+  serverRevision?: number;
 }
 
 export interface SecurityEvent {
@@ -253,10 +353,30 @@ export interface AdminAction {
   sessionId?: string;
   adminId: string;
   adminDeviceSessionId: string;
-  action: 'CREATE' | 'VALIDATE' | 'PUBLISH' | 'SCHEDULE' | 'START' | 'PAUSE' | 'RESUME' | 'CLOSE' | 'FAILOVER' | 'RECOVER' | 'EXPORT';
+  action:
+    | 'CREATE'
+    | 'VALIDATE'
+    | 'PUBLISH'
+    | 'SCHEDULE'
+    | 'START'
+    | 'PAUSE'
+    | 'RESUME'
+    | 'ADD_TIME'
+    | 'REMOVE_TIME'
+    | 'FORCE_SUBMIT'
+    | 'TERMINATE'
+    | 'UNLOCK'
+    | 'REOPEN'
+    | 'FAILOVER'
+    | 'RECOVER'
+    | 'EXPORT';
   at: string;
   targetId?: string;
+  targetStudentId?: string;
   reason?: string;
+  previousState?: string;
+  newState?: string;
+  timeAdjustmentMinutes?: number;
 }
 
 export interface DeviceSession {
@@ -265,6 +385,7 @@ export interface DeviceSession {
   role: 'STUDENT' | 'ADMIN' | 'PRIMARY_SERVER' | 'SECONDARY_SERVER';
   label?: string;
   sessionId?: string;
+  studentId?: string;
   connectedAt: string;
   lastHeartbeatAt: string;
   status: 'CONNECTED' | 'DISCONNECTED' | 'RECOVERY_PENDING';
@@ -282,6 +403,11 @@ export interface SyncEvent {
   at: string;
   direction: 'LOCAL_TO_SERVER' | 'SERVER_TO_LOCAL' | 'SERVER_TO_SERVER';
   status: 'PENDING' | 'APPLIED' | 'CONFLICT' | 'REJECTED';
+  eventId?: string;
+  questionId?: string;
+  answerRevision?: number;
+  serverReceiptAt?: string;
+  payload?: Record<string, unknown>;
 }
 
 export interface RecoveryState {
@@ -331,7 +457,11 @@ export interface ExamBuilderDraft {
   maxAttempts: number;
 }
 
-export function snapshotQuestion(question: ExamQuestion, order: number, marks = question.marksAllocation || 1): ExamQuestionSnapshot {
+export function snapshotQuestion(
+  question: ExamQuestion,
+  order: number,
+  marks = question.marksAllocation || 1,
+): ExamQuestionSnapshot {
   return {
     id: `${question.id}:v${Date.now()}:${order}`,
     sourceQuestionId: question.id,

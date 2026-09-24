@@ -44,6 +44,7 @@ const AiAssistant = React.lazy(() => import('./pages/AiAssistant'));
 const ExaminationBuilder = React.lazy(() => import('./pages/ExaminationBuilder'));
 const KioskEntry = React.lazy(() => import('./pages/KioskEntry'));
 const SecureExamination = React.lazy(() => import('./pages/SecureExamination'));
+const ExaminationAdmin = React.lazy(() => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
@@ -120,6 +121,7 @@ const App = () => {
                     <Route path="/quiz" element={<Quiz />} />
                     <Route path="/examinations/builder" element={<ExaminationBuilder />} />
                     <Route path="/examinations/kiosk" element={<KioskEntry />} />
+                    <Route path="/examinations/admin" element={<ExaminationAdmin />} />
                     <Route path="/planner" element={<Planner />} />
                     <Route path="/learn" element={<Today />} />
                     <Route path="/clinical" element={<Clinical />} />

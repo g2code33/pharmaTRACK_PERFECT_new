@@ -9,7 +9,9 @@ import {
 import { ExaminationRepository } from '../examination/service';
 import { LanExamClient, LocalExamAuthority, isLanEndpoint } from '../examination/network';
 import { encryptedStorageAvailable } from '../examination/secureStorage';
-import type { ExamStudent } from '../examination/types';
+import { requiredCapabilitiesReady } from '../examination/kioskAdapter';
+import { createPlatformKioskAdapter } from '../examination/androidAdapter';
+import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
@@ -28,6 +30,7 @@ const KioskEntry: React.FC = () => {
   const [registeredPassword, setRegisteredPassword] = useState('');
   const [student, setStudent] = useState<ExamStudent | null>(null);
   const [checks, setChecks] = useState<Check[]>([]);
+  const [capabilityMatrix, setCapabilityMatrix] = useState<PlatformCapabilityMatrix | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -110,6 +113,29 @@ const KioskEntry: React.FC = () => {
         ? `${Math.round((estimate.quota - (estimate.usage || 0)) / 1024 / 1024)} MB available`
         : 'Storage estimate unavailable; local store accepted',
     });
+    const adapter = await createPlatformKioskAdapter(
+      () => undefined,
+      staged.exam.security.requiredCapabilities || [],
+    );
+    const matrix = adapter.matrix;
+    setCapabilityMatrix(matrix);
+    const capabilityResult = requiredCapabilitiesReady(
+      matrix,
+      staged.exam.security.requiredCapabilities || [],
+    );
+    const capabilityRequired =
+      staged.exam.security.capabilityFailurePolicy === 'PREVENT_START' ||
+      staged.exam.security.capabilityFailurePolicy === 'REQUIRE_ADMIN_APPROVAL';
+    next.push({
+      label: 'Platform capability policy',
+      ok:
+        capabilityResult.ok ||
+        staged.exam.security.capabilityFailurePolicy === 'ALLOW_WITH_WARNING',
+      required: capabilityRequired,
+      detail: capabilityResult.ok
+        ? `${matrix.platform}: required controls detected`
+        : `${capabilityResult.unavailable.map((item) => item.label).join(', ')} unavailable; policy is ${staged.exam.security.capabilityFailurePolicy || 'ALLOW_WITH_WARNING'}`,
+    });
     if (lanEndpoint.trim()) {
       if (!isLanEndpoint(lanEndpoint)) {
         next.push({
@@ -191,14 +217,30 @@ const KioskEntry: React.FC = () => {
           exam.id,
           staged.exam.id,
           lanEndpoint.trim() || 'local-authority',
+          lanEndpoint.trim() || undefined,
         );
       const deviceSession = await repository.createDeviceSession({
         deviceId: `device-${navigator.userAgent.slice(0, 24)}`,
         role: 'STUDENT',
+        studentId: authenticated.id,
         sessionId: session.id,
-        capabilities: ['encrypted-local-state', 'attempt-recovery'],
+        capabilities: ['encrypted-local-state', 'attempt-recovery', 'platform-capability-matrix'],
       });
-      const result = await repository.createAttempt(session.id, authenticated.id, deviceSession.id);
+      let authoritativeStartedAt = new Date().toISOString();
+      try {
+        const health = lanEndpoint.trim()
+          ? await new LanExamClient(lanEndpoint).health()
+          : await new LocalExamAuthority(repository).health();
+        authoritativeStartedAt = health.serverNowAt || health.checkedAt;
+      } catch {
+        // The local authority remains the source of time if a LAN health call races a reconnect.
+      }
+      const result = await repository.createAttempt(
+        session.id,
+        authenticated.id,
+        deviceSession.id,
+        authoritativeStartedAt,
+      );
       await repository.logSecurityEvent({
         sessionId: session.id,
         attemptId: result.attempt.id,
@@ -383,6 +425,43 @@ const KioskEntry: React.FC = () => {
                   <strong>{check.label}</strong>
                   <br />
                   {check.detail}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {capabilityMatrix && (
+        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
+          <h2 className="font-black text-xl mb-2">Platform capability matrix</h2>
+          <p className="text-sm text-slate-500 mb-3">
+            {capabilityMatrix.platform}. Green means detected; it does not claim OS-level
+            enforcement where the platform provides no reliable API.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {capabilityMatrix.capabilities.map((capability) => (
+              <div
+                key={capability.id}
+                className="text-xs rounded-lg border p-2 flex justify-between gap-2"
+              >
+                <span>
+                  <strong>{capability.label}</strong>
+                  <br />
+                  {capability.notes}
+                </span>
+                <span
+                  className={
+                    capability.supported && capability.enforceable
+                      ? 'text-emerald-700 font-bold'
+                      : 'text-amber-700 font-bold'
+                  }
+                >
+                  {capability.supported
+                    ? capability.enforceable
+                      ? 'Enforceable'
+                      : 'Detected / not guaranteed'
+                    : 'Unavailable'}
                 </span>
               </div>
             ))}

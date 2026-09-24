@@ -1,11 +1,39 @@
 import * as idb from 'idb-keyval';
 import { loadEncryptedJson, saveEncryptedJson } from './secureStorage';
-import { EXAMINATION_SCHEMA_VERSION, emptyExaminationState, type ExaminationState } from './types';
+import {
+  EXAMINATION_SCHEMA_VERSION,
+  emptyExaminationState,
+  type ExaminationState,
+  type StudentAttempt,
+} from './types';
+import { timerFromLegacyAttempt } from './timer';
 
 export const EXAMINATION_STATE_KEY = 'pharmatrack_examination_state_v1';
 
 function arrayOrEmpty<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function normalizeAttempt(value: unknown): StudentAttempt {
+  const attempt = value as StudentAttempt;
+  const timerState =
+    attempt.timerState ||
+    timerFromLegacyAttempt(
+      attempt.startedAt,
+      attempt.deadlineAt,
+      attempt.settingsSnapshot?.availability?.durationMinutes || 60,
+    );
+  return {
+    ...attempt,
+    timerState,
+    securityState: attempt.securityState || 'NORMAL',
+    synchronizationState: attempt.synchronizationState || 'LOCAL_ONLY',
+    saveStatus: attempt.saveStatus || 'SAVED',
+    submissionState:
+      attempt.submissionState || (attempt.status === 'SUBMITTED' ? 'SUBMITTED' : 'NOT_SUBMITTED'),
+    ownershipGeneration: attempt.ownershipGeneration || 1,
+    currentQuestionId: attempt.currentQuestionId || attempt.questionOrder?.[0],
+  };
 }
 
 /**
@@ -24,7 +52,7 @@ export function normalizeExaminationState(raw: unknown): ExaminationState {
     versions: arrayOrEmpty(value.versions),
     sessions: arrayOrEmpty(value.sessions),
     students: arrayOrEmpty(value.students),
-    attempts: arrayOrEmpty(value.attempts),
+    attempts: arrayOrEmpty<unknown>(value.attempts).map(normalizeAttempt),
     answers: arrayOrEmpty(value.answers),
     securityEvents: arrayOrEmpty(value.securityEvents),
     adminActions: arrayOrEmpty(value.adminActions),
