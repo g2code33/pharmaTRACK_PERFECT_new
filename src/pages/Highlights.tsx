@@ -92,9 +92,11 @@ const Highlights: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-r from-[#FFB703] to-[#FFA500] rounded-2xl p-6 text-white shadow-lg">
+      {/* Gold gradient: white text is invisible on this, so it uses the dark
+          brand green instead — the same pairing as every other gold surface. */}
+      <div className="bg-gradient-to-r from-[#FFB703] to-[#FFA500] rounded-2xl p-6 text-[#1B4332] shadow-lg">
         <h1 className="text-2xl font-bold mb-1 flex items-center gap-2">⭐ Study Bank</h1>
-        <p className="text-white/90 text-sm">
+        <p className="text-[#1B4332]/80 text-sm">
           {state.highlights.length === 0
             ? 'Highlights you save while reading will collect here.'
             : `${state.highlights.length} saved highlight${state.highlights.length === 1 ? '' : 's'}`}

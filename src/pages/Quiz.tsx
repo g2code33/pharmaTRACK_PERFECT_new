@@ -816,7 +816,7 @@ const Quiz: React.FC = () => {
                 currentIndex === idx
                   ? 'bg-blue-600 text-white'
                   : answer?.flagged
-                  ? 'bg-yellow-400 text-white'
+                  ? 'bg-yellow-400 text-yellow-900'
                   : answer?.answer
                   ? 'bg-green-100 text-green-700 border border-green-300'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
