@@ -14,10 +14,19 @@ import { ExaminationRepository } from '../examination/service';
 import { examinationResultToQuizHistory } from '../examination/results';
 import { LanExamClient, LocalExamAuthority } from '../examination/network';
 import { ExaminationSyncEngine } from '../examination/sync';
+import type { LanExamTransport } from '../examination/network';
 import { remainingMilliseconds } from '../examination/timer';
 import { createPlatformKioskAdapter } from '../examination/androidAdapter';
+import { verifyAdminExitPassword } from '../examination/package';
+import { loadStagedPharmaExam } from '../examination/packageCache';
 import type { KioskAdapter } from '../examination/kioskAdapter';
 import type { ExamQuestionSnapshot, StudentAttempt } from '../examination/types';
+import {
+  enterSecureKiosk,
+  markSecureKioskSubmitting,
+  onBlockedKioskNavigation,
+  releaseSecureKiosk,
+} from '../examination/kioskState';
 
 const SecureExamination: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -41,8 +50,16 @@ const SecureExamination: React.FC = () => {
   const [navigationBusy, setNavigationBusy] = useState(false);
   const adapterRef = useRef<KioskAdapter | null>(null);
   const cleanupKioskRef = useRef<(() => void) | null>(null);
+  const blockedNavigationCleanupRef = useRef<(() => void) | null>(null);
   const syncRef = useRef<ExaminationSyncEngine | null>(null);
+  const authorityRef = useRef<LanExamTransport | null>(null);
   const autosaveRef = useRef(false);
+  const finalizingRef = useRef(false);
+  const finalizeSubmissionRef = useRef<
+    ((forced: boolean, trigger: 'MANUAL' | 'EXPIRY') => Promise<void>) | null
+  >(null);
+  const submittedRef = useRef(false);
+  submittedRef.current = submitted;
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const authorityClockRef = useRef<{
     serverMilliseconds: number;
@@ -107,6 +124,21 @@ const SecureExamination: React.FC = () => {
         Object.fromEntries(version.questions.map((question) => [question.id, question])),
       );
       setMessage('');
+      if (saved.status === 'SUBMITTED' || saved.status === 'KIOSK_RELEASED' || saved.status === 'CLOSED') {
+        setSubmitted(true);
+        return;
+      }
+      if (saved.status === 'SUBMITTING') {
+        const resumed = await opened.submitAttempt(
+          saved.id,
+          true,
+          saved.deviceSessionId,
+          saved.submissionTrigger || 'RECOVERY',
+        );
+        setAttempt(resumed);
+        setSubmitted(true);
+        return;
+      }
       const session = opened.snapshot.sessions.find((item) => item.id === saved.sessionId);
       const authority = session?.authorityEndpoint
         ? new LanExamClient(session.authorityEndpoint, fetch, {
@@ -123,11 +155,68 @@ const SecureExamination: React.FC = () => {
         /* encrypted local timer remains available while LAN reconnects */
       }
       setAuthorityClock(authorityNowAt);
+      authorityRef.current = authority;
       const timer = await opened.getAttemptTimer(saved.id, authorityNowAt);
       setAttempt({ ...saved, timerState: timer.timer });
       setSeconds(Math.ceil(timer.remainingMilliseconds / 1000));
       syncRef.current = new ExaminationSyncEngine(opened, authority, saved.sessionId);
+      const blockedRoutes = [
+        ...(version.security.disableAI ? ['/ai'] : []),
+        ...(version.security.disableNotes ? ['/notes'] : []),
+        ...(version.security.disableMaterials ? ['/materials', '/library', '/archive', '/read'] : []),
+      ];
+      enterSecureKiosk(
+        saved.id,
+        Boolean(version.security.fullLockdown ?? version.security.lockdown),
+        blockedRoutes,
+      );
+      blockedNavigationCleanupRef.current = onBlockedKioskNavigation((path) => {
+        void opened.logSecurityEvent({
+          attemptId: saved.id,
+          sessionId: saved.sessionId,
+          studentId: saved.studentId,
+          deviceSessionId: saved.deviceSessionId,
+          type: 'NAVIGATION_BLOCKED',
+          severity: 'warning',
+          details: `Central secure-exam route gate blocked navigation to ${path}.`,
+        });
+      });
       const adapter = await createPlatformKioskAdapter((violation) => {
+        if (violation.violation === 'ATTEMPTED_EXIT') {
+          void opened.requestManualEarlyExit(saved.id).then(async (policy) => {
+            if (policy === 'DISALLOW_EARLY_EXIT') {
+              setMessage('Early exit is disabled for this examination. Use SUBMIT EXAM or wait for expiry.');
+              return;
+            }
+            let authorized = policy === 'ALLOW_FREE_EXIT';
+            if (policy === 'ADMIN_AUTH_REQUIRED') {
+              const supplied = window.prompt('Enter the separate examination administrator exit authorization.');
+              const stagedPackage = await loadStagedPharmaExam();
+              authorized = Boolean(
+                supplied && stagedPackage && (await verifyAdminExitPassword(supplied, stagedPackage.security)),
+              );
+            }
+            if (!authorized) {
+              setMessage('Separate examination administrator authorization was rejected. RX30 cannot authorize early exit.');
+              return;
+            }
+            try {
+              const closed = await opened.authorizeManualEarlyExit(
+                saved.id,
+                true,
+                'package-admin-password',
+                undefined,
+                'PACKAGE_ADMIN_PASSWORD',
+                false,
+              );
+              setAttempt(closed);
+              await finalizeSubmissionRef.current?.(true, 'MANUAL');
+            } catch (error) {
+              setMessage(error instanceof Error ? error.message : 'Administrator early-exit authorization failed.');
+            }
+          });
+          return;
+        }
         void opened
           .recordSecurityViolation(saved.id, violation.violation, violation.detail)
           .then((result) => {
@@ -139,7 +228,15 @@ const SecureExamination: React.FC = () => {
             )
               setAttempt(result.attempt);
           });
-      }, version.security.requiredCapabilities || []);
+      }, version.security.requiredCapabilities || [], {
+        navigation: version.security.disableNavigation !== false,
+        copyPaste: version.security.disableCopyPaste !== false,
+        printing: version.security.disablePrinting !== false,
+        externalLinks: version.security.disableExternalLinks !== false,
+        developerTools: version.security.disableDeveloperTools !== false,
+        exit: version.security.restrictExit !== false,
+        focus: version.security.detectFocusLoss !== false,
+      });
       adapterRef.current = adapter;
       cleanupKioskRef.current = adapter.install();
       // The browser adapter is deliberately still installed in a native build:
@@ -156,23 +253,40 @@ const SecureExamination: React.FC = () => {
         }
       }
       void adapter.requestFullscreen();
+      const enteredAttempt = await opened.enterKiosk(saved.id);
+      setAttempt(enteredAttempt);
     })();
     return () => {
       cancelled = true;
-      void adapterRef.current?.exitSecureMode?.();
+      // Removing a React component is not a release authorization. Keep the
+      // application/native kiosk active until terminal submission is durable.
       cleanupKioskRef.current?.();
       cleanupKioskRef.current = null;
+      blockedNavigationCleanupRef.current?.();
+      blockedNavigationCleanupRef.current = null;
     };
   }, [attemptId]);
 
   useEffect(() => {
     if (!submitted) return;
-    // Restore the normal desktop window as soon as the attempt is closed,
-    // rather than waiting for the student to click Return to Quiz.
-    void adapterRef.current?.exitSecureMode?.();
-    cleanupKioskRef.current?.();
-    cleanupKioskRef.current = null;
-  }, [submitted]);
+    void (async () => {
+      if (repository && attempt) {
+        try {
+          const released = await repository.releaseKiosk(attempt.id);
+          setAttempt(released);
+        } catch (error) {
+          // Do not release the application/native boundary until the explicit
+          // RELEASED record is durable. A reload retries this transition.
+          setMessage(error instanceof Error ? error.message : 'Kiosk release could not be persisted safely.');
+          return;
+        }
+      }
+      releaseSecureKiosk();
+      await adapterRef.current?.exitSecureMode?.();
+      cleanupKioskRef.current?.();
+      cleanupKioskRef.current = null;
+    })();
+  }, [submitted, repository, attempt]);
 
   useEffect(() => {
     if (!repository || !attempt || submitted) return;
@@ -182,12 +296,12 @@ const SecureExamination: React.FC = () => {
         ? remainingMilliseconds(attempt.timerState, new Date(authorityNow()).toISOString())
         : Math.max(0, new Date(deadline).getTime() - authorityNow());
       setSeconds(Math.ceil(remaining / 1000));
-      if (remaining <= 0 && attempt.status === 'ACTIVE') {
-        void repository.submitAttempt(attempt.id, true).then((closed) => {
-          setAttempt(closed);
-          appendQuizHistoryResult(closed);
-          setSubmitted(true);
-        });
+      if (
+        remaining <= 0 &&
+        ['ACTIVE', 'RECOVERY_PENDING', 'PAUSED'].includes(attempt.status) &&
+        !finalizingRef.current
+      ) {
+        void finalizeSubmission(true, 'EXPIRY');
       }
     }, 1000);
     return () => window.clearInterval(timer);
@@ -312,30 +426,70 @@ const SecureExamination: React.FC = () => {
     setNavigationBusy(false);
   };
 
-  const submit = async () => {
-    if (!repository || !attempt || navigationBusy) return;
+  const finalizeSubmission = async (
+    forced: boolean,
+    trigger: 'MANUAL' | 'EXPIRY' = forced ? 'EXPIRY' : 'MANUAL',
+  ) => {
+    if (!repository || !attempt || finalizingRef.current || submittedRef.current) return;
+    finalizingRef.current = true;
+    markSecureKioskSubmitting();
     setNavigationBusy(true);
-    const persisted = await saveCurrentBeforeNavigation();
-    if (!persisted) {
+    try {
+      // Save the currently edited answer first, then flush queued revisions.
+      const persisted = await saveCurrentBeforeNavigation();
+      if (!persisted) return;
+      const syncResult = await syncRef.current?.flush();
+      if (syncResult) setSyncState(syncResult.state);
+      const session = repository.snapshot.sessions.find((item) => item.id === attempt.sessionId);
+      if (session?.authorityEndpoint) {
+        try {
+          // Submission is idempotent at the LAN authority as well as locally.
+          // The local authority shares this repository, so it is finalized once
+          // below to preserve EXPIRY versus MANUAL trigger semantics.
+          await authorityRef.current?.submitAttempt?.(
+            attempt.sessionId,
+            attempt.id,
+            attempt.deviceSessionId,
+          );
+        } catch {
+          await repository.markSynchronizationUnavailable(
+            attempt.sessionId,
+            `${trigger} submission queued while the LAN authority was unavailable.`,
+          );
+          setSyncState('RECOVERY_PENDING');
+        }
+      }
+      const closed = await repository.submitAttempt(
+        attempt.id,
+        forced,
+        attempt.deviceSessionId,
+        trigger,
+      );
+      if (trigger === 'MANUAL') {
+        await repository.logSecurityEvent({
+          attemptId: closed.id,
+          sessionId: closed.sessionId,
+          studentId: closed.studentId,
+          deviceSessionId: closed.deviceSessionId,
+          type: 'SUBMITTED',
+          severity: 'info',
+          details: 'Student submitted after save and synchronization reconciliation; no password was requested.',
+        });
+      }
+      setAttempt(closed);
+      appendQuizHistoryResult(closed);
+      setSubmitted(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'The examination could not be finalized safely.');
+    } finally {
+      finalizingRef.current = false;
       setNavigationBusy(false);
-      return;
     }
-    await syncRef.current?.flush();
-    const closed = await repository.submitAttempt(attempt.id, false, attempt.deviceSessionId);
-    await repository.logSecurityEvent({
-      attemptId: closed.id,
-      sessionId: closed.sessionId,
-      studentId: closed.studentId,
-      deviceSessionId: closed.deviceSessionId,
-      type: 'SUBMITTED',
-      severity: 'info',
-      details: 'Student submitted after local save confirmation.',
-    });
-    setAttempt(closed);
-    appendQuizHistoryResult(closed);
-    setSubmitted(true);
-    setNavigationBusy(false);
   };
+
+  finalizeSubmissionRef.current = finalizeSubmission;
+
+  const submit = async () => finalizeSubmission(false, 'MANUAL');
 
   if (message)
     return (
@@ -496,7 +650,7 @@ const SecureExamination: React.FC = () => {
             }}
             className="mt-5 w-full rounded-xl bg-amber-400 text-slate-950 py-3 font-black flex items-center justify-center gap-2"
           >
-            <Send className="w-4 h-4" /> Submit attempt
+            <Send className="w-4 h-4" /> SUBMIT EXAM
           </button>
           <p className="text-xs text-white/50 mt-3 flex gap-1">
             <AlertTriangle className="w-4 h-4 shrink-0" />

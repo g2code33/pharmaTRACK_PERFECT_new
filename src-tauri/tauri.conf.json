@@ -11,6 +11,14 @@
     "copyright": "",
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "fileAssociations": [
+      {
+        "ext": ["pharmaexam"],
+        "mimeType": ["application/x-pharmaexam"],
+        "description": "PharmaTRACK Secure Examination",
+        "role": "Viewer"
+      }
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

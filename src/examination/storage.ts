@@ -4,6 +4,7 @@ import {
   EXAMINATION_SCHEMA_VERSION,
   emptyExaminationState,
   type ExaminationState,
+  type ExamVersion,
   type StudentAttempt,
 } from './types';
 import { timerFromLegacyAttempt } from './timer';
@@ -14,8 +15,28 @@ function arrayOrEmpty<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function migrateSecurity<T extends { security: StudentAttempt['settingsSnapshot']['security'] }>(value: T): T {
+  const security = value.security;
+  return {
+    ...value,
+    security: {
+      ...security,
+      fullLockdown: security.fullLockdown ?? security.lockdown ?? false,
+      manualExitPolicy:
+        security.manualExitPolicy ?? (security.restrictExit === false ? 'ALLOW_FREE_EXIT' : 'ADMIN_AUTH_REQUIRED'),
+    },
+  };
+}
+
 function normalizeAttempt(value: unknown): StudentAttempt {
-  const attempt = value as StudentAttempt;
+  const raw = value as StudentAttempt;
+  const attempt = {
+    ...raw,
+    settingsSnapshot: {
+      ...raw.settingsSnapshot,
+      security: migrateSecurity({ security: raw.settingsSnapshot.security }).security,
+    },
+  } as StudentAttempt;
   const timerState =
     attempt.timerState ||
     timerFromLegacyAttempt(
@@ -30,7 +51,21 @@ function normalizeAttempt(value: unknown): StudentAttempt {
     synchronizationState: attempt.synchronizationState || 'LOCAL_ONLY',
     saveStatus: attempt.saveStatus || 'SAVED',
     submissionState:
-      attempt.submissionState || (attempt.status === 'SUBMITTED' ? 'SUBMITTED' : 'NOT_SUBMITTED'),
+      attempt.submissionState ||
+      (attempt.status === 'SUBMITTING'
+        ? 'SUBMITTING'
+        : attempt.status === 'SUBMITTED' || attempt.status === 'KIOSK_RELEASED'
+          ? 'SUBMITTED'
+          : 'NOT_SUBMITTED'),
+    kioskLifecycle:
+      attempt.kioskLifecycle ||
+      (attempt.status === 'SUBMITTING'
+        ? 'SUBMITTING'
+        : attempt.status === 'KIOSK_RELEASED'
+          ? 'RELEASED'
+          : attempt.status === 'SUBMITTED'
+            ? 'SUBMITTED'
+            : 'ACTIVE'),
     ownershipGeneration: attempt.ownershipGeneration || 1,
     currentQuestionId: attempt.currentQuestionId || attempt.questionOrder?.[0],
   };
@@ -49,7 +84,10 @@ export function normalizeExaminationState(raw: unknown): ExaminationState {
     ...base,
     schemaVersion: EXAMINATION_SCHEMA_VERSION,
     exams: arrayOrEmpty(value.exams),
-    versions: arrayOrEmpty(value.versions),
+    versions: arrayOrEmpty<ExamVersion>(value.versions).map((version) => ({
+      ...version,
+      security: migrateSecurity({ security: version.security }).security,
+    })),
     sessions: arrayOrEmpty(value.sessions),
     students: arrayOrEmpty(value.students),
     attempts: arrayOrEmpty<unknown>(value.attempts).map(normalizeAttempt),

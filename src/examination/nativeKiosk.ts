@@ -5,6 +5,7 @@ import {
   createCapabilityMatrix,
   KIOSK_CAPABILITY_IDS,
   type KioskAdapter,
+  type KioskRestrictionPolicy,
   type KioskViolation,
 } from './kioskAdapter';
 import type { PlatformCapability, PlatformCapabilityMatrix } from './types';
@@ -28,6 +29,31 @@ interface NativeSecureExamEvent {
 }
 
 /** Tauri's global is intentionally feature-detected so the web build stays a normal web app. */
+export async function consumePharmaExamLaunches(
+  onPath: (path: string) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => undefined;
+  let unlisten: UnlistenFn | undefined;
+  try {
+    unlisten = await listen<string[] | string>('pharmaexam-file-opened', (event) => {
+      const paths = Array.isArray(event.payload) ? event.payload : [event.payload];
+      paths.filter((path) => path.toLowerCase().endsWith('.pharmaexam')).forEach(onPath);
+    });
+    const pending = await invoke<string[]>('get_pending_pharmaexam_files');
+    pending
+      .filter((path) => path.toLowerCase().endsWith('.pharmaexam'))
+      .forEach(onPath);
+  } catch {
+    // The web build and older native hosts simply have no external-file route.
+  }
+  return () => unlisten?.();
+}
+
+export async function readPharmaExamLaunch(path: string): Promise<Uint8Array> {
+  const bytes = await invoke<number[]>('read_pharmaexam_file', { path });
+  return new Uint8Array(bytes);
+}
+
 export function isTauriRuntime(): boolean {
   if (typeof window === 'undefined') return false;
   const candidate = window as Window & {
@@ -95,6 +121,14 @@ function nativeMatrix(requiredIds: string[]): PlatformCapabilityMatrix {
     notes:
       'PC desktop task-switching and operating-system lockdown are not claimed; use a managed OS policy if required.',
   });
+  set(KIOSK_CAPABILITY_IDS.fileAssociation, {
+    supported: true,
+    enforceable: true,
+    detected: true,
+    supportLevel: 'SUPPORTED',
+    notes:
+      'The Tauri bundle registers .pharmaexam and the native startup queue passes only that extension to the Kiosk route.',
+  });
   return matrix;
 }
 
@@ -105,8 +139,9 @@ function nativeMatrix(requiredIds: string[]): PlatformCapabilityMatrix {
 export function createTauriKioskAdapter(
   onViolation: (event: KioskViolation) => void,
   requiredIds: string[] = [],
+  policy: KioskRestrictionPolicy = {},
 ): KioskAdapter {
-  const browser = createBrowserKioskAdapter(onViolation, requiredIds);
+  const browser = createBrowserKioskAdapter(onViolation, requiredIds, policy);
   const matrix = nativeMatrix(requiredIds);
   let sessionToken: string | undefined;
   let unlisten: UnlistenFn | undefined;

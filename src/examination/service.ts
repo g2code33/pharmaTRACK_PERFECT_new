@@ -52,6 +52,7 @@ import type { ExamQuestion } from '../types';
 
 const DEFAULT_SECURITY: ExamSecuritySettings = {
   lockdown: false,
+  fullLockdown: false,
   capabilityFailurePolicy: 'ALLOW_WITH_WARNING',
   kioskMode: false,
   allowBackNavigation: true,
@@ -71,6 +72,12 @@ const DEFAULT_SECURITY: ExamSecuritySettings = {
   restrictWindowControls: true,
   restrictScreenCapture: true,
   restrictExit: true,
+  disableAI: true,
+  disableNotes: true,
+  disableMaterials: true,
+  restrictAppSwitching: true,
+  restrictApplicationExit: true,
+  manualExitPolicy: 'ADMIN_AUTH_REQUIRED',
   requiredCapabilities: [],
   violationPolicies: {
     FOCUS_LOST: 'LOG_ONLY',
@@ -98,6 +105,19 @@ const DEFAULT_SCORING: ExamScoringSettings = {
 };
 
 const DEFAULT_AVAILABILITY: ExamAvailability = { durationMinutes: 60 };
+
+/** Normalize imported version-1 security without changing its existing semantics. */
+export function normalizeExamSecurity(
+  security: Partial<ExamSecuritySettings> | ExamSecuritySettings,
+): ExamSecuritySettings {
+  const merged = { ...DEFAULT_SECURITY, ...security };
+  return {
+    ...merged,
+    fullLockdown: security.fullLockdown ?? security.lockdown ?? false,
+    manualExitPolicy:
+      security.manualExitPolicy ?? (security.restrictExit === false ? 'ALLOW_FREE_EXIT' : 'ADMIN_AUTH_REQUIRED'),
+  };
+}
 
 export interface CreateVersionInput {
   title: string;
@@ -295,7 +315,7 @@ export class ExaminationRepository {
       questions: buildQuestionSnapshots(questions, examId, versionNumber, input.marksByQuestion),
       scoring: { ...DEFAULT_SCORING, ...input.scoring },
       availability: { ...DEFAULT_AVAILABILITY, ...input.availability },
-      security: { ...DEFAULT_SECURITY, ...input.security },
+      security: normalizeExamSecurity(input.security || DEFAULT_SECURITY),
       navigation: {
         randomizeQuestions: false,
         randomizeOptions: false,
@@ -577,9 +597,10 @@ export class ExaminationRepository {
       (attempt) =>
         attempt.sessionId === sessionId &&
         attempt.studentId === studentId &&
-        ['READY', 'ACTIVE', 'PAUSED', 'DEVICE_LOST', 'RECOVERY_PENDING'].includes(attempt.status),
+        ['READY', 'ACTIVE', 'PAUSED', 'SUBMITTING', 'DEVICE_LOST', 'RECOVERY_PENDING'].includes(attempt.status),
     );
     if (existing) {
+      if (existing.status === 'SUBMITTING') return { attempt: existing, continued: true };
       const previousDeviceSessionId = existing.deviceSessionId;
       for (const device of this.state.deviceSessions) {
         if (
@@ -687,6 +708,7 @@ export class ExaminationRepository {
       securityState: 'NORMAL',
       synchronizationState: 'LOCAL_ONLY',
       saveStatus: 'SAVED',
+      kioskLifecycle: 'NOT_ENTERED',
       submissionState: 'NOT_SUBMITTED',
       ownershipGeneration: 1,
       localRevision: 0,
@@ -796,16 +818,23 @@ export class ExaminationRepository {
     return saved;
   }
 
+  /**
+   * Idempotent finalization. The intermediate SUBMITTING record is persisted
+   * before the terminal record so a crash cannot turn a second click/retry into
+   * a second attempt or permit answers after finalization.
+   */
   async submitAttempt(
     attemptId: string,
     forced = false,
     deviceSessionId?: string,
+    trigger: StudentAttempt['submissionTrigger'] = forced ? 'ADMIN_FORCE' : 'MANUAL',
   ): Promise<StudentAttempt> {
     const attempt = this.requireAttempt(attemptId);
     if (!forced && deviceSessionId && deviceSessionId !== attempt.deviceSessionId)
       throw new Error('This device session no longer owns the active attempt.');
     if (
       attempt.status === 'SUBMITTED' ||
+      attempt.status === 'KIOSK_RELEASED' ||
       attempt.status === 'CLOSED' ||
       attempt.status === 'LOCKED'
     ) {
@@ -813,16 +842,150 @@ export class ExaminationRepository {
       await this.save();
       return attempt;
     }
+    if (attempt.status === 'SUBMITTING') {
+      // A recovered retry completes the same attempt; it never creates another.
+      attempt.status = 'SUBMITTED';
+      attempt.submissionState = trigger === 'EXPIRY' ? 'EXPIRED' : forced ? 'FORCE_SUBMITTED' : 'SUBMITTED';
+      attempt.submittedAt ||= new Date().toISOString();
+      attempt.submissionTrigger ||= trigger;
+      this.ensureResult(attempt);
+      await this.save();
+      if (trigger === 'EXPIRY') {
+        await this.logSecurityEvent({
+          attemptId: attempt.id,
+          sessionId: attempt.sessionId,
+          studentId: attempt.studentId,
+          deviceSessionId: attempt.deviceSessionId,
+          type: 'EXPIRY_SUBMITTED',
+          severity: 'info',
+          details: 'Recovered timer expiry finalized the staged submission without a password.',
+        });
+      }
+      return attempt;
+    }
+    if (!['ACTIVE', 'PAUSED', 'RECOVERY_PENDING', 'READY'].includes(attempt.status))
+      throw new Error('This attempt cannot be submitted from its current lifecycle state.');
+    const previousStatus = attempt.status;
+    const previousSubmissionState = attempt.submissionState;
+    attempt.status = 'SUBMITTING';
+    attempt.kioskLifecycle = 'SUBMITTING';
+    attempt.submissionState = 'SUBMITTING';
+    attempt.submissionTrigger = trigger;
+    if (!(await this.save())) {
+      attempt.status = previousStatus;
+      attempt.submissionState = previousSubmissionState;
+      attempt.kioskLifecycle = 'ACTIVE';
+      throw new Error('Submission could not be durably staged locally.');
+    }
     attempt.status = 'SUBMITTED';
-    attempt.submissionState = forced ? 'FORCE_SUBMITTED' : 'SUBMITTED';
-    attempt.submittedAt = new Date().toISOString();
+    attempt.kioskLifecycle = 'SUBMITTED';
+    attempt.submissionState = trigger === 'EXPIRY' ? 'EXPIRED' : forced ? 'FORCE_SUBMITTED' : 'SUBMITTED';
+    attempt.submittedAt = attempt.submittedAt || new Date().toISOString();
     attempt.synchronizationState =
       attempt.synchronizationState === 'DEGRADED'
         ? 'RECOVERY_PENDING'
         : attempt.synchronizationState;
     this.ensureResult(attempt);
-    await this.save();
+    if (!(await this.save())) throw new Error('Finalized examination could not be durably saved.');
+    if (trigger === 'EXPIRY') {
+      await this.logSecurityEvent({
+        attemptId: attempt.id,
+        sessionId: attempt.sessionId,
+        studentId: attempt.studentId,
+        deviceSessionId: attempt.deviceSessionId,
+        type: 'EXPIRY_SUBMITTED',
+        severity: 'info',
+        details: 'Authoritative timer expiry finalized the attempt without a password or student action.',
+      });
+    }
     return attempt;
+  }
+
+  async enterKiosk(attemptId: string): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    if (attempt.status !== 'ACTIVE' && attempt.status !== 'PAUSED' && attempt.status !== 'RECOVERY_PENDING')
+      throw new Error('Kiosk entry is only valid for an active attempt.');
+    if (attempt.kioskLifecycle === 'ACTIVE') return attempt;
+    attempt.kioskLifecycle = 'ACTIVE';
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'KIOSK_ENTERED',
+      severity: 'info',
+      details: 'Secure examination kiosk entered after readiness and identity checks.',
+    });
+    if (!(await this.save())) throw new Error('Kiosk entry could not be durably persisted.');
+    return attempt;
+  }
+
+  async releaseKiosk(attemptId: string): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    if (attempt.status !== 'SUBMITTED' && attempt.status !== 'CLOSED')
+      throw new Error('Kiosk release is only valid after terminal submission.');
+    if (attempt.kioskLifecycle === 'RELEASED') return attempt;
+    attempt.kioskLifecycle = 'RELEASED';
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'KIOSK_RELEASED',
+      severity: 'info',
+      details: 'Secure examination kiosk released after terminal submission.',
+    });
+    if (!(await this.save())) throw new Error('Kiosk release could not be durably persisted.');
+    return attempt;
+  }
+
+  async requestManualEarlyExit(attemptId: string): Promise<import('./types').ManualExitPolicy> {
+    const attempt = this.requireAttempt(attemptId);
+    const policy = attempt.settingsSnapshot.security.manualExitPolicy ||
+      (attempt.settingsSnapshot.security.restrictExit === false ? 'ALLOW_FREE_EXIT' : 'ADMIN_AUTH_REQUIRED');
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: 'EARLY_EXIT_REQUESTED',
+      severity: policy === 'DISALLOW_EARLY_EXIT' ? 'warning' : 'info',
+      details: `Manual early exit requested; policy is ${policy}.`,
+    });
+    return policy;
+  }
+
+  async authorizeManualEarlyExit(
+    attemptId: string,
+    authorized: boolean,
+    adminId = 'examination-admin',
+    adminDeviceSessionId?: string,
+    authorizationSource: 'ADMIN_DEVICE' | 'PACKAGE_ADMIN_PASSWORD' = 'ADMIN_DEVICE',
+    finalize = true,
+  ): Promise<StudentAttempt> {
+    const attempt = this.requireAttempt(attemptId);
+    const policy = attempt.settingsSnapshot.security.manualExitPolicy || 'ADMIN_AUTH_REQUIRED';
+    if (policy === 'DISALLOW_EARLY_EXIT') throw new Error('Early exit is disabled for this examination.');
+    if (policy === 'ADMIN_AUTH_REQUIRED' && !authorized)
+      throw new Error('Separate examination administrator authorization is required.');
+    if (policy === 'ADMIN_AUTH_REQUIRED' && authorized && !adminDeviceSessionId && authorizationSource !== 'PACKAGE_ADMIN_PASSWORD')
+      throw new Error('A connected examination administrator device or package administrator verifier is required.');
+    if (authorized && adminDeviceSessionId) this.requireAdminDevice(adminDeviceSessionId);
+    await this.logSecurityEvent({
+      attemptId: attempt.id,
+      sessionId: attempt.sessionId,
+      studentId: attempt.studentId,
+      deviceSessionId: attempt.deviceSessionId,
+      type: authorized ? 'EARLY_EXIT_AUTHORIZED' : 'EARLY_EXIT_DENIED',
+      severity: authorized ? 'warning' : 'info',
+      details: authorized
+        ? `Manual early exit authorized by ${adminId}; RX30 was not used.`
+        : 'Manual early exit authorization was denied.',
+    });
+    if (!authorized) throw new Error('Manual early exit was not authorized.');
+    return finalize
+      ? this.submitAttempt(attempt.id, true, attempt.deviceSessionId, 'ADMIN_FORCE')
+      : attempt;
   }
 
   getExaminationResult(attemptId: string): ExaminationResult | undefined {
@@ -1227,9 +1390,13 @@ export class ExaminationRepository {
       attempt.submissionState = 'TERMINATED';
     }
     if (policy === 'FORCE_SUBMIT') {
-      attempt.status = 'SUBMITTED';
-      attempt.submissionState = 'FORCE_SUBMITTED';
-      attempt.submittedAt = new Date().toISOString();
+      const finalized = await this.submitAttempt(
+        attempt.id,
+        true,
+        attempt.deviceSessionId,
+        'ADMIN_FORCE',
+      );
+      return { policy, attempt: finalized };
     }
     await this.save();
     return { policy, attempt };

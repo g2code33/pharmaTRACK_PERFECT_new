@@ -54,6 +54,8 @@ export interface PharmaExamPackage {
   security: {
     settings: ExamSecuritySettings;
     examPasswordVerifier?: Awaited<ReturnType<typeof derivePasswordVerifier>>;
+    /** Optional verifier for manual early exit; never the student RX30 verifier. */
+    adminExitPasswordVerifier?: Awaited<ReturnType<typeof derivePasswordVerifier>>;
   };
   institution: ExamInstitutionInfo;
   questions: ExamVersion['questions'];
@@ -209,6 +211,8 @@ export async function createPharmaExamPackage(input: {
   signingKey: CryptoKeyPair;
   packageId?: string;
   examPassword?: string;
+  /** Separate examination-administrator credential, never RX30. */
+  adminExitPassword?: string;
   assets?: Record<string, string | Uint8Array | Blob>;
 }): Promise<PharmaExamPackage> {
   if (!input.version.immutable || !input.version.publishedAt)
@@ -222,6 +226,9 @@ export async function createPharmaExamPackage(input: {
     settings: input.version.security,
     ...(input.examPassword
       ? { examPasswordVerifier: await derivePasswordVerifier(input.examPassword) }
+      : {}),
+    ...(input.adminExitPassword
+      ? { adminExitPasswordVerifier: await derivePasswordVerifier(input.adminExitPassword) }
       : {}),
   };
   const files: Record<string, string | Uint8Array | Blob> = {
@@ -375,6 +382,14 @@ export async function verifyExamPassword(
 ): Promise<boolean> {
   if (!security.examPasswordVerifier) return true;
   return verifyPassword(password, security.examPasswordVerifier);
+}
+
+export async function verifyAdminExitPassword(
+  password: string,
+  security: PharmaExamPackage['security'],
+): Promise<boolean> {
+  if (!security.adminExitPasswordVerifier) return false;
+  return verifyPassword(password, security.adminExitPasswordVerifier);
 }
 
 export function packageContainsPlaintextPassword(packageData: string, password: string): boolean {

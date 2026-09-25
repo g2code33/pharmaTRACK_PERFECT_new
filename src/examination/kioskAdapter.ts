@@ -17,12 +17,23 @@ export const KIOSK_CAPABILITY_IDS = {
   focus: 'focus-monitoring',
   immersive: 'immersive-window',
   lockTask: 'android-lock-task',
+  fileAssociation: 'pharmaexam-file-association',
 } as const;
 
 export interface KioskViolation {
   violation: SecurityViolation;
   detail: string;
   prevented: boolean;
+}
+
+export interface KioskRestrictionPolicy {
+  navigation?: boolean;
+  copyPaste?: boolean;
+  printing?: boolean;
+  externalLinks?: boolean;
+  developerTools?: boolean;
+  exit?: boolean;
+  focus?: boolean;
 }
 
 export interface KioskAdapter {
@@ -157,6 +168,14 @@ export function createCapabilityMatrix(
       requiredIds.includes(KIOSK_CAPABILITY_IDS.lockTask),
       'Available only through a separately deployed native adapter with OS permission; not guaranteed in web mode.',
     ),
+    capability(
+      KIOSK_CAPABILITY_IDS.fileAssociation,
+      'PharmaTRACK .pharmaexam file association / intent route',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.fileAssociation),
+      'Available only when the Tauri PC bundle or an Android host bridge actually registers the file route.',
+    ),
   ];
   return { platform: kind, generatedAt: new Date().toISOString(), capabilities };
 }
@@ -174,7 +193,17 @@ export function requiredCapabilitiesReady(
 export function createBrowserKioskAdapter(
   onViolation: (event: KioskViolation) => void,
   requiredIds: string[] = [],
+  policy: KioskRestrictionPolicy = {},
 ): KioskAdapter {
+  const restrictions = {
+    navigation: policy.navigation !== false,
+    copyPaste: policy.copyPaste !== false,
+    printing: policy.printing !== false,
+    externalLinks: policy.externalLinks !== false,
+    developerTools: policy.developerTools !== false,
+    exit: policy.exit !== false,
+    focus: policy.focus !== false,
+  };
   const matrix = createCapabilityMatrix(platform(), requiredIds);
   const prevent = (event: Event, violation: SecurityViolation, detail: string) => {
     event.preventDefault();
@@ -191,20 +220,27 @@ export function createBrowserKioskAdapter(
     const onKey = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       const modifier = event.ctrlKey || event.metaKey;
-      if (modifier && ['c', 'v', 'x', 'p', 's', 'u'].includes(key))
+      if (
+        modifier &&
+        ((restrictions.copyPaste && ['c', 'v', 'x', 's', 'u'].includes(key)) ||
+          (restrictions.printing && key === 'p'))
+      )
         prevent(
           event,
           key === 'p' ? 'ATTEMPTED_PRINT' : 'ATTEMPTED_COPY_PASTE',
           `Shortcut Ctrl/Command+${key.toUpperCase()} was attempted.`,
         );
-      if (key === 'f12' || (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(key)))
+      if (
+        restrictions.developerTools &&
+        (key === 'f12' || (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(key)))
+      )
         onViolation({
           violation: 'DEVELOPER_TOOL_ATTEMPT',
           detail:
             'A developer-tools shortcut was attempted; browser enforcement is not guaranteed.',
           prevented: false,
         });
-      if (key === 'escape')
+      if (restrictions.exit && key === 'escape')
         onViolation({
           violation: 'ATTEMPTED_EXIT',
           detail: 'Escape was pressed in secure examination.',
@@ -272,37 +308,51 @@ export function createBrowserKioskAdapter(
         detail: `Document visibility changed to ${document.visibilityState}.`,
         prevented: false,
       });
-    document.addEventListener('copy', onCopy);
-    document.addEventListener('cut', onCopy);
-    document.addEventListener('paste', onCopy);
-    document.addEventListener('contextmenu', onContext);
-    document.addEventListener('keydown', onKey, true);
-    document.addEventListener('click', onClick, true);
-    window.addEventListener('beforeprint', onPrint);
-    window.addEventListener('beforeunload', onBeforeUnload);
-    window.addEventListener('blur', onBlur);
-    window.addEventListener('focus', onFocus);
+    if (restrictions.copyPaste) {
+      document.addEventListener('copy', onCopy);
+      document.addEventListener('cut', onCopy);
+      document.addEventListener('paste', onCopy);
+      document.addEventListener('contextmenu', onContext);
+    }
+    if (restrictions.copyPaste || restrictions.printing || restrictions.developerTools || restrictions.exit)
+      document.addEventListener('keydown', onKey, true);
+    if (restrictions.externalLinks) document.addEventListener('click', onClick, true);
+    if (restrictions.printing) window.addEventListener('beforeprint', onPrint);
+    if (restrictions.exit) window.addEventListener('beforeunload', onBeforeUnload);
+    if (restrictions.focus) {
+      window.addEventListener('blur', onBlur);
+      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onVisibility);
+    }
     window.addEventListener('offline', onOffline);
     window.addEventListener('online', onOnline);
-    document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('hashchange', restoreSecureRoute);
-    window.addEventListener('popstate', restoreSecureRoute);
+    if (restrictions.navigation) {
+      window.addEventListener('hashchange', restoreSecureRoute);
+      window.addEventListener('popstate', restoreSecureRoute);
+    }
     return () => {
-      document.removeEventListener('copy', onCopy);
-      document.removeEventListener('cut', onCopy);
-      document.removeEventListener('paste', onCopy);
-      document.removeEventListener('contextmenu', onContext);
-      document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('click', onClick, true);
-      window.removeEventListener('beforeprint', onPrint);
-      window.removeEventListener('beforeunload', onBeforeUnload);
-      window.removeEventListener('blur', onBlur);
-      window.removeEventListener('focus', onFocus);
+      if (restrictions.copyPaste) {
+        document.removeEventListener('copy', onCopy);
+        document.removeEventListener('cut', onCopy);
+        document.removeEventListener('paste', onCopy);
+        document.removeEventListener('contextmenu', onContext);
+      }
+      if (restrictions.copyPaste || restrictions.printing || restrictions.developerTools || restrictions.exit)
+        document.removeEventListener('keydown', onKey, true);
+      if (restrictions.externalLinks) document.removeEventListener('click', onClick, true);
+      if (restrictions.printing) window.removeEventListener('beforeprint', onPrint);
+      if (restrictions.exit) window.removeEventListener('beforeunload', onBeforeUnload);
+      if (restrictions.focus) {
+        window.removeEventListener('blur', onBlur);
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisibility);
+      }
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('online', onOnline);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('hashchange', restoreSecureRoute);
-      window.removeEventListener('popstate', restoreSecureRoute);
+      if (restrictions.navigation) {
+        window.removeEventListener('hashchange', restoreSecureRoute);
+        window.removeEventListener('popstate', restoreSecureRoute);
+      }
     };
   };
   return {

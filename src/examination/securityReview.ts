@@ -31,7 +31,7 @@ export function reviewExaminationSecurity(state: ExaminationState): SecurityRevi
   }
   const activeByStudent = new Map<string, string[]>();
   for (const attempt of state.attempts.filter((item) =>
-    ['ACTIVE', 'PAUSED', 'RECOVERY_PENDING'].includes(item.status),
+    ['ACTIVE', 'PAUSED', 'SUBMITTING', 'RECOVERY_PENDING'].includes(item.status),
   ))
     activeByStudent.set(attempt.studentId, [
       ...(activeByStudent.get(attempt.studentId) || []),

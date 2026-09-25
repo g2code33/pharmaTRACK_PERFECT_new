@@ -130,11 +130,20 @@ const ExaminationBuilder: React.FC = () => {
         if (!examPassword)
           throw new Error('An examination password is required by the selected security policy.');
       }
+      let adminExitPassword: string | undefined;
+      if (draft.security.manualExitPolicy === 'ADMIN_AUTH_REQUIRED') {
+        adminExitPassword =
+          window.prompt('Set the separate examination administrator early-exit authorization. RX30 is not accepted here.') ||
+          undefined;
+        if (!adminExitPassword)
+          throw new Error('A separate administrator early-exit authorization is required by this policy.');
+      }
       const packaged = await createPharmaExamPackage({
         version: published,
         signingKey: await generateExamSigningKeyPair(),
         institution: { name: state.student?.university || 'Local institution', code: 'LOCAL' },
         examPassword,
+        adminExitPassword,
       });
       const url = URL.createObjectURL(packaged.blob);
       const anchor = document.createElement('a');
@@ -360,7 +369,20 @@ const ExaminationBuilder: React.FC = () => {
                 ['allowReviewBeforeSubmit', 'Allow review before submit'],
                 ['requireExamPassword', 'Require examination password'],
                 ['requireLanAuthority', 'Require LAN authority'],
-                ['lockdown', 'Enable kiosk lockdown policy'],
+                ['lockdown', 'Enable legacy kiosk lockdown policy'],
+                ['fullLockdown', 'Block all normal application routes while active'],
+                ['disableAI', 'Block AI'],
+                ['disableNotes', 'Block Notes'],
+                ['disableMaterials', 'Block Materials and document routes'],
+                ['disableCopyPaste', 'Block copy and paste'],
+                ['disablePrinting', 'Block printing'],
+                ['disableExternalLinks', 'Block external links'],
+                ['disableDeveloperTools', 'Block developer tools commands'],
+                ['restrictAppSwitching', 'Request native app-switch restriction when supported'],
+                ['restrictApplicationExit', 'Request native application-exit restriction when supported'],
+                ['restrictScreenCapture', 'Request screenshot restriction when supported'],
+                ['restrictExit', 'Restrict manual early exit'],
+
               ] as const
             ).map(([key, label]) => {
               const target = key in draft.security ? draft.security : draft.navigation;
@@ -384,6 +406,28 @@ const ExaminationBuilder: React.FC = () => {
                 </label>
               );
             })}
+            <label className="block text-sm font-bold mt-3">
+              Manual early-exit policy
+              <select
+                value={draft.security.manualExitPolicy || 'ADMIN_AUTH_REQUIRED'}
+                onChange={(event) =>
+                  updateDraft({
+                    security: {
+                      ...draft.security,
+                      manualExitPolicy: event.target.value as ExamSecuritySettings['manualExitPolicy'],
+                    },
+                  })
+                }
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+              >
+                <option value="ALLOW_FREE_EXIT">Allow controlled free exit</option>
+                <option value="ADMIN_AUTH_REQUIRED">Require separate administrator authorization</option>
+                <option value="DISALLOW_EARLY_EXIT">Disallow early exit</option>
+              </select>
+              <span className="text-xs font-normal text-slate-500">
+                SUBMIT EXAM and automatic expiry never use this policy or request a password.
+              </span>
+            </label>
             <label className="block text-sm font-bold mt-3">
               Unavailable capability policy
               <select

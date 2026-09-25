@@ -1,5 +1,5 @@
-import React, { Suspense } from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { Suspense, useEffect, useState } from 'react';
+import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -48,6 +48,63 @@ const ExaminationAdmin = React.lazy(() => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
+import {
+  getSecureKioskState,
+  recordBlockedKioskNavigation,
+  subscribeSecureKiosk,
+} from './examination/kioskState';
+import { consumeAndroidPharmaExamLaunch } from './examination/androidAdapter';
+import { consumePharmaExamLaunches } from './examination/nativeKiosk';
+import { queuePharmaExamLaunch } from './examination/packageLaunch';
+
+/** Central application gate: hiding links is not security. */
+const SecureExamRouteGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const location = useLocation();
+  const [kiosk, setKiosk] = useState(getSecureKioskState());
+  useEffect(() => subscribeSecureKiosk(setKiosk), []);
+  const activeSecurePath = kiosk.attemptId ? `/examination/secure/${kiosk.attemptId}` : '';
+  const selectedRouteBlocked = kiosk.blockedRoutes.some(
+    (prefix) => location.pathname === prefix || location.pathname.startsWith(`${prefix}/`),
+  );
+  if (
+    kiosk.active &&
+    (kiosk.fullLockdown || selectedRouteBlocked) &&
+    location.pathname !== activeSecurePath
+  ) {
+    recordBlockedKioskNavigation(location.pathname);
+    return <Navigate to={activeSecurePath || '/examinations/kiosk'} replace />;
+  }
+  return <>{children}</>;
+};
+
+/** App-level routing is needed because a file association can launch the app on Dashboard. */
+const ExamLaunchRouter: React.FC = () => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let disposed = false;
+    let cleanupNative: () => void = () => undefined;
+    const route = () => navigate('/examinations/kiosk');
+    void consumePharmaExamLaunches((path) => {
+      if (!disposed) {
+        queuePharmaExamLaunch({ path });
+        route();
+      }
+    }).then((cleanup) => {
+      cleanupNative = cleanup;
+    });
+    void consumeAndroidPharmaExamLaunch((bytes) => {
+      if (!disposed) {
+        queuePharmaExamLaunch({ bytes });
+        route();
+      }
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      cleanupNative();
+    };
+  }, [navigate]);
+  return null;
+};
 
 /** Shown only for the few hundred milliseconds a page chunk takes to arrive. */
 const PageLoading: React.FC = () => (
@@ -98,6 +155,7 @@ const App = () => {
       <AIProvider>
         <HashRouter>
           <Suspense fallback={<PageLoading />}>
+            <ExamLaunchRouter />
             <Routes>
               {needsOnboarding ? (
                 // First run. No login wall: just ask their name/level so the app is
@@ -106,7 +164,13 @@ const App = () => {
               ) : (
                 <>
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
-                  <Route element={<Layout />}>
+                  <Route
+                    element={
+                      <SecureExamRouteGate>
+                        <Layout />
+                      </SecureExamRouteGate>
+                    }
+                  >
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/materials" element={<StudyMaterials />} />
                     <Route path="/search" element={<AcademicSearch />} />
