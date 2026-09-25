@@ -184,4 +184,31 @@ describe('encrypted examination state and LAN authority', () => {
     expect(updated.epoch).toBe(7);
     expect(updated.lastHeartbeatAt).toBe('2026-01-01T00:00:00.000Z');
   });
+
+  it('signs authenticated LAN requests and never treats an unpersisted transport receipt as an ACK', async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const request = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          applied: 0,
+          conflicts: [],
+          revision: 4,
+          acknowledgedEventIds: [],
+        }),
+        { status: 200 },
+      );
+    });
+    const client = new LanExamClient('http://192.168.1.20:8787', request as typeof fetch, {
+      token: 'x'.repeat(48),
+      deviceSessionId: 'device-session-a',
+    });
+    const result = await client.sync('session-a', []);
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(result.acknowledgedEventIds).toEqual([]);
+    expect(headers['x-pharma-exam-token']).toHaveLength(48);
+    expect(headers['x-pharma-exam-signature']).toMatch(/^[a-f0-9]{64}$/);
+    expect(headers['x-pharma-device-session']).toBe('device-session-a');
+  });
 });

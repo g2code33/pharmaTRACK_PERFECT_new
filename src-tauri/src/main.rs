@@ -3,9 +3,11 @@
     windows_subsystem = "windows"
 )]
 
+mod lan_server;
+
 use tauri::{
     Position, Size,
-    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl,
+    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl,
 };
 
 #[derive(Clone, serde::Serialize)]
@@ -165,12 +167,36 @@ async fn destroy_website(app: tauri::AppHandle, label: String) -> Result<(), Str
     Ok(())
 }
 
+#[tauri::command]
+fn start_lan_exam_server(
+    app: tauri::AppHandle,
+    state: State<'_, lan_server::LanServerHandle>,
+    config: lan_server::LanServerConfig,
+) -> Result<lan_server::LanServerStatus, String> {
+    lan_server::start(&app, state.inner(), config)
+}
+
+#[tauri::command]
+fn stop_lan_exam_server(
+    state: State<'_, lan_server::LanServerHandle>,
+) -> Result<(), String> {
+    lan_server::stop(state.inner())
+}
+
+#[tauri::command]
+fn lan_exam_server_status(
+    state: State<'_, lan_server::LanServerHandle>,
+) -> Result<lan_server::LanServerStatus, String> {
+    lan_server::status(state.inner())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            app.manage(lan_server::LanServerHandle::default());
             let main_window = app
                 .get_webview_window("main")
                 .expect("main window must exist at startup");
@@ -186,7 +212,10 @@ fn main() {
             webview_back,
             webview_forward,
             webview_reload,
-            destroy_website
+            destroy_website,
+            start_lan_exam_server,
+            stop_lan_exam_server,
+            lan_exam_server_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -19,7 +19,6 @@ import {
 } from './timer';
 import { buildExaminationResult } from './results';
 import {
-  emptyExaminationState,
   snapshotQuestion,
   type AdminAction,
   type AssessmentType,
@@ -42,7 +41,6 @@ import {
   type ExamAuthorityRecord,
   type ExamAuthorityLeaseRecord,
   type ExamReplicationSnapshot,
-  type TimerAdjustment,
   type ViolationPolicy,
   type SecurityViolation,
   type SyncEvent,
@@ -461,13 +459,14 @@ export class ExaminationRepository {
     versionId?: string,
     serverId = 'local-authority',
     authorityEndpoint?: string,
+    preferredSessionId?: string,
   ): Promise<ExamSession> {
     const exam = this.requireExam(examId);
     const version = this.requireVersion(examId, versionId);
     if (!version.immutable)
       throw new Error('Only a validated published version can have an examination session.');
     const session: ExamSession = {
-      id: randomId('session'),
+      id: preferredSessionId || randomId('session'),
       examId,
       examVersionId: version.id,
       status: 'CREATED',
@@ -564,6 +563,7 @@ export class ExaminationRepository {
     studentId: string,
     deviceSessionId: string,
     authoritativeStartedAt?: string,
+    preferredAttemptId?: string,
   ): Promise<AttemptCreationResult> {
     const session = this.requireSession(sessionId);
     const version = this.requireVersion(session.examId, session.examVersionId);
@@ -656,7 +656,7 @@ export class ExaminationRepository {
       session.authorityEpoch,
     );
     const attempt: StudentAttempt = {
-      id: randomId('attempt'),
+      id: preferredAttemptId || randomId('attempt'),
       sessionId,
       examId: session.examId,
       examVersionId: version.id,
@@ -1210,6 +1210,234 @@ export class ExaminationRepository {
     );
   }
 
+  /**
+   * Apply events received by the examination authority. This is deliberately
+   * separate from acknowledgeSyncEvents: an acknowledgement is only produced
+   * after validation, mutation, audit append, and the durable encrypted save
+   * all succeed. The native LAN server follows the same transaction contract.
+   */
+  async processIncomingSyncEvents(
+    sessionId: string,
+    events: SyncEvent[],
+    authoritativeAt = new Date().toISOString(),
+  ): Promise<{
+    ok: boolean;
+    applied: number;
+    conflicts: string[];
+    revision: number;
+    acknowledgedEventIds: string[];
+  }> {
+    const session = this.requireSession(sessionId);
+    let applied = 0;
+    const conflicts: string[] = [];
+    const acknowledgedEventIds: string[] = [];
+
+    for (const incoming of events) {
+      const eventKey = incoming.eventId || incoming.id;
+      const existing = this.state.syncEvents.find(
+        (event) => event.eventId === eventKey || event.id === incoming.id,
+      );
+      if (existing?.status === 'APPLIED') {
+        acknowledgedEventIds.push(incoming.id);
+        continue;
+      }
+      if (existing?.status === 'REJECTED') {
+        conflicts.push(`${incoming.id}: previously rejected by the examination authority.`);
+        continue;
+      }
+
+      const previousState = JSON.parse(JSON.stringify(this.state)) as ExaminationState;
+      const reason = this.validateIncomingEvent(session, incoming);
+      if (reason) {
+        const rejected = existing || {
+          ...incoming,
+          status: 'REJECTED' as const,
+          serverReceiptAt: authoritativeAt,
+        };
+        if (!existing) this.state.syncEvents.push(rejected);
+        else existing.status = 'REJECTED';
+        this.appendSecurityEventInMemory({
+          sessionId,
+          attemptId: this.incomingAttemptId(incoming),
+          deviceSessionId: this.incomingDeviceSessionId(incoming),
+          type: 'SYNC_REJECTED',
+          severity: 'warning',
+          at: authoritativeAt,
+          details: `${incoming.id}: ${reason}`,
+        });
+        if (!(await this.save())) this.state = previousState;
+        conflicts.push(`${incoming.id}: ${reason}`);
+        continue;
+      }
+
+      try {
+        const serverRevision = session.lastReplicationRevision + 1;
+        this.applyIncomingEventInMemory(session, incoming, serverRevision, authoritativeAt);
+        const appliedEvent = this.state.syncEvents.find(
+          (event) => event.eventId === eventKey || event.id === incoming.id,
+        );
+        if (appliedEvent) {
+          appliedEvent.status = 'APPLIED';
+          appliedEvent.serverReceiptAt = authoritativeAt;
+        } else {
+          this.state.syncEvents.push({
+            ...incoming,
+            status: 'APPLIED',
+            serverReceiptAt: authoritativeAt,
+          });
+        }
+        session.lastReplicationRevision = serverRevision;
+        this.appendSecurityEventInMemory({
+          sessionId,
+          attemptId: this.incomingAttemptId(incoming),
+          deviceSessionId: this.incomingDeviceSessionId(incoming),
+          type: incoming.entity === 'ANSWER' ? 'ANSWER_RECORDED' : 'SYNC_RECONCILED',
+          severity: 'info',
+          at: authoritativeAt,
+          details: `Accepted ${incoming.entity} event ${incoming.id} at server revision ${serverRevision}.`,
+          metadata: { eventId: incoming.id, serverRevision },
+        });
+        const persisted = await this.save();
+        if (!persisted) throw new Error('Durable examination persistence failed.');
+        applied += 1;
+        acknowledgedEventIds.push(incoming.id);
+      } catch (error) {
+        this.state = previousState;
+        conflicts.push(
+          `${incoming.id}: ${error instanceof Error ? error.message : 'Event transaction failed.'}`,
+        );
+      }
+    }
+
+    return {
+      ok: conflicts.length === 0,
+      applied,
+      conflicts,
+      revision:
+        this.state.sessions.find((item) => item.id === sessionId)?.lastReplicationRevision || 0,
+      acknowledgedEventIds,
+    };
+  }
+
+  private validateIncomingEvent(session: ExamSession, event: SyncEvent): string | undefined {
+    if (event.sessionId !== session.id) return 'Event session does not match the target session.';
+    if (event.authorityEpoch !== session.authorityEpoch) return 'Event authority epoch is stale.';
+    if (!event.id || !event.eventId) return 'Event ID is required for replay protection.';
+    if (!Number.isInteger(event.revision) || event.revision < 1)
+      return 'Event revision is invalid.';
+    const attemptId = this.incomingAttemptId(event);
+    const attempt = this.state.attempts.find((item) => item.id === attemptId);
+    if (!attempt) return 'Attempt ownership could not be established.';
+    const deviceSessionId = this.incomingDeviceSessionId(event);
+    const device = this.state.deviceSessions.find(
+      (item) => item.id === deviceSessionId || item.deviceId === deviceSessionId,
+    );
+    if (!device || device.role !== 'STUDENT' || device.sessionId !== session.id)
+      return 'Device session is not authenticated for this examination session.';
+    if (device.status !== 'CONNECTED') return 'Device session is not connected.';
+    if (
+      attempt.deviceSessionId !== deviceSessionId &&
+      attempt.deviceSessionId !== device.id &&
+      attempt.deviceSessionId !== device.deviceId
+    )
+      return 'Device session does not own this attempt.';
+    if (event.entity === 'ANSWER') {
+      const answerRevision = event.answerRevision || 0;
+      const payload = event.payload || {};
+      if (!event.questionId || !Number.isInteger(answerRevision) || answerRevision < 1)
+        return 'Answer question ID or revision is invalid.';
+      if (typeof payload.answer !== 'string') return 'Answer payload is invalid.';
+      const question = this.requireVersion(session.examId, session.examVersionId).questions.find(
+        (item) => item.id === event.questionId,
+      );
+      if (!question) return 'Question does not belong to the immutable examination version.';
+      const current = attempt.answers.find((answer) => answer.questionId === event.questionId);
+      if (current && current.eventId !== event.eventId && current.revision >= answerRevision)
+        return 'A newer answer revision is already authoritative.';
+    } else if (event.entity === 'SECURITY_EVENT') {
+      if (typeof event.payload?.type !== 'string') return 'Security event type is required.';
+    } else {
+      return `Entity ${event.entity} is not accepted by the LAN answer authority.`;
+    }
+    return undefined;
+  }
+
+  private incomingAttemptId(event: SyncEvent): string | undefined {
+    const value = event.payload?.attemptId;
+    return typeof value === 'string'
+      ? value
+      : event.entity === 'ATTEMPT'
+        ? event.entityId
+        : undefined;
+  }
+
+  private incomingDeviceSessionId(event: SyncEvent): string | undefined {
+    const value = event.payload?.deviceSessionId;
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private applyIncomingEventInMemory(
+    session: ExamSession,
+    event: SyncEvent,
+    serverRevision: number,
+    authoritativeAt: string,
+  ): void {
+    const attempt = this.state.attempts.find((item) => item.id === this.incomingAttemptId(event));
+    if (!attempt) throw new Error('Attempt disappeared during event transaction.');
+    if (event.entity === 'ANSWER') {
+      const payload = event.payload || {};
+      const answerRevision = event.answerRevision || 0;
+      const answer: ExamAnswer = {
+        questionId: event.questionId!,
+        answer: String(payload.answer),
+        selectedOption:
+          typeof payload.selectedOption === 'number' ? payload.selectedOption : undefined,
+        answeredAt: event.at,
+        revision: answerRevision,
+        eventId: event.eventId,
+        deviceSessionId: this.incomingDeviceSessionId(event)!,
+        isFinal: payload.isFinal === true,
+        serverReceiptAt: authoritativeAt,
+        serverRevision,
+      };
+      attempt.answers = [
+        ...attempt.answers.filter((item) => item.questionId !== answer.questionId),
+        answer,
+      ];
+      this.state.answers = [
+        ...this.state.answers.filter(
+          (item) =>
+            !(
+              item.questionId === answer.questionId &&
+              item.deviceSessionId === answer.deviceSessionId
+            ),
+        ),
+        answer,
+      ];
+      attempt.serverRevision = serverRevision;
+      attempt.lastSyncedAt = authoritativeAt;
+      attempt.synchronizationState = 'SYNCHRONIZED';
+    } else if (event.entity === 'SECURITY_EVENT') {
+      const type = event.payload?.type as SecurityEvent['type'];
+      this.appendSecurityEventInMemory({
+        sessionId: session.id,
+        attemptId: attempt.id,
+        studentId: attempt.studentId,
+        deviceSessionId: this.incomingDeviceSessionId(event),
+        type,
+        severity: event.payload?.severity === 'critical' ? 'critical' : 'info',
+        at: event.at,
+        details: typeof event.payload?.details === 'string' ? event.payload.details : undefined,
+      });
+    }
+  }
+
+  private appendSecurityEventInMemory(event: Omit<SecurityEvent, 'id'>): SecurityEvent {
+    const saved = { ...event, id: randomId('security') };
+    this.state.securityEvents.push(saved);
+    return saved;
+  }
+
   async acknowledgeSyncEvents(
     sessionId: string,
     eventIds: string[],
@@ -1347,13 +1575,48 @@ export class ExaminationRepository {
     return true;
   }
 
+  async setSessionAuthority(
+    sessionId: string,
+    endpoint: string,
+    accessToken: string,
+    serverId: string,
+    authorityEpoch: number,
+  ): Promise<ExamSession> {
+    const session = this.requireSession(sessionId);
+    if (!endpoint || !accessToken) throw new Error('A LAN endpoint and access token are required.');
+    session.authorityEndpoint = endpoint;
+    session.authorityAccessToken = accessToken;
+    session.authoritativeServerId = serverId;
+    session.authorityEpoch = Math.max(session.authorityEpoch, authorityEpoch);
+    session.synchronizationStatus = 'connected';
+    await this.save();
+    return session;
+  }
+
+  async heartbeatDeviceSession(deviceSessionId: string, sessionId?: string): Promise<string> {
+    const device = this.state.deviceSessions.find(
+      (item) => item.id === deviceSessionId || item.deviceId === deviceSessionId,
+    );
+    if (!device) throw new Error('Device session was not found.');
+    if (sessionId && device.sessionId !== sessionId)
+      throw new Error('Device session is not attached to this examination session.');
+    if (device.status === 'DISCONNECTED') device.status = 'CONNECTED';
+    const at = new Date().toISOString();
+    device.lastHeartbeatAt = at;
+    await this.save();
+    return at;
+  }
+
   async createDeviceSession(
-    input: Omit<DeviceSession, 'id' | 'connectedAt' | 'lastHeartbeatAt' | 'status'>,
+    input: Omit<DeviceSession, 'id' | 'connectedAt' | 'lastHeartbeatAt' | 'status'> & {
+      id?: string;
+    },
   ): Promise<DeviceSession> {
     const now = new Date().toISOString();
+    const { id: suppliedId, ...deviceInput } = input;
     const session: DeviceSession = {
-      ...input,
-      id: randomId('device_session'),
+      ...deviceInput,
+      id: suppliedId || randomId('device_session'),
       connectedAt: now,
       lastHeartbeatAt: now,
       status: 'CONNECTED',

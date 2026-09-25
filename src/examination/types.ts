@@ -134,6 +134,7 @@ export type SecurityEventType =
   | 'ANSWER_PERSISTED'
   | 'ANSWER_PERSISTENCE_FAILED'
   | 'SYNC_RECONCILED'
+  | 'SYNC_REJECTED'
   | 'DEVICE_SWITCH'
   | 'TIMER_PAUSED'
   | 'TIMER_RESUMED'
@@ -276,6 +277,8 @@ export interface ExamSession {
   status: SessionStatus;
   authoritativeServerId: string;
   authorityEndpoint?: string;
+  /** Encrypted with the examination state; never placed in normal Quiz data. */
+  authorityAccessToken?: string;
   authorityEpoch: number;
   createdAt: string;
   scheduledStartAt?: string;

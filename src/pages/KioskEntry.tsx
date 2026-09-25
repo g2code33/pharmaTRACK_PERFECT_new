@@ -27,6 +27,7 @@ const KioskEntry: React.FC = () => {
   const [kioskPassword, setKioskPassword] = useState('');
   const [examPassword, setExamPassword] = useState('');
   const [lanEndpoint, setLanEndpoint] = useState('');
+  const [lanToken, setLanToken] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [registeredPassword, setRegisteredPassword] = useState('');
   const [student, setStudent] = useState<ExamStudent | null>(null);
@@ -161,7 +162,7 @@ const KioskEntry: React.FC = () => {
         });
       } else {
         try {
-          const health = await new LanExamClient(lanEndpoint).health();
+          const health = await new LanExamClient(lanEndpoint, fetch, { token: lanToken }).health();
           next.push({
             label: 'LAN server reachable',
             ok: health.ok,
@@ -233,28 +234,62 @@ const KioskEntry: React.FC = () => {
           staged.exam.id,
           lanEndpoint.trim() || 'local-authority',
           lanEndpoint.trim() || undefined,
+          sessionId.trim() || undefined,
         );
+      const deviceId = `device-${navigator.userAgent.slice(0, 24)}`;
+      let lanClient: LanExamClient | null = null;
+      let remoteConnection: Awaited<ReturnType<LanExamClient['connect']>> | null = null;
+      if (lanEndpoint.trim()) {
+        if (!lanToken.trim())
+          throw new Error('The administrator must provide the LAN session token.');
+        lanClient = new LanExamClient(lanEndpoint, fetch, {
+          token: lanToken.trim(),
+          studentId: authenticated.id,
+        });
+        remoteConnection = await lanClient.connect(session.id, deviceId, 'STUDENT', {
+          studentId: authenticated.id,
+        });
+        if (!remoteConnection.deviceSessionId)
+          throw new Error('LAN authority did not issue a device session.');
+        await repository.setSessionAuthority(
+          session.id,
+          lanEndpoint.trim(),
+          remoteConnection.sessionToken || lanToken.trim(),
+          remoteConnection.server.serverId,
+          remoteConnection.server.epoch,
+        );
+      }
       const deviceSession = await repository.createDeviceSession({
-        deviceId: `device-${navigator.userAgent.slice(0, 24)}`,
+        id: remoteConnection?.deviceSessionId,
+        deviceId,
         role: 'STUDENT',
         studentId: authenticated.id,
         sessionId: session.id,
-        capabilities: ['encrypted-local-state', 'attempt-recovery', 'platform-capability-matrix'],
+        capabilities: [
+          'encrypted-local-state',
+          'attempt-recovery',
+          'platform-capability-matrix',
+          'lan-authenticated',
+        ],
       });
       let authoritativeStartedAt = new Date().toISOString();
       try {
-        const health = lanEndpoint.trim()
-          ? await new LanExamClient(lanEndpoint).health()
+        const health = lanClient
+          ? await lanClient.health()
           : await new LocalExamAuthority(repository).health();
         authoritativeStartedAt = health.serverNowAt || health.checkedAt;
       } catch {
-        // The local authority remains the source of time if a LAN health call races a reconnect.
+        // The local encrypted timer remains available while the LAN reconnects.
       }
+      const remoteAttempt = lanClient
+        ? await lanClient.createAttempt(session.id, authenticated.id, deviceSession.id)
+        : undefined;
       const result = await repository.createAttempt(
         session.id,
         authenticated.id,
         deviceSession.id,
         authoritativeStartedAt,
+        remoteAttempt?.attempt?.id,
       );
       await repository.logSecurityEvent({
         sessionId: session.id,
@@ -384,6 +419,16 @@ const KioskEntry: React.FC = () => {
               onChange={(event) => setLanEndpoint(event.target.value)}
               className="mt-1 w-full rounded-lg border px-3 py-2"
               placeholder="http://192.168.1.20:8787"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            LAN session token
+            <input
+              type="password"
+              value={lanToken}
+              onChange={(event) => setLanToken(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2"
+              placeholder="Provided by examination admin"
             />
           </label>
           <label className="text-sm font-bold">
