@@ -102,6 +102,12 @@ export class AIManager {
     return this.settings;
   }
 
+  /** Drops raw credentials from the manager after logout; encrypted storage remains intact. */
+  clearCredentialCache(): void {
+    this.credentials = {};
+    this.credentialsLoaded = false;
+  }
+
   /** Loads credentials into memory; called lazily so the AI screen is cheap. */
   async ensureCredentials(): Promise<void> {
     if (this.credentialsLoaded) return;

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../utils/supabase';
+import { unlockAccountAI } from '../ai/accountSync';
 import { User, Award, Mail, Lock, ArrowRight, Loader2, WifiOff } from 'lucide-react';
 
 const Login: React.FC = () => {
@@ -34,6 +35,14 @@ const Login: React.FC = () => {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
         if (data.session) {
+          setError('');
+          setIsLoading(true);
+          // The password is used only to derive the in-memory account vault key;
+          // it is never passed to Supabase RPCs or persisted by PharmaTRACK.
+          const sync = await unlockAccountAI(data.user.id, password);
+          if (sync.state === 'error') {
+            setError('Signed in, but AI configuration could not be restored. Open Settings → AI to retry.');
+          }
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
           // Signing in is an optional step taken from inside the app, so send
           // the user back to what they were doing rather than leaving them on

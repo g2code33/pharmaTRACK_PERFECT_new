@@ -33,7 +33,7 @@ import type {
 import { aiManager, onAIStatus } from './manager';
 import {
   deleteCredentials,
-  loadAllCredentials,
+  loadAllCredentialStatuses,
   saveCredentials,
   clearAllCredentials,
 } from './credentials';
@@ -42,12 +42,14 @@ import { defaultSettings, normalizeSettings } from './settings';
 import { createProviderConfig } from './settings';
 import { presetFor, protocolForKind, requiresKey } from './providers';
 import { AI_SETTINGS_KEY } from './settings';
+import { deleteAccountAIData, getAccountAIStatus, onAccountAIStatus, type AccountAIStatus } from './accountSync';
 
 interface AIProviderState {
   settings: AISettings;
-  /** Provider configs annotated with whether a key is stored (never the key). */
-  providers: Array<ProviderConfig & { hasKey: boolean; usable: boolean }>;
+  /** Provider configs annotated with non-secret credential status only. */
+  providers: Array<ProviderConfig & { hasKey: boolean; accountConfigured: boolean; maskedSuffix?: string; usable: boolean; credentialSyncStatus?: string }>;
   credentialsLoaded: boolean;
+  accountSyncStatus: AccountAIStatus;
   /** Providers that are enabled *and* keyed, newest test result included. */
   readyCount: number;
   /** True when at least one configured provider could answer right now. */
@@ -81,19 +83,28 @@ function readSettings(): AISettings {
 
 export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<AISettings>(readSettings);
-  const [credentials, setCredentials] = useState<Record<ProviderId, { apiKey?: string }>>({});
+  const [credentialStatuses, setCredentialStatuses] = useState<Record<ProviderId, Awaited<ReturnType<typeof loadAllCredentialStatuses>>[ProviderId]>>({});
   const [credentialsLoaded, setCredentialsLoaded] = useState(false);
+  const [accountSyncStatus, setAccountSyncStatus] = useState<AccountAIStatus>(getAccountAIStatus);
 
-  // Lazily load credentials; the AI screen is the only place that needs them.
+  // Load statuses only. Raw credentials remain inside AIManager's execution
+  // path and never enter React state, component props, or DOM snapshots.
   const refreshCredentials = useCallback(async () => {
-    const all = await loadAllCredentials();
-    setCredentials(all as Record<ProviderId, { apiKey?: string }>);
+    const statuses = await loadAllCredentialStatuses();
+    setCredentialStatuses(statuses);
     setCredentialsLoaded(true);
-    return all;
+    return statuses;
   }, []);
 
   useEffect(() => {
     void refreshCredentials();
+    return onAccountAIStatus((next) => {
+      setAccountSyncStatus(next);
+      if (next.state === 'signed_out') aiManager.clearCredentialCache();
+      else aiManager.reload();
+      void refreshCredentials();
+      setSettings(aiManager.getSettings());
+    });
   }, [refreshCredentials]);
 
   // Pick up settings written by another tab/tool (storage event).
@@ -125,7 +136,7 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
           headers: creds.headers,
         };
         if (creds.apiKey !== undefined) patch.apiKey = creds.apiKey;
-        await saveCredentials(creds.id, patch);
+        await saveCredentials(creds.id, patch, { preserveExisting: true });
         await refreshCredentials();
       }
       aiManager.reload();
@@ -137,15 +148,19 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const providers = useMemo(
     () =>
       settings.providers.map((p) => {
-        const hasKey = Boolean(credentials[p.id]?.apiKey);
+        const credentialStatus = credentialStatuses[p.id];
+        const hasKey = Boolean(credentialStatus?.hasKey);
         return {
           ...p,
           hasKey,
+          accountConfigured: Boolean(credentialStatus?.accountConfigured || hasKey),
+          maskedSuffix: credentialStatus?.maskedSuffix,
+          credentialSyncStatus: credentialStatus?.syncStatus,
           // A local server answers with no key, so "usable" is not "has a key".
           usable: p.enabled && (hasKey || !requiresKey(p.kind)),
         };
       }),
-    [settings.providers, credentials],
+    [settings.providers, credentialStatuses],
   );
 
   const value = useMemo<AIProviderState>(() => {
@@ -171,6 +186,7 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       settings,
       providers,
       credentialsLoaded,
+      accountSyncStatus,
       readyCount,
       ready: Boolean(routed),
       activeProviderLabel: routed?.label ?? '',
@@ -276,6 +292,13 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       commit,
 
       async resetAll() {
+        if (accountSyncStatus.userId && accountSyncStatus.state !== 'signed_out') {
+          try {
+            await deleteAccountAIData();
+          } catch {
+            // Preserve the local reset even when the account is offline; the server copy remains subject to restore conflict handling.
+          }
+        }
         clearAISettings();
         await clearAllCredentials();
         const fresh = normalizeSettings(defaultSettings());
@@ -284,7 +307,7 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         await refreshCredentials();
       },
     };
-  }, [settings, providers, credentialsLoaded, commit, refreshCredentials]);
+  }, [settings, providers, credentialsLoaded, accountSyncStatus, commit, refreshCredentials]);
 
   return <AIContext.Provider value={value}>{children}</AIContext.Provider>;
 };

@@ -32,6 +32,7 @@ import {
   providerForLegacyKey,
   redactSecrets,
   saveAISettings,
+  scrubSecretUrl,
   scrubSecretsDeep,
   stripCredentials,
   loadAISettings,
@@ -46,6 +47,15 @@ import {
 } from '../ai/credentials';
 import { createSemesterArchive, exportBackup, verifySemesterArchive } from '../utils/semesterArchive';
 import type { AppState } from '../types';
+import {
+  ACCOUNT_VAULT_ALGORITHM,
+  ACCOUNT_VAULT_KDF,
+  createVaultSalt,
+  decryptAccountSecret,
+  deriveAccountVaultKey,
+  encryptAccountSecret,
+  isEncryptedSecretEnvelope,
+} from '../ai/secretCrypto';
 
 const NVIDIA_KEY = 'nvapi-abcdefghijklmnopqrstuvwxyz0123456789';
 const GEMINI_KEY = 'AIzaSyLegacyKey0123456789abcdefghijkl';
@@ -108,6 +118,13 @@ describe('AI configuration never contains a key', () => {
     expect(JSON.stringify(stripped)).not.toContain('sk-secret');
   });
 
+  it('removes credential-bearing URL components from endpoint metadata', () => {
+    const clean = scrubSecretUrl('https://gateway.example/v1?api_key=sk-live-abcdefghijklmnop&model=campus');
+    expect(clean).not.toContain('sk-live-abcdefghijklmnop');
+    expect(clean).toContain('model=campus');
+    expect(clean).not.toContain('api_key=');
+  });
+
   it('scrubs key-shaped strings out of nested structures', () => {
     const scrubbed = scrubSecretsDeep({
       note: `my key is ${NVIDIA_KEY} ok`,
@@ -136,13 +153,41 @@ describe('AI configuration never contains a key', () => {
 /* Credential store                                                   */
 /* ------------------------------------------------------------------ */
 
+describe('account-recoverable secret vault', () => {
+  it('uses authenticated encryption with explicit provenance metadata', async () => {
+    const salt = createVaultSalt();
+    const key = await deriveAccountVaultKey('correct horse battery staple', salt);
+    const envelope = await encryptAccountSecret(key, { apiKey: NVIDIA_KEY }, 'user-1:nvidia');
+
+    expect(envelope.algorithm).toBe(ACCOUNT_VAULT_ALGORITHM);
+    expect(envelope.version).toBe(1);
+    expect(envelope.aad).toBe('user-1:nvidia');
+    expect(isEncryptedSecretEnvelope(envelope)).toBe(true);
+    expect(JSON.stringify(envelope)).not.toContain(NVIDIA_KEY);
+    await expect(decryptAccountSecret(key, envelope)).resolves.toEqual({ apiKey: NVIDIA_KEY });
+  });
+
+  it('cannot decrypt an account envelope with another password', async () => {
+    const salt = createVaultSalt();
+    const key = await deriveAccountVaultKey('account-password', salt);
+    const wrongKey = await deriveAccountVaultKey('different-password', salt);
+    const envelope = await encryptAccountSecret(key, { apiKey: GEMINI_KEY }, 'user-1:gemini');
+
+    await expect(decryptAccountSecret(wrongKey, envelope)).rejects.toThrow();
+    await expect(decryptAccountSecret(key, envelope, 'user-1:nvidia')).rejects.toThrow(/binding/i);
+    expect(ACCOUNT_VAULT_KDF).toBe('PBKDF2-SHA-256');
+  });
+});
+
 describe('credential store', () => {
   it('round-trips a key through the store and never through settings', async () => {
     await saveCredentials('nvidia', { apiKey: NVIDIA_KEY });
     expect(await loadCredentials('nvidia')).toEqual({ apiKey: NVIDIA_KEY });
 
-    const blob = JSON.stringify(await loadAllCredentials());
-    expect(blob).toContain(NVIDIA_KEY); // the credential store is where it lives
+    const encryptedBlob = JSON.stringify(idbStore.get('pharmatrack_ai_credentials'));
+    expect(encryptedBlob).not.toContain(NVIDIA_KEY);
+    expect(encryptedBlob).toContain('AES-GCM-256');
+    expect((await loadAllCredentials()).nvidia?.apiKey).toBe(NVIDIA_KEY);
     expect(localStorage.getItem(AI_SETTINGS_KEY) ?? '').not.toContain(NVIDIA_KEY);
   });
 

@@ -31,6 +31,7 @@ import {
 import { saveCredentials, storedApiKey } from '../ai/credentials';
 import { aiManager } from '../ai/manager';
 import { supabase, purgeStoredSession } from '../utils/supabase';
+import { lockAccountAI, restoreAccountAIFromSession } from '../ai/accountSync';
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
@@ -567,6 +568,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
    */
   const logout = useCallback(async () => {
     hasSignedOutRef.current = true;
+    lockAccountAI();
     try {
       // 'local' clears this device only and, unlike the default 'global'
       // scope, doesn't need the server to accept the request to be meaningful.
@@ -659,6 +661,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
           fetchProfile(session.user.id);
+          void restoreAccountAIFromSession(session.user.id);
         } else if (state.isLoggedIn) {
           dispatch({ type: 'SET_LOGGED_IN', payload: false });
         }
@@ -686,6 +689,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // session) must not log anyone out, and must never null the student —
         // that would bounce a local-only user back to onboarding and lose the
         // identity their offline app depends on.
+        lockAccountAI();
         dispatch({ type: 'SET_LOGGED_IN', payload: false });
       }
     });
