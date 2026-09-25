@@ -11,7 +11,12 @@ import { LanExamClient, LocalExamAuthority, isLanEndpoint } from '../examination
 import { encryptedStorageAvailable } from '../examination/secureStorage';
 import { loadStagedPharmaExam, stagePharmaExamPackage } from '../examination/packageCache';
 import { requiredCapabilitiesReady } from '../examination/kioskAdapter';
-import { createPlatformKioskAdapter } from '../examination/androidAdapter';
+import {
+  consumeAndroidPharmaExamLaunch,
+  createPlatformKioskAdapter,
+} from '../examination/androidAdapter';
+import { readPharmaExamLaunch } from '../examination/nativeKiosk';
+import { subscribePharmaExamLaunches, takePharmaExamLaunches } from '../examination/packageLaunch';
 import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
@@ -56,19 +61,42 @@ const KioskEntry: React.FC = () => {
 
   const choosePackage = async (file: File | undefined) => {
     if (!file) return;
+    await openPackageInput(file);
+  };
+
+  const openPackageInput = async (input: Blob | Uint8Array, source = 'selected file') => {
     setError('');
-    const result = await validatePharmaExamPackage(file);
+    const result = await validatePharmaExamPackage(input);
     if (!result.ok || !result.staged) {
       setStaged(null);
-      setPackageMessage(result.errors.join(' '));
+      setPackageMessage(`${source}: ${result.errors.join(' ')}`);
       return;
     }
     await stagePharmaExamPackage(result.staged);
     setStaged(result.staged);
     setPackageMessage(
-      `Valid signed package: Version ${result.staged.exam.version} · ${result.staged.questions.length} questions`,
+      `Valid signed package from ${source}: Version ${result.staged.exam.version} · ${result.staged.questions.length} questions`,
     );
   };
+
+  useEffect(() => {
+    let disposed = false;
+    const openLaunch = async (launch: { path?: string; bytes?: Uint8Array }) => {
+      if (disposed) return;
+      try {
+        const input = launch.bytes || (launch.path ? await readPharmaExamLaunch(launch.path) : undefined);
+        if (input) await openPackageInput(input, launch.path ? `native launch ${launch.path}` : 'Android native intent');
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'The native .pharmaexam launch could not be opened.');
+      }
+    };
+    const remove = subscribePharmaExamLaunches((launch) => void openLaunch(launch));
+    takePharmaExamLaunches().forEach((launch) => void openLaunch(launch));
+    return () => {
+      disposed = true;
+      remove();
+    };
+  }, []);
 
   const register = async () => {
     setError('');

@@ -10,6 +10,7 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { saveState, initialState, isWorkspacePersistBlocked } from '../utils/storage';
 import { isSemesterOwnedIdbKey } from '../utils/semesterArchive';
+import { loadCredentials } from '../ai/credentials';
 import type { AppState } from '../types';
 
 const { idbStore, flags } = vi.hoisted(() => ({
@@ -107,8 +108,11 @@ describe('versioned migration', () => {
     expect(schema.schemaVersion).toBe(3);
     expect(schema.status).toBe('current');
 
-    const creds = idbStore.get('pharmatrack_ai_credentials') as { gemini?: { apiKey?: string } };
-    expect(creds.gemini?.apiKey).toBe(SECRET);
+    const creds = idbStore.get('pharmatrack_ai_credentials') as { encrypted?: boolean; algorithm?: string; ciphertext?: string };
+    expect(creds.encrypted).toBe(true);
+    expect(creds.algorithm).toBe('AES-GCM-256');
+    expect(creds.ciphertext).not.toContain(SECRET);
+    expect((await loadCredentials('gemini')).apiKey).toBe(SECRET);
 
     const backups = [...idbStore.keys()].filter((k) => k.startsWith('pharmatrack_migration_backup_'));
     expect(backups).toHaveLength(1);
@@ -277,7 +281,10 @@ describe('versioned migration', () => {
     expect(retried.explanation).toMatch(/nothing was deleted/i);
     expect(JSON.parse(localStorage.getItem(SCHEMA_KEY)!).schemaVersion).toBe(3);
     expect(JSON.parse(localStorage.getItem('pharmatrack_state')!).openAIKey).toBe('');
-    expect((idbStore.get('pharmatrack_ai_credentials') as { gemini?: { apiKey?: string } }).gemini?.apiKey).toBe(SECRET);
+    const encryptedCredentials = idbStore.get('pharmatrack_ai_credentials') as { encrypted?: boolean; ciphertext?: string };
+    expect(encryptedCredentials.encrypted).toBe(true);
+    expect(encryptedCredentials.ciphertext).not.toContain(SECRET);
+    expect((await loadCredentials('gemini')).apiKey).toBe(SECRET);
   });
 });
 

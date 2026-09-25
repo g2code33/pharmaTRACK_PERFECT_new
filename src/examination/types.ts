@@ -95,11 +95,27 @@ export type AttemptStatus =
   | 'READY'
   | 'ACTIVE'
   | 'PAUSED'
+  | 'SUBMITTING'
   | 'SUBMITTED'
+  | 'KIOSK_RELEASED'
   | 'CLOSED'
   | 'DEVICE_LOST'
   | 'RECOVERY_PENDING'
   | 'LOCKED';
+
+/** The only lifecycle that can release a secure examination window. */
+export type KioskLifecycleState =
+  | 'NOT_ENTERED'
+  | 'ENTERING'
+  | 'ACTIVE'
+  | 'SUBMITTING'
+  | 'SUBMITTED'
+  | 'RELEASED';
+
+export type ManualExitPolicy =
+  | 'ALLOW_FREE_EXIT'
+  | 'ADMIN_AUTH_REQUIRED'
+  | 'DISALLOW_EARLY_EXIT';
 
 export type SessionStatus = 'CREATED' | 'READY' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | 'RECOVERY';
 
@@ -125,6 +141,13 @@ export type SecurityEventType =
   | 'FAILOVER_COMPLETED'
   | 'FOCUS_RESTORED'
   | 'ATTEMPTED_EXIT'
+  | 'EARLY_EXIT_REQUESTED'
+  | 'EARLY_EXIT_AUTHORIZED'
+  | 'EARLY_EXIT_DENIED'
+  | 'KIOSK_ENTERED'
+  | 'KIOSK_RELEASED'
+  | 'SUBMITTING'
+  | 'EXPIRY_SUBMITTED'
   | 'ATTEMPTED_NAVIGATION'
   | 'ATTEMPTED_PRINT'
   | 'ATTEMPTED_COPY_PASTE'
@@ -149,7 +172,10 @@ export type SecurityEventType =
 export type SecuritySeverity = 'info' | 'warning' | 'critical';
 
 export interface ExamSecuritySettings {
+  /** Legacy alias retained for imported version-1 packages. */
   lockdown: boolean;
+  /** Central route/application lock for a running attempt. */
+  fullLockdown?: boolean;
   capabilityFailurePolicy?: 'PREVENT_START' | 'ALLOW_WITH_WARNING' | 'REQUIRE_ADMIN_APPROVAL';
   kioskMode: boolean;
   allowBackNavigation: boolean;
@@ -170,6 +196,13 @@ export interface ExamSecuritySettings {
   restrictWindowControls?: boolean;
   restrictScreenCapture?: boolean;
   restrictExit?: boolean;
+  /** Explicit controls are optional so version-1 packages migrate safely. */
+  disableAI?: boolean;
+  disableNotes?: boolean;
+  disableMaterials?: boolean;
+  restrictAppSwitching?: boolean;
+  restrictApplicationExit?: boolean;
+  manualExitPolicy?: ManualExitPolicy;
   requiredCapabilities?: string[];
   violationPolicies?: ViolationPolicyMap;
   /** Security policy version is captured with every attempt. */
@@ -323,7 +356,15 @@ export interface StudentAttempt {
   synchronizationState?:
     'LOCAL_ONLY' | 'SYNCING' | 'SYNCHRONIZED' | 'DEGRADED' | 'RECOVERY_PENDING';
   saveStatus?: 'SAVED' | 'SAVING' | 'SAVE_PROBLEM';
-  submissionState?: 'NOT_SUBMITTED' | 'SUBMITTED' | 'FORCE_SUBMITTED' | 'TERMINATED';
+  submissionState?:
+    | 'NOT_SUBMITTED'
+    | 'SUBMITTING'
+    | 'SUBMITTED'
+    | 'FORCE_SUBMITTED'
+    | 'EXPIRED'
+    | 'TERMINATED';
+  kioskLifecycle?: KioskLifecycleState;
+  submissionTrigger?: 'MANUAL' | 'EXPIRY' | 'ADMIN_FORCE' | 'RECOVERY';
   ownershipGeneration?: number;
   lastSyncedAt?: string;
   localRevision: number;

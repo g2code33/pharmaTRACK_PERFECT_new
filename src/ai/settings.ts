@@ -27,7 +27,7 @@ import type {
 import { PRESET_PROFILES } from './profiles';
 import { PROVIDER_PRESETS, presetFor, protocolForKind } from './providers';
 import { MODEL_SUGGESTIONS } from './models';
-import { stripCredentials } from './credentials';
+import { scrubSecretUrl, stripCredentials } from './credentials';
 
 export const AI_SETTINGS_KEY = 'pharmatrack_ai_settings';
 export const AI_SETTINGS_VERSION = 2;
@@ -180,15 +180,32 @@ export function loadAISettings(): AISettings {
  * Persists AI settings with every credential field removed. Credentials are
  * written separately (IndexedDB) so a settings export can never carry a key.
  */
-export function saveAISettings(settings: AISettings): AISettings {
+export function saveAISettings(
+  settings: AISettings,
+  options: { sync?: boolean } = {},
+): AISettings {
   const sanitized: AISettings = {
     ...settings,
-    providers: settings.providers.map((p) => ({ ...stripCredentials(p), apiKey: undefined })),
+    providers: settings.providers.map((p) => ({
+      ...stripCredentials(p),
+      baseUrl: scrubSecretUrl(p.baseUrl),
+      apiKey: undefined,
+    })),
   };
   try {
     localStorage.setItem(AI_SETTINGS_KEY, JSON.stringify(sanitized));
   } catch (err) {
     console.error('AI settings could not be saved:', err);
+  }
+  if (options.sync !== false) {
+    // Keep the existing synchronous settings API and make account sync
+    // best-effort/asynchronous. The account module is dynamic to avoid a
+    // settings ↔ account-sync module initialization cycle.
+    void import('./accountSync')
+      .then(({ queueAccountSettingsSync }) => queueAccountSettingsSync?.(sanitized))
+      .catch(() => {
+        // Account synchronization is best effort; local settings remain usable.
+      });
   }
   return sanitized;
 }

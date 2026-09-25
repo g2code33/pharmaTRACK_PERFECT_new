@@ -39,11 +39,14 @@ export {
 export {
   clearAllCredentials,
   deleteCredentials,
+  loadAllCredentialStatuses,
   loadAllCredentials,
+  loadCredentialMetadata,
   loadCredentials,
   looksLikeApiKey,
   maskKey,
   saveCredentials,
+  scrubSecretUrl,
   scrubSecretsDeep,
   stripCredentials,
 } from './credentials';

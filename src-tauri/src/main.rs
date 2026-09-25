@@ -5,12 +5,12 @@
 
 mod lan_server;
 
-use std::sync::Mutex;
+use std::{fs, path::Path, sync::Mutex};
 
 use ring::rand::{SecureRandom, SystemRandom};
 use tauri_plugin_shell::ShellExt;
 use tauri::{
-    Position, Size, WindowEvent,
+    Position, RunEvent, Size, WindowEvent,
     webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl,
 };
 
@@ -58,6 +58,9 @@ struct ActiveSecureExam {
 struct SecureExamHostState {
     active: Mutex<Option<ActiveSecureExam>>,
 }
+
+#[derive(Default)]
+struct PendingPharmaExamFiles(Mutex<Vec<String>>);
 
 impl SecureExamHostState {
     fn is_active(&self) -> bool {
@@ -560,6 +563,33 @@ fn lan_exam_server_status(
     lan_server::status(state.inner())
 }
 
+/// Returns file-association launches that happened before the webview listener
+/// was ready. Only .pharmaexam is accepted; ordinary documents remain outside
+/// this route.
+#[tauri::command]
+fn get_pending_pharmaexam_files(
+    state: State<'_, PendingPharmaExamFiles>,
+) -> Result<Vec<String>, String> {
+    let mut pending = state
+        .0
+        .lock()
+        .map_err(|_| "Pending examination launch state is unavailable.".to_string())?;
+    Ok(std::mem::take(&mut *pending))
+}
+
+#[tauri::command]
+fn read_pharmaexam_file(path: String) -> Result<Vec<u8>, String> {
+    let candidate = Path::new(&path);
+    if candidate.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()) != Some("pharmaexam".to_string()) {
+        return Err("Only .pharmaexam files can be opened by the examination launcher.".to_string());
+    }
+    let metadata = fs::metadata(candidate).map_err(|error| format!("Unable to inspect examination package: {error}"))?;
+    if !metadata.is_file() || metadata.len() > 50 * 1024 * 1024 {
+        return Err("The examination package is missing, not a file, or exceeds the 50 MB limit.".to_string());
+    }
+    fs::read(candidate).map_err(|error| format!("Unable to read examination package: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +620,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .manage(SecureExamHostState::default())
+        .manage(PendingPharmaExamFiles::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -645,10 +676,36 @@ fn main() {
             webview_forward,
             webview_reload,
             destroy_website,
+            get_pending_pharmaexam_files,
+            read_pharmaexam_file,
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Opened { urls } = event {
+                let paths: Vec<String> = urls
+                    .into_iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter(|path| {
+                        path.extension()
+                            .and_then(|value| value.to_str())
+                            .map(|value| value.eq_ignore_ascii_case("pharmaexam"))
+                            .unwrap_or(false)
+                    })
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                if paths.is_empty() {
+                    return;
+                }
+                if let Some(pending) = app.try_state::<PendingPharmaExamFiles>() {
+                    if let Ok(mut queue) = pending.0.lock() {
+                        queue.extend(paths.iter().cloned());
+                    }
+                }
+                let _ = app.emit("pharmaexam-file-opened", paths);
+            }
+        });
 }

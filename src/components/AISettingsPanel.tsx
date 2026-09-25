@@ -34,6 +34,7 @@ import {
 import { blankProvider, useAI } from '../ai/state';
 import { useApp } from '../context/AppContext';
 import { loadSlideText } from '../utils/storage';
+import { listAccountDevices, revokeAccountDevice, unlockAccountAI, type AccountDevice } from '../ai/accountSync';
 
 const inputCls =
   'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm';
@@ -118,6 +119,7 @@ export const AISettingsPanel: React.FC = () => {
       )}
 
       <PrivacyCard />
+      <AccountSyncCard />
       <ProvidersCard
         providers={ai.providers}
         onAdd={(kind) => void ai.saveProvider(blankProvider(kind, ai.providers.map((p) => p.id)))}
@@ -204,7 +206,7 @@ const LocalIndexCard: React.FC = () => {
         </button>
       </div>
 
-      <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+      <dl className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
         <Stat label="Materials" value={stats?.materials ?? 0} />
         <Stat label="Passages" value={stats?.chunks ?? 0} />
         <Stat label="Characters" value={stats?.chars ?? 0} />
@@ -229,6 +231,132 @@ const Stat: React.FC<{ label: string; value: number }> = ({ label, value }) => (
 );
 
 /* ------------------------------------------------------------------ */
+/* Account synchronization                                             */
+/* ------------------------------------------------------------------ */
+
+const AccountSyncCard: React.FC = () => {
+  const ai = useAI();
+  const sync = ai.accountSyncStatus;
+  const [devices, setDevices] = useState<AccountDevice[]>([]);
+  const [devicesBusy, setDevicesBusy] = useState(false);
+  const [vaultPassword, setVaultPassword] = useState('');
+  const [unlockBusy, setUnlockBusy] = useState(false);
+
+  const refreshDevices = useCallback(async () => {
+    if (!sync.userId || sync.state === 'signed_out' || sync.state === 'error' || sync.state === 'revoked') {
+      setDevices([]);
+      return;
+    }
+    setDevicesBusy(true);
+    try {
+      setDevices(await listAccountDevices());
+    } catch {
+      setDevices([]);
+    } finally {
+      setDevicesBusy(false);
+    }
+  }, [sync.userId, sync.state]);
+
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices]);
+
+  const revoke = async (device: AccountDevice) => {
+    if (device.current) return;
+    setDevicesBusy(true);
+    try {
+      await revokeAccountDevice(device.deviceId);
+      await refreshDevices();
+    } catch {
+      // Device status remains unchanged when the authenticated revoke fails.
+    } finally {
+      setDevicesBusy(false);
+    }
+  };
+
+  const unlock = async () => {
+    if (!sync.userId || !vaultPassword) return;
+    setUnlockBusy(true);
+    try {
+      await unlockAccountAI(sync.userId, vaultPassword);
+      setVaultPassword('');
+    } finally {
+      setUnlockBusy(false);
+    }
+  };
+  const labels: Record<string, string> = {
+    signed_out: 'Not connected',
+    restoring: 'Restoring configuration…',
+    ready: 'Restored',
+    locked: 'Restored settings locked',
+    pending: 'Pending synchronization',
+    conflict: 'Conflict needs review',
+    revoked: 'Device access revoked',
+    error: 'Synchronization error',
+  };
+  const tone = sync.state === 'ready' ? 'text-green-700 bg-green-50 border-green-200'
+    : sync.state === 'error' || sync.state === 'conflict' || sync.state === 'revoked' ? 'text-red-700 bg-red-50 border-red-200'
+      : sync.state === 'restoring' || sync.state === 'pending' || sync.state === 'locked' ? 'text-amber-700 bg-amber-50 border-amber-200'
+        : 'text-gray-600 bg-gray-50 border-gray-200';
+  return (
+    <section className="p-4 bg-white rounded-xl border border-gray-200" data-testid="ai-account-sync">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+            <Shield className="w-4 h-4 text-[#2D6A4F]" /> Account synchronization
+          </h2>
+          <p className="text-xs text-gray-500 mt-1 max-w-xl">
+            Settings synchronize across your signed-in devices. Provider secrets are encrypted for recovery and are
+            never included in normal configuration responses.
+          </p>
+        </div>
+        <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-1 rounded-full border ${tone}`}>
+          {labels[sync.state] ?? sync.state}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-gray-600">
+        <div className="rounded-lg bg-gray-50 p-2">Server version <strong>{sync.configVersion ?? '—'}</strong></div>
+        <div className="rounded-lg bg-gray-50 p-2">Secrets configured <strong>{sync.configuredSecretCount ?? 0}</strong></div>
+      </div>
+      {sync.message && <p className="mt-2 text-xs text-amber-700">{sync.message}</p>}
+      {sync.state === 'locked' && (
+        <form className="mt-3 flex flex-wrap items-center gap-2" onSubmit={(event) => { event.preventDefault(); void unlock(); }}>
+          <label className="sr-only" htmlFor="ai-vault-password">Account password to unlock AI secrets</label>
+          <input
+            id="ai-vault-password"
+            type="password"
+            value={vaultPassword}
+            onChange={(event) => setVaultPassword(event.target.value)}
+            placeholder="Account password to unlock secrets"
+            autoComplete="current-password"
+            className={`${inputCls} max-w-xs`}
+          />
+          <button type="submit" className={btnGhost} disabled={unlockBusy || !vaultPassword}>
+            {unlockBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
+            {unlockBusy ? 'Unlocking…' : 'Unlock recovered keys'}
+          </button>
+        </form>
+      )}
+      {devices.length > 0 && (
+        <div className="mt-3 border-t border-gray-100 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500">Authorized devices</p>
+            <button type="button" className="text-[11px] text-[#2D6A4F]" onClick={() => void refreshDevices()} disabled={devicesBusy}>Refresh</button>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {devices.map((device) => (
+              <li key={device.deviceId} className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-2 py-1.5 text-xs text-gray-600">
+                <span className="truncate">{device.label}{device.current ? ' (this device)' : ''}{device.revokedAt ? ' (revoked)' : ''}</span>
+                {!device.current && !device.revokedAt && <button type="button" className="text-red-600 shrink-0" onClick={() => void revoke(device)} disabled={devicesBusy}>Revoke</button>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+};
+
 /* Privacy                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -254,12 +382,17 @@ const PrivacyCard: React.FC = () => (
         </p>
       </div>
       <div className="flex items-start gap-2">
+        <ShieldCheck className="w-4 h-4 text-green-600 mt-0.5 shrink-0" />
+        <p>
+          <strong>Account recovery is encrypted.</strong> The account copy is an AES-GCM envelope derived from your
+          account password. The server receives ciphertext and never receives the password or a raw key.
+        </p>
+      </div>
+      <div className="flex items-start gap-2">
         <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
         <p>
-          <strong>Device storage, not an OS keychain.</strong> In a browser or the desktop webview there is no system
-          keychain a web page can use, so keys live in this app&rsquo;s own IndexedDB on this device. They stay out of
-          exports, logs and other PharmaTRACK users, but anyone who can read this device&rsquo;s app data could read
-          them. Use a key you can revoke if that matters to you.
+          <strong>Device storage is encrypted too.</strong> Local records use the device-encrypted storage boundary.
+          Anyone who can fully control an unlocked device can still use its AI providers; rotate or revoke keys when needed.
         </p>
       </div>
       <div className="flex items-start gap-2">
@@ -285,7 +418,13 @@ const PrivacyCard: React.FC = () => (
 /* ------------------------------------------------------------------ */
 
 /** A provider row as the panel sees it: config plus what the engine derived. */
-type ProviderRow = ProviderConfig & { hasKey: boolean; usable: boolean };
+type ProviderRow = ProviderConfig & {
+  hasKey: boolean;
+  accountConfigured: boolean;
+  maskedSuffix?: string;
+  usable: boolean;
+  credentialSyncStatus?: string;
+};
 
 interface ProvidersCardProps {
   providers: ProviderRow[];
@@ -309,7 +448,7 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
   testing, fetching, onSave, onTest, onFetchModels, onRemove,
 }) => {
   const [addOpen, setAddOpen] = useState(false);
-  const configuredCount = providers.filter((p) => p.hasKey || !requiresKey(p.kind)).length;
+  const configuredCount = providers.filter((p) => p.accountConfigured || p.hasKey || !requiresKey(p.kind)).length;
 
   return (
     <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -362,7 +501,9 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
           const status = !provider.enabled
             ? 'disabled'
             : needsKey && !provider.hasKey
-              ? 'unconfigured'
+              ? provider.accountConfigured
+                ? 'locked'
+                : 'unconfigured'
               : test
                 ? test.ok
                   ? 'connected'
@@ -388,7 +529,13 @@ const ProvidersCard: React.FC<ProvidersCardProps> = ({
                       </span>
                     </p>
                     <p className="text-[11px] text-gray-500 truncate">
-                      {needsKey ? (provider.hasKey ? 'Key stored' : 'No key') : 'Local — no key needed'} ·{' '}
+                      {needsKey
+                        ? provider.hasKey
+                          ? `Key stored ${provider.maskedSuffix ?? ''}`.trim()
+                          : provider.accountConfigured
+                            ? 'Key recovered — unlock required'
+                            : 'No key'
+                        : 'Local — no key needed'} ·{' '}
                       {provider.model || 'no model selected'}
                     </p>
                   </div>
@@ -576,7 +723,9 @@ const StatusDot: React.FC<{ status: string }> = ({ status }) => {
         ? 'bg-red-500'
         : status === 'unconfigured' || status === 'disabled'
           ? 'bg-gray-300'
-          : 'bg-amber-400';
+          : status === 'locked'
+            ? 'bg-amber-400'
+            : 'bg-amber-400';
   return <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${cls}`} />;
 };
 
@@ -586,6 +735,7 @@ const StatusLabel: React.FC<{ status: string }> = ({ status }) => {
     failed: { text: 'Failed', cls: 'bg-red-50 text-red-700 border-red-200' },
     untested: { text: 'Not tested', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
     unconfigured: { text: 'No key', cls: 'bg-gray-50 text-gray-500 border-gray-200' },
+    locked: { text: 'Unlock required', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
     disabled: { text: 'Disabled', cls: 'bg-gray-50 text-gray-500 border-gray-200' },
   };
   const item = map[status] ?? map.unconfigured;
@@ -978,7 +1128,7 @@ const FallbackCard: React.FC = () => {
                   <span className="font-medium text-gray-800">{provider.label}</span>
                   {index === 0 && <span className="text-[10px] font-black uppercase text-[#2D6A4F]">primary</span>}
                   {requiresKey(provider.kind) && !provider.hasKey && (
-                    <span className="text-[10px] text-gray-400">(no key)</span>
+                    <span className="text-[10px] text-gray-400">({provider.accountConfigured ? 'unlock required' : 'no key'})</span>
                   )}
                   {!provider.usable && <span className="text-[10px] text-gray-400">(disabled)</span>}
                 </span>
