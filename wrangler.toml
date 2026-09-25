@@ -5,7 +5,7 @@
 # It is publishable, but keeping deployment credentials out of Git prevents
 # accidental coupling between source control and an environment.
 
-name = "pharmatrack-web-local"
+name = "pharmatrack-api-local"
 main = "cloudflare/worker/src/index.ts"
 compatibility_date = "2026-09-25"
 workers_dev = true
@@ -30,15 +30,15 @@ preview_bucket_name = "pharmatrack-objects-local"
 # remains fail-closed on auth and authorization when this binding is absent.
 
 [env.staging]
-name = "pharmatrack-web-staging"
+name = "pharmatrack-api-staging"
 workers_dev = true
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
 SUPABASE_URL = "https://ltpwedxcvbejiywmwrwc.supabase.co"
-# Replace this exact placeholder with the deployed staging web origin before
-# staging smoke tests. Do not use a wildcard.
-CORS_ORIGINS = "https://staging.pharmatrack.example"
+# The Pages project is the canonical staging web origin. Keep this exact;
+# do not use a wildcard.
+CORS_ORIGINS = "https://pharmatrack-web-staging.pages.dev"
 
 [env.staging.assets]
 directory = "dist"
@@ -56,15 +56,15 @@ namespace_id = "1001"
 simple = { limit = 120, period = 60 }
 
 [env.production]
-name = "pharmatrack-web-production"
+name = "pharmatrack-api-production"
 workers_dev = true
 
 [env.production.vars]
 ENVIRONMENT = "production"
 SUPABASE_URL = "https://ltpwedxcvbejiywmwrwc.supabase.co"
-# Replace this exact placeholder with the real production web origin before
-# deployment. A missing or wildcard origin is not acceptable for private APIs.
-CORS_ORIGINS = "https://app.pharmatrack.example"
+# The Pages project is the canonical production web origin. Keep this exact;
+# a missing or wildcard origin is not acceptable for private APIs.
+CORS_ORIGINS = "https://pharmatrack-web.pages.dev"
 
 [env.production.assets]
 directory = "dist"

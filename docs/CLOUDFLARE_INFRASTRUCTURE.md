@@ -1,14 +1,15 @@
 # PharmaTRACK Cloudflare Web, API, and Storage Foundation
 
-This repository now has a Cloudflare Worker + Static Assets + R2 boundary. It is deliberately additive: it does not migrate the existing academic workspace out of IndexedDB/local storage and it does not replace Supabase.
+This repository now has a Cloudflare Pages PWA + Worker API + R2 boundary. The Pages projects provide the public `pages.dev` website; the Worker projects provide the authenticated API and private R2 boundary. The Worker also retains a Static Assets binding for local development and direct Worker fallback. It is deliberately additive: it does not migrate the existing academic workspace out of IndexedDB/local storage and it does not replace Supabase.
 
 ## Responsibility split
 
 | System | Responsibility |
 | --- | --- |
 | Supabase | Authentication, `auth.users.id`, account-owned relational data, RLS, sync metadata, and the `storage_objects` metadata table |
-| Cloudflare Worker | Same-origin PWA/API entry point, Supabase bearer verification, authorization boundary, validation, rate limiting, and R2 operations |
-| Cloudflare Static Assets | Vite production output and the public PWA shell |
+| Cloudflare Worker API | Supabase bearer verification, authorization boundary, validation, rate limiting, and R2 operations |
+| Cloudflare Pages | Vite production output and the public `pages.dev` PWA shell |
+| Worker Static Assets binding | Local development and direct Worker fallback; it is not the canonical public website |
 | Cloudflare R2 | Large PDF, PPTX, DOCX, image, `.pharmaexam`, backup, and other binary objects |
 | Device | IndexedDB, offline workspace, cached materials, encrypted examination state, and pending synchronization |
 
@@ -22,12 +23,12 @@ Original filenames never become object paths. R2 bytes are private and metadata 
 
 ## Files
 
-- `wrangler.toml` — local, staging, and production Worker/Assets/R2 environments.
-- `cloudflare/worker/src/index.ts` — Worker API and Static Assets boundary.
-- `src/cloudflare/storageClient.ts` — browser client using relative `/api/v1` URLs and Supabase sessions.
+- `wrangler.toml` — local, staging, and production Worker API/Assets/R2 environments.
+- `cloudflare/worker/src/index.ts` — Worker API and Static Assets fallback boundary.
+- `src/cloudflare/storageClient.ts` — browser client using a build-time Worker API origin and Supabase sessions.
 - `supabase/cloudflare-storage.sql` — account-owned R2 metadata table and RLS policies.
-- `scripts/cloudflare-smoke.mjs` — real deployment smoke test.
-- `.github/workflows/cloudflare.yml` — manual deployment workflow.
+- `scripts/cloudflare-smoke.mjs` — real deployment smoke test against the Worker API.
+- `.github/workflows/cloudflare.yml` — automatic Pages + Worker deployment workflow.
 
 The existing PWA service worker remains public-shell-only. It refuses to cache requests with `Authorization` and excludes `/api`, auth, Supabase, and examination data paths. Private R2 responses use `Cache-Control: private, no-store`.
 
@@ -49,6 +50,8 @@ Authenticate Wrangler from a Cloudflare-connected environment, not from chat:
 
 ```bash
 npx wrangler login
+npx wrangler pages project create pharmatrack-web --production-branch main
+npx wrangler pages project create pharmatrack-web-staging --production-branch main
 npx wrangler r2 bucket create pharmatrack-objects-staging
 npx wrangler r2 bucket create pharmatrack-objects-production
 ```
@@ -66,9 +69,9 @@ printf '%s' "$VITE_SUPABASE_ANON_KEY" | npx wrangler secret put SUPABASE_ANON_KE
 printf '%s' "$VITE_SUPABASE_ANON_KEY" | npx wrangler secret put SUPABASE_ANON_KEY --env production
 ```
 
-Before staging or production deployment, replace the explicit placeholder `CORS_ORIGINS` values in `wrangler.toml` with the exact web origin(s). Do not use `*`, a path wildcard, or an origin that is not controlled by PharmaTRACK. If the PWA and Worker are same-origin, one exact origin is sufficient.
+The canonical website origins are `https://pharmatrack-web.pages.dev` for production and `https://pharmatrack-web-staging.pages.dev` for staging. These exact Pages origins are already the staging/production `CORS_ORIGINS` values in `wrangler.toml`. Do not use `*`, a path wildcard, or an origin that is not controlled by PharmaTRACK.
 
-The R2 bucket names and Worker names are intentionally environment-specific. The production configuration currently uses `workers_dev = true` so it can be smoke-tested without inventing a DNS zone. Attach a controlled custom domain/route after the production hostname is known, then set that exact hostname in `CORS_ORIGINS`.
+The API Worker origins are separate: `https://pharmatrack-api-production.g2code331.workers.dev` and `https://pharmatrack-api-staging.g2code331.workers.dev`. The Pages build receives the appropriate API origin through `VITE_CLOUDFLARE_API_BASE_URL`; browser storage requests therefore go to the Worker API even though the website itself is served from `pages.dev`.
 
 ## Local Worker/API test
 
@@ -101,22 +104,44 @@ The smoke test verifies:
 
 ## Deployment
 
-After the Supabase metadata migration, R2 buckets, exact CORS origins, and Worker secret are configured:
+After the Supabase metadata migration, Pages projects, R2 buckets, exact CORS origins, Worker secret, and build-time API origins are configured:
 
 ```bash
-npm run cf:deploy:staging
-npm run cf:deploy:production
+npm run build
+npx wrangler deploy --env staging --config wrangler.toml
+npx wrangler pages deploy dist --project-name pharmatrack-web-staging --branch main
+
+npm run build
+npx wrangler deploy --env production --config wrangler.toml
+npx wrangler pages deploy dist --project-name pharmatrack-web --branch main
 ```
 
-The GitHub workflow automatically deploys production on every push to `main` after the full test suite, Worker typecheck, and PWA build pass. It runs the authenticated smoke test for those production deployments when the configured smoke variables and short-lived test-user token are available; an expired or missing short-lived token does not block the build/deploy. Manual `workflow_dispatch` runs remain available for explicitly selecting staging or production, and a manual run that requests smoke testing requires all smoke inputs. The workflow requires Cloudflare credentials in the GitHub/Arena environment. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
+The GitHub workflow automatically deploys the production Worker API and the `pharmatrack-web.pages.dev` Pages site on every push to `main` after the full test suite, Worker typecheck, and PWA build pass. It runs the authenticated smoke test against the Worker API for those production deployments when the configured smoke variables and short-lived test-user token are available; an expired or missing short-lived token does not block the build/deploy. Manual `workflow_dispatch` runs remain available for explicitly selecting staging or production, and a manual run that requests smoke testing requires all smoke inputs. The workflow requires Cloudflare credentials in the GitHub/Arena environment. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
 
 Configure the GitHub `production` Environment before enabling automatic main deployments:
 
 - Required secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY`.
-- Optional smoke-test secrets: `CLOUDFLARE_TEST_ACCESS_TOKEN`.
-- Optional smoke-test variables: `CLOUDFLARE_API_BASE_URL` and `CLOUDFLARE_TEST_ORIGIN`.
+- Optional smoke-test secret: `CLOUDFLARE_TEST_ACCESS_TOKEN`.
+- Required variables: `CLOUDFLARE_PAGES_PROJECT` and `CLOUDFLARE_API_BASE_URL`.
+- Optional smoke-test variable: `CLOUDFLARE_TEST_ORIGIN`.
 
-When all smoke-test values are present, every main push also runs the authenticated smoke test. Without them, the build and production deployment still run and the workflow reports that smoke testing was skipped. For manual staging deployments, configure the same names in the `staging` Environment with the staging Worker URL and a short-lived test-user token. The production environment should use required reviewers if the repository wants an approval gate; otherwise every successful push to `main` deploys automatically.
+For the `production` Environment use:
+
+```text
+CLOUDFLARE_PAGES_PROJECT=pharmatrack-web
+CLOUDFLARE_API_BASE_URL=https://pharmatrack-api-production.g2code331.workers.dev
+CLOUDFLARE_TEST_ORIGIN=https://pharmatrack-web.pages.dev
+```
+
+For the `staging` Environment use:
+
+```text
+CLOUDFLARE_PAGES_PROJECT=pharmatrack-web-staging
+CLOUDFLARE_API_BASE_URL=https://pharmatrack-api-staging.g2code331.workers.dev
+CLOUDFLARE_TEST_ORIGIN=https://pharmatrack-web-staging.pages.dev
+```
+
+When all smoke-test values are present, every main push also runs the authenticated smoke test against the Worker API. Without them, the Pages and Worker deployment still run and the workflow reports that smoke testing was skipped. The production environment should use required reviewers if the repository wants an approval gate; otherwise every successful push to `main` deploys automatically.
 
 ## API surface
 

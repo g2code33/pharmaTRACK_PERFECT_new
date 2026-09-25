@@ -60,6 +60,9 @@ describe('Cloudflare deployment contract', () => {
     expect(workflow).toMatch(/push:\s*\n\s+branches:\s*\n\s+- main/);
     expect(workflow).toContain("github.event_name == 'push' && 'production'");
     expect(workflow).toContain('wrangler deploy --env "$DEPLOY_ENVIRONMENT"');
+    expect(workflow).toContain('wrangler pages deploy dist');
+    expect(workflow).toContain('CLOUDFLARE_PAGES_PROJECT');
+    expect(workflow).toContain('VITE_CLOUDFLARE_API_BASE_URL');
     expect(workflow).toContain('github.event_name == \'push\' || inputs.run_smoke');
   });
 });
