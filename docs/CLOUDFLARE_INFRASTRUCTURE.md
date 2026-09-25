@@ -108,7 +108,14 @@ npm run cf:deploy:staging
 npm run cf:deploy:production
 ```
 
-The GitHub workflow is manual by design. It requires Cloudflare credentials in GitHub/Arena integration and a short-lived test-user token if the post-deploy smoke step is enabled. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
+The GitHub workflow automatically deploys production on every push to `main` after the full test suite, Worker typecheck, and PWA build pass. It also runs the authenticated smoke test for those production deployments. Manual `workflow_dispatch` runs remain available for explicitly selecting staging or production, with an option to skip the smoke test for staging. The workflow requires Cloudflare credentials in the GitHub/Arena environment and a short-lived test-user token for automatic production smoke tests. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
+
+Configure the GitHub `production` Environment before enabling automatic main deployments:
+
+- Secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `CLOUDFLARE_TEST_ACCESS_TOKEN`.
+- Variables: `CLOUDFLARE_API_BASE_URL` and `CLOUDFLARE_TEST_ORIGIN`.
+
+For manual staging deployments, configure the same names in the `staging` Environment with the staging Worker URL and a short-lived test-user token. The production environment should use required reviewers if the repository wants an approval gate; otherwise every successful push to `main` deploys automatically.
 
 ## API surface
 

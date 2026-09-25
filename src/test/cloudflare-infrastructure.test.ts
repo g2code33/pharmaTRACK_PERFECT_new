@@ -6,6 +6,7 @@ const worker = readFileSync('cloudflare/worker/src/index.ts', 'utf8');
 const storageSql = readFileSync('supabase/cloudflare-storage.sql', 'utf8');
 const serviceWorker = readFileSync('public/sw.js', 'utf8');
 const client = readFileSync('src/cloudflare/storageClient.ts', 'utf8');
+const workflow = readFileSync('.github/workflows/cloudflare.yml', 'utf8');
 
 describe('Cloudflare deployment contract', () => {
   it('defines isolated local, staging, and production static/R2 environments', () => {
@@ -53,5 +54,12 @@ describe('Cloudflare deployment contract', () => {
     expect(client).toContain('Authorization');
     expect(client).not.toContain('R2_ACCESS_KEY');
     expect(client).not.toContain('R2_SECRET');
+  });
+
+  it('automatically deploys production for every push to main', () => {
+    expect(workflow).toMatch(/push:\s*\n\s+branches:\s*\n\s+- main/);
+    expect(workflow).toContain("github.event_name == 'push' && 'production'");
+    expect(workflow).toContain('wrangler deploy --env "$DEPLOY_ENVIRONMENT"');
+    expect(workflow).toContain('github.event_name == \'push\' || inputs.run_smoke');
   });
 });
