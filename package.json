@@ -6,6 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "cf:dev": "npm run build && wrangler dev --local --config wrangler.toml",
+    "cf:deploy:staging": "npm run build && wrangler deploy --env staging --config wrangler.toml",
+    "cf:deploy:production": "npm run build && wrangler deploy --env production --config wrangler.toml",
+    "cf:smoke": "node scripts/cloudflare-smoke.mjs",
+    "cf:typecheck": "tsc -p cloudflare/worker/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
@@ -41,6 +46,7 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260925.1",
     "@eslint/js": "^9.39.5",
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.0.0",
@@ -62,6 +68,7 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0",
     "vite": "^5.0.8",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "wrangler": "^4.140.0"
   }
 }
