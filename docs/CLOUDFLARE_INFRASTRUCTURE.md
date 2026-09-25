@@ -108,14 +108,15 @@ npm run cf:deploy:staging
 npm run cf:deploy:production
 ```
 
-The GitHub workflow automatically deploys production on every push to `main` after the full test suite, Worker typecheck, and PWA build pass. It also runs the authenticated smoke test for those production deployments. Manual `workflow_dispatch` runs remain available for explicitly selecting staging or production, with an option to skip the smoke test for staging. The workflow requires Cloudflare credentials in the GitHub/Arena environment and a short-lived test-user token for automatic production smoke tests. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
+The GitHub workflow automatically deploys production on every push to `main` after the full test suite, Worker typecheck, and PWA build pass. It runs the authenticated smoke test for those production deployments when the configured smoke variables and short-lived test-user token are available; an expired or missing short-lived token does not block the build/deploy. Manual `workflow_dispatch` runs remain available for explicitly selecting staging or production, and a manual run that requests smoke testing requires all smoke inputs. The workflow requires Cloudflare credentials in the GitHub/Arena environment. The repository does not contain Cloudflare API tokens, R2 access keys, service-role keys, or test-user tokens.
 
 Configure the GitHub `production` Environment before enabling automatic main deployments:
 
-- Secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `CLOUDFLARE_TEST_ACCESS_TOKEN`.
-- Variables: `CLOUDFLARE_API_BASE_URL` and `CLOUDFLARE_TEST_ORIGIN`.
+- Required secrets: `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY`.
+- Optional smoke-test secrets: `CLOUDFLARE_TEST_ACCESS_TOKEN`.
+- Optional smoke-test variables: `CLOUDFLARE_API_BASE_URL` and `CLOUDFLARE_TEST_ORIGIN`.
 
-For manual staging deployments, configure the same names in the `staging` Environment with the staging Worker URL and a short-lived test-user token. The production environment should use required reviewers if the repository wants an approval gate; otherwise every successful push to `main` deploys automatically.
+When all smoke-test values are present, every main push also runs the authenticated smoke test. Without them, the build and production deployment still run and the workflow reports that smoke testing was skipped. For manual staging deployments, configure the same names in the `staging` Environment with the staging Worker URL and a short-lived test-user token. The production environment should use required reviewers if the repository wants an approval gate; otherwise every successful push to `main` deploys automatically.
 
 ## API surface
 

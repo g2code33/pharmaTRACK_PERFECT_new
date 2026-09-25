@@ -61,14 +61,30 @@ jobs:
       - name: Deploy Worker, Static Assets, and R2 binding
         run: npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
 
-      # Main pushes always smoke-test production. Manual runs respect the
-      # run_smoke input, so staging can be deployed without a live test token
-      # when desired.
-      - name: Run authenticated Cloudflare smoke test
-        if: ${{ github.event_name == 'push' || inputs.run_smoke }}
+      # A manual run explicitly requesting smoke testing must provide all
+      # smoke-test inputs. Main pushes run smoke testing when those inputs are
+      # configured; an expired/missing short-lived token must not prevent the
+      # production build and deployment from completing.
+      - name: Validate requested manual smoke configuration
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_smoke }}
         shell: bash
         run: |
           test -n "$CLOUDFLARE_API_BASE_URL"
           test -n "$CLOUDFLARE_TEST_ORIGIN"
           test -n "$CLOUDFLARE_TEST_ACCESS_TOKEN"
-          npm run cf:smoke
+
+      - name: Check automatic smoke configuration
+        id: smoke_config
+        shell: bash
+        run: |
+          if [ -n "$CLOUDFLARE_API_BASE_URL" ] && [ -n "$CLOUDFLARE_TEST_ORIGIN" ] && [ -n "$CLOUDFLARE_TEST_ACCESS_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Smoke test skipped: production smoke variables or short-lived token are not configured."
+          fi
+
+      - name: Run authenticated Cloudflare smoke test
+        if: ${{ steps.smoke_config.outputs.enabled == 'true' && (github.event_name == 'push' || inputs.run_smoke) }}
+        shell: bash
+        run: npm run cf:smoke
