@@ -9,6 +9,7 @@ import StorageNoticeBanner from './components/StorageNoticeBanner';
 import Dashboard from './pages/Dashboard';
 import Onboarding from './pages/Onboarding';
 import Login from './pages/Login';
+import ResetPassword from './pages/ResetPassword';
 
 /**
  * Everything else loads on demand. Startup was paying to parse the PDF reader,
@@ -158,9 +159,13 @@ const App = () => {
             <ExamLaunchRouter />
             <Routes>
               {needsOnboarding ? (
-                // First run. No login wall: just ask their name/level so the app is
-                // personalised, then let them straight in.
-                <Route path="*" element={<Onboarding />} />
+                // First run remains offline-first, but an existing account can
+                // sign in from a fresh device before completing onboarding.
+                <>
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/reset-password" element={<ResetPassword />} />
+                  <Route path="*" element={<Onboarding />} />
+                </>
               ) : (
                 <>
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
@@ -195,6 +200,7 @@ const App = () => {
                     <Route path="/profile" element={<Profile />} />
                     {/* Reachable on demand (e.g. from "Sign in to sync"), never forced. */}
                     <Route path="/login" element={<Login />} />
+                    <Route path="/reset-password" element={<ResetPassword />} />
                     <Route path="/timetable" element={<Timetable />} />
                     <Route path="/ai" element={<AiAssistant />} />
                     <Route path="/archive" element={<AcademicArchive />} />

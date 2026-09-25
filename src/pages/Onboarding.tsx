@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Student } from '../types';
 import { GraduationCap, User, Building, BookOpen, Calendar, ArrowRight, Sparkles } from 'lucide-react';
@@ -138,7 +139,7 @@ const Onboarding: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Current Level
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     {levels.map((level) => (
                       <button
                         key={level}
@@ -201,6 +202,12 @@ const Onboarding: React.FC = () => {
             <div className={`w-2 h-2 rounded-full ${step === 1 ? 'bg-[#2D6A4F]' : 'bg-gray-300'}`} />
             <div className={`w-2 h-2 rounded-full ${step === 2 ? 'bg-[#2D6A4F]' : 'bg-gray-300'}`} />
           </div>
+        </div>
+
+        <div className="mt-5 text-center">
+          <Link to="/login" className="text-sm font-bold text-white underline underline-offset-4 hover:text-emerald-200">
+            Already have a PharmaTRACK account? Sign in
+          </Link>
         </div>
 
         {/* Features preview */}

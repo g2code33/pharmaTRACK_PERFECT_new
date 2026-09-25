@@ -1,12 +1,21 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Forcefully use your real Supabase URL as the fallback!
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://ltpwedxcvbejiywmwrwc.supabase.co";
+// Only the public/publishable Supabase client key belongs in a browser build.
+// Service-role and database credentials must remain in Supabase server-side
+// functions/configuration and are never read by this module.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://ltpwedxcvbejiywmwrwc.supabase.co';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VYF1gRvyI3EMCfon1hHK4A_vbWgPknx';
 
-// REPLACE THE TEXT BELOW WITH YOUR ACTUAL SUPABASE ANON KEY!
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "sb_publishable_VYF1gRvyI3EMCfon1hHK4A_vbWgPknx";
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    // PKCE works with HashRouter because the OAuth code stays in the query
+    // string while the application route remains in the hash.
+    flowType: 'pkce',
+  },
+});
 
 // The localStorage key supabase-js persists the session under. It derives this
 // from the project URL as `sb-<project-ref>-auth-token`.
