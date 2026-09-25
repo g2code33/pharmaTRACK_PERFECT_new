@@ -6,8 +6,10 @@
 //! event transaction and its audit record have been written. The webview is a
 //! client of this authority; it is never the authority itself.
 
-use serde::{Deserialize, Serialize};
 use chrono::{SecondsFormat, Utc};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
+use ring::rand::{SecureRandom, SystemRandom};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -315,8 +317,8 @@ fn route(state: &mut ServerState, request: &HttpRequest) -> Result<(u16, Value),
         ("GET", Some("package"), None) => Ok((200, json!({
             "ok": true,
             "sessionId": state.config.session_id,
-            "examVersionId": state.config.exam_version_id,
-            "package": state.config.package,
+            "examVersionId": state.config.exam_version_id.clone(),
+            "package": state.config.package.clone(),
         }))),
         ("POST", Some("heartbeat"), None) => heartbeat(state, request),
         ("POST", Some("sync"), None) => sync(state, request),
@@ -373,9 +375,9 @@ fn connect(state: &mut ServerState, request: &HttpRequest) -> Result<(u16, Value
     Ok((200, json!({
         "ok": true,
         "server": server_json(state),
-        "session": state.config.session,
-        "deviceSessionId": connection.id,
-        "sessionToken": state.config.access_token,
+            "session": state.config.session.clone(),
+            "deviceSessionId": connection.id,
+            "sessionToken": state.config.access_token.clone(),
     })))
 }
 
@@ -530,7 +532,7 @@ fn recover(state: &mut ServerState, request: &HttpRequest, attempt_id: &str) -> 
 }
 
 fn state_snapshot(state: &mut ServerState, _request: &HttpRequest) -> Result<(u16, Value), String> {
-    Ok((200, json!({"ok":true,"server":server_json(state),"connections":state.connections.values().map(connection_json).collect::<Vec<_>>(),"attempts":state.attempts.values().map(attempt_json).collect::<Vec<_>>(),"securityEvents":state.security_events,"revision":state.revision})))
+    Ok((200, json!({"ok":true,"server":server_json(state),"connections":state.connections.values().map(connection_json).collect::<Vec<_>>(),"attempts":state.attempts.values().map(attempt_json).collect::<Vec<_>>(),"securityEvents":state.security_events.clone(),"revision":state.revision})))
 }
 
 fn results(state: &mut ServerState, _request: &HttpRequest) -> Result<(u16, Value), String> {
@@ -594,9 +596,51 @@ fn write_json(stream: &mut TcpStream, status: u16, body: Value) -> std::io::Resu
     stream.write_all(&encoded)
 }
 
+fn journal_key(state: &ServerState) -> [u8; 32] {
+    Sha256::digest(state.config.access_token.as_bytes()).into()
+}
+
+fn encrypt_journal_record(state: &ServerState, record: Value) -> Result<Value, String> {
+    let unbound = UnboundKey::new(&AES_256_GCM, &journal_key(state))
+        .map_err(|_| "Durable journal encryption key could not be created.")?;
+    let key = LessSafeKey::new(unbound);
+    let mut nonce_bytes = [0_u8; 12];
+    SystemRandom::new()
+        .fill(&mut nonce_bytes)
+        .map_err(|_| "Durable journal nonce generation failed.")?;
+    let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+    let mut plaintext = serde_json::to_vec(&record)
+        .map_err(|error| format!("Durable journal serialization failed: {error}"))?;
+    key.seal_in_place_append_tag(nonce, Aad::empty(), &mut plaintext)
+        .map_err(|_| "Durable journal encryption failed.")?;
+    Ok(json!({
+        "encrypted": true,
+        "algorithm": "AES-256-GCM",
+        "nonce": hex_encode(&nonce_bytes),
+        "ciphertext": hex_encode(&plaintext),
+    }))
+}
+
+fn decrypt_journal_record(state: &ServerState, stored: Value) -> Option<Value> {
+    if stored["encrypted"] != Value::Bool(true) { return Some(stored); }
+    if stored["algorithm"].as_str() != Some("AES-256-GCM") { return None; }
+    let nonce_vec = hex_decode(stored["nonce"].as_str()?)?;
+    if nonce_vec.len() != 12 { return None; }
+    let mut ciphertext = hex_decode(stored["ciphertext"].as_str()?)?;
+    let unbound = UnboundKey::new(&AES_256_GCM, &journal_key(state)).ok()?;
+    let key = LessSafeKey::new(unbound);
+    let mut nonce_bytes = [0_u8; 12];
+    nonce_bytes.copy_from_slice(&nonce_vec);
+    let plaintext = key
+        .open_in_place(Nonce::assume_unique_for_key(nonce_bytes), Aad::empty(), &mut ciphertext)
+        .ok()?;
+    serde_json::from_slice(plaintext).ok()
+}
+
 fn append_journal(state: &ServerState, record: Value) -> Result<(), String> {
     let mut file = OpenOptions::new().create(true).append(true).open(&state.journal_path).map_err(|error| format!("Durable journal open failed: {error}"))?;
-    let encoded = serde_json::to_vec(&record).map_err(|error| format!("Durable journal serialization failed: {error}"))?;
+    let encrypted = encrypt_journal_record(state, record)?;
+    let encoded = serde_json::to_vec(&encrypted).map_err(|error| format!("Durable journal serialization failed: {error}"))?;
     file.write_all(&encoded).map_err(|error| format!("Durable journal write failed: {error}"))?;
     file.write_all(b"\n").map_err(|error| format!("Durable journal delimiter failed: {error}"))?;
     file.sync_all().map_err(|error| format!("Durable journal fsync failed: {error}"))?;
@@ -606,7 +650,8 @@ fn append_journal(state: &ServerState, record: Value) -> Result<(), String> {
 fn replay_journal(state: &mut ServerState) -> Result<(), String> {
     let Ok(content) = fs::read_to_string(&state.journal_path) else { return Ok(()); };
     for line in content.lines() {
-        let Ok(record) = serde_json::from_str::<Value>(line) else { continue; };
+        let Ok(stored) = serde_json::from_str::<Value>(line) else { continue; };
+        let Some(record) = decrypt_journal_record(state, stored) else { continue; };
         match record["kind"].as_str() {
             Some("EVENT_APPLIED") => {
                 let event_id = record["eventId"].as_str().or_else(|| record["event"]["eventId"].as_str()).unwrap_or_default().to_string();
@@ -641,6 +686,11 @@ fn attempt_json(attempt: &Attempt) -> Value { json!({"id":attempt.id,"sessionId"
 fn attempt_from_json(value: &Value) -> Option<Attempt> { Some(Attempt { id:value["id"].as_str()?.into(), student_id:value["studentId"].as_str()?.into(), device_session_id:value["deviceSessionId"].as_str()?.into(), status:value["status"].as_str().unwrap_or("ACTIVE").into(), answers:BTreeMap::new(), created_at:value["startedAt"].as_str().unwrap_or("").into(), submitted_at:value["submittedAt"].as_str().map(str::to_string) }) }
 fn server_json(state: &ServerState) -> Value { json!({"serverId":state.config.server_id,"label":"PharmaTRACK LAN examination authority","role":"PRIMARY","endpoint":state.endpoint,"authorityId":state.config.authority_id,"epoch":state.config.authority_epoch,"revision":state.revision,"status":"PRIMARY","lastHeartbeatAt":state.last_heartbeat_at}) }
 fn safe_file_name(value: &str) -> String { value.chars().map(|character| if character.is_ascii_alphanumeric() || character == '-' || character == '_' { character } else { '_' }).collect() }
+fn hex_encode(bytes: &[u8]) -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() }
+fn hex_decode(value: &str) -> Option<Vec<u8>> {
+    if value.len() % 2 != 0 { return None; }
+    (0..value.len()).step_by(2).map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok()).collect()
+}
 fn unix_millis() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() }
 fn now() -> String { Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true) }
 fn sha256_hex(value: &str) -> String { let mut hasher = Sha256::new(); hasher.update(value.as_bytes()); format!("{:x}", hasher.finalize()) }

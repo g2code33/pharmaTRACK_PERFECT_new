@@ -2261,6 +2261,7 @@ name = "pharmatrack"
 version = "1.1.84"
 dependencies = [
  "chrono",
+ "ring",
  "serde",
  "serde_json",
  "sha2",
