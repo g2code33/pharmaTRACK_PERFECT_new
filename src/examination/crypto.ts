@@ -1,5 +1,7 @@
 /** Offline cryptographic helpers for examination identity and packages. */
 
+import { asCryptoBuffer } from './cryptoBuffer';
+
 const textEncoder = () => new TextEncoder();
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -11,15 +13,6 @@ function bytesToBase64(bytes: Uint8Array): string {
 function base64ToBytes(value: string): Uint8Array {
   const binary = atob(value);
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-}
-
-/** TypeScript's DOM lib distinguishes SharedArrayBuffer-backed views. Copying
- * into a fresh ArrayBuffer keeps Web Crypto portable across browsers, jsdom,
- * and the Tauri WebView. */
-function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
 }
 
 export function randomId(prefix = 'id'): string {
@@ -49,7 +42,7 @@ export function canonicalJson(value: unknown): string {
 
 export async function sha256(value: string | Uint8Array): Promise<string> {
   const bytes = typeof value === 'string' ? textEncoder().encode(value) : value;
-  const digest = await crypto.subtle.digest('SHA-256', asArrayBuffer(bytes));
+  const digest = await crypto.subtle.digest('SHA-256', asCryptoBuffer(bytes));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -70,7 +63,7 @@ export async function derivePasswordVerifier(
 }> {
   const material = await crypto.subtle.importKey(
     'raw',
-    asArrayBuffer(textEncoder().encode(password)),
+    asCryptoBuffer(textEncoder().encode(password)),
     'PBKDF2',
     false,
     ['deriveBits'],
@@ -78,7 +71,7 @@ export async function derivePasswordVerifier(
   const bits = await crypto.subtle.deriveBits(
     {
       name: 'PBKDF2',
-      salt: asArrayBuffer(base64ToBytes(salt)),
+      salt: asCryptoBuffer(base64ToBytes(salt)),
       iterations: PBKDF2_ITERATIONS,
       hash: 'SHA-256',
     },
@@ -105,7 +98,7 @@ export async function verifyPassword(
   if (verifier.algorithm !== 'PBKDF2-SHA-256') return false;
   const material = await crypto.subtle.importKey(
     'raw',
-    asArrayBuffer(textEncoder().encode(password)),
+    asCryptoBuffer(textEncoder().encode(password)),
     'PBKDF2',
     false,
     ['deriveBits'],
@@ -113,7 +106,7 @@ export async function verifyPassword(
   const bits = await crypto.subtle.deriveBits(
     {
       name: 'PBKDF2',
-      salt: asArrayBuffer(base64ToBytes(verifier.salt)),
+      salt: asCryptoBuffer(base64ToBytes(verifier.salt)),
       iterations: verifier.iterations,
       hash: 'SHA-256',
     },
