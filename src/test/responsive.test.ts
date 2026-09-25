@@ -12,10 +12,19 @@
  * one looks fine on the laptop it was written on.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { globSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
-const files = globSync('src/**/*.tsx').filter(
+// `fs.globSync` was added after the Node 20 runtime used by CI. Keep this
+// small source scan on the long-supported readdir API instead.
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const file = join(directory, entry.name).replace(/\\/g, '/');
+    return entry.isDirectory() ? sourceFiles(file) : file.endsWith('.tsx') ? [file] : [];
+  });
+}
+
+const files = sourceFiles('src').filter(
   (file) => !file.includes('/test/') && !file.endsWith('.test.tsx'),
 );
 

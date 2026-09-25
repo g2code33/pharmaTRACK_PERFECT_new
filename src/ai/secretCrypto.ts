@@ -7,6 +7,8 @@
  * cannot decrypt provider credentials.
  */
 
+import { asCryptoBuffer } from '../examination/cryptoBuffer';
+
 export const ACCOUNT_VAULT_KDF = 'PBKDF2-SHA-256';
 export const ACCOUNT_VAULT_KDF_ITERATIONS = 310_000;
 export const ACCOUNT_VAULT_ALGORITHM = 'AES-GCM-256';
@@ -29,12 +31,6 @@ function fromBase64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
 
-function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
 function randomBytes(length: number): Uint8Array {
   const result = new Uint8Array(length);
   crypto.getRandomValues(result);
@@ -49,7 +45,7 @@ export async function deriveAccountVaultKey(password: string, salt: string): Pro
   if (!password) throw new Error('A password is required to unlock the account AI vault.');
   const material = await crypto.subtle.importKey(
     'raw',
-    arrayBuffer(new TextEncoder().encode(password)),
+    asCryptoBuffer(new TextEncoder().encode(password)),
     'PBKDF2',
     false,
     ['deriveKey'],
@@ -57,7 +53,7 @@ export async function deriveAccountVaultKey(password: string, salt: string): Pro
   return crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
-      salt: arrayBuffer(fromBase64(salt)),
+      salt: asCryptoBuffer(fromBase64(salt)),
       iterations: ACCOUNT_VAULT_KDF_ITERATIONS,
       hash: 'SHA-256',
     },
@@ -78,12 +74,12 @@ export async function encryptAccountSecret(
   const ciphertext = await crypto.subtle.encrypt(
     {
       name: 'AES-GCM',
-      iv: arrayBuffer(iv),
-      additionalData: arrayBuffer(additionalData),
+      iv: asCryptoBuffer(iv),
+      additionalData: asCryptoBuffer(additionalData),
       tagLength: 128,
     },
     key,
-    arrayBuffer(new TextEncoder().encode(JSON.stringify(value))),
+    asCryptoBuffer(new TextEncoder().encode(JSON.stringify(value))),
   );
   return {
     version: 1,
@@ -111,12 +107,12 @@ export async function decryptAccountSecret<T>(
   const plaintext = await crypto.subtle.decrypt(
     {
       name: 'AES-GCM',
-      iv: arrayBuffer(fromBase64(envelope.iv)),
-      additionalData: arrayBuffer(new TextEncoder().encode(envelope.aad)),
+      iv: asCryptoBuffer(fromBase64(envelope.iv)),
+      additionalData: asCryptoBuffer(new TextEncoder().encode(envelope.aad)),
       tagLength: 128,
     },
     key,
-    arrayBuffer(fromBase64(envelope.ciphertext)),
+    asCryptoBuffer(fromBase64(envelope.ciphertext)),
   );
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }

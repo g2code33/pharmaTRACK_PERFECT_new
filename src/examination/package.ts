@@ -10,6 +10,7 @@ import {
 import { readBlobArrayBuffer } from '../utils/fileGuard';
 import type { ExamSecuritySettings, ExamVersion, ExaminationState } from './types';
 import { EXAM_PACKAGE_FORMAT_VERSION } from './types';
+import { asCryptoBuffer } from './cryptoBuffer';
 
 const encoder = new TextEncoder();
 
@@ -96,12 +97,6 @@ function fromBase64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
 
-function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
 async function bytesOf(value: string | Uint8Array | Blob): Promise<Uint8Array> {
   if (typeof value === 'string') return encoder.encode(value);
   if (value instanceof Uint8Array) return new Uint8Array(value);
@@ -129,7 +124,7 @@ async function signPayload(payload: string, privateKey: CryptoKey): Promise<stri
   const signature = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
     privateKey,
-    arrayBuffer(encoder.encode(payload)),
+    asCryptoBuffer(encoder.encode(payload)),
   );
   return base64(new Uint8Array(signature));
 }
@@ -150,8 +145,8 @@ async function verifyPayload(
     return crypto.subtle.verify(
       { name: 'ECDSA', hash: 'SHA-256' },
       publicKey,
-      arrayBuffer(fromBase64(signature)),
-      arrayBuffer(encoder.encode(payload)),
+      asCryptoBuffer(fromBase64(signature)),
+      asCryptoBuffer(encoder.encode(payload)),
     );
   } catch {
     return false;
@@ -243,7 +238,7 @@ export async function createPharmaExamPackage(input: {
   for (const [name, value] of Object.entries(files)) {
     const content = await bytesOf(value);
     entries[name] = { size: content.byteLength, sha256: await sha256(content) };
-    zip.file(name, arrayBuffer(content));
+    zip.file(name, asCryptoBuffer(content));
   }
   const packageDigest = await digestJson(entries);
   const publicJwk = await crypto.subtle.exportKey('jwk', input.signingKey.publicKey);

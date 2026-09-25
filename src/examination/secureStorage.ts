@@ -1,5 +1,6 @@
 import * as idb from 'idb-keyval';
 import { randomBytes } from './crypto';
+import { asCryptoBuffer } from './cryptoBuffer';
 
 export const EXAM_DEVICE_KEY = 'pharmatrack_exam_device_key_v1';
 
@@ -20,12 +21,6 @@ function bytes(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
 
-function asArrayBuffer(value: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(value.byteLength);
-  copy.set(value);
-  return copy.buffer;
-}
-
 async function deviceKey(): Promise<CryptoKey> {
   const existing = await idb.get<CryptoKey>(EXAM_DEVICE_KEY);
   if (existing) return existing;
@@ -40,9 +35,9 @@ async function deviceKey(): Promise<CryptoKey> {
 export async function saveEncryptedJson<T>(key: string, value: T): Promise<void> {
   const iv = randomBytes(12);
   const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: asArrayBuffer(iv) },
+    { name: 'AES-GCM', iv: asCryptoBuffer(iv) },
     await deviceKey(),
-    asArrayBuffer(new TextEncoder().encode(JSON.stringify(value))),
+    asCryptoBuffer(new TextEncoder().encode(JSON.stringify(value))),
   );
   const record: EncryptedRecord = {
     encrypted: true,
@@ -69,9 +64,9 @@ export async function loadEncryptedJson<T>(key: string): Promise<T | null> {
   }
   const encrypted = record as EncryptedRecord;
   const plain = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: asArrayBuffer(bytes(encrypted.iv)) },
+    { name: 'AES-GCM', iv: asCryptoBuffer(bytes(encrypted.iv)) },
     await deviceKey(),
-    asArrayBuffer(bytes(encrypted.ciphertext)),
+    asCryptoBuffer(bytes(encrypted.ciphertext)),
   );
   return JSON.parse(new TextDecoder().decode(plain)) as T;
 }
