@@ -467,7 +467,7 @@ fn sync(state: &mut ServerState, request: &HttpRequest) -> Result<(u16, Value), 
 
 fn apply_sync_event(state: &mut ServerState, event: Value, event_id: String) -> Result<u64, String> {
     if event["sessionId"].as_str() != Some(state.config.session_id.as_str()) { return Err("Event session does not match the authority session.".into()); }
-    if event["authorityEpoch"].as_u64() != Some(state.config.authority_epoch) { return Err("Event authority epoch is stale.".into()); }
+    if event["authorityEpoch"].as_u64().unwrap_or(0) > state.config.authority_epoch { return Err("Event authority epoch is from the future.".into()); }
     if event["revision"].as_u64().unwrap_or(0) < 1 { return Err("Event revision is invalid.".into()); }
     if event["entity"].as_str() != Some("ANSWER") && event["entity"].as_str() != Some("SECURITY_EVENT") { return Err("Event entity is not accepted by the authority.".into()); }
     let payload = event["payload"].as_object().ok_or("Event payload is required.")?;

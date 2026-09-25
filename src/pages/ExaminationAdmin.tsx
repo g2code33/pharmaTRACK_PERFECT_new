@@ -463,9 +463,18 @@ const ExaminationAdmin: React.FC = () => {
               Automatic failover is disabled to prevent split-brain; promotion requires explicit
               administrator confirmation.
             </p>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-600 mt-2">
+              Replication state: {authority?.replicationState || 'UNKNOWN'} · epoch{' '}
+              {authority?.secondary.epoch ?? '—'}
+            </p>
           </div>
           <button
-            disabled={busy || !authority || !adminAuthenticated}
+            disabled={
+              busy ||
+              !authority ||
+              !adminAuthenticated ||
+              authority.replicationState === 'INTERRUPTED'
+            }
             onClick={() => void failover()}
             className="rounded-lg bg-amber-400 text-slate-950 px-4 py-2 font-black"
           >

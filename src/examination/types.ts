@@ -482,6 +482,25 @@ export interface ExamAuthorityLeaseRecord {
   expiresAt: string;
 }
 
+export interface ExamReplicationPayload {
+  schemaVersion: typeof EXAMINATION_SCHEMA_VERSION;
+  exams: Exam[];
+  versions: ExamVersion[];
+  sessions: ExamSession[];
+  students: ExamStudent[];
+  attempts: StudentAttempt[];
+  answers: ExamAnswer[];
+  securityEvents: SecurityEvent[];
+  adminActions: AdminAction[];
+  deviceSessions: DeviceSession[];
+  syncEvents: SyncEvent[];
+  recoveryStates: RecoveryState[];
+  results: ExaminationResult[];
+  authorities: ExamAuthorityRecord[];
+  authorityLeases: ExamAuthorityLeaseRecord[];
+  importedPackageKeys: string[];
+}
+
 export interface ExamReplicationSnapshot {
   id: string;
   authorityId: string;
@@ -492,6 +511,8 @@ export interface ExamReplicationSnapshot {
   sessionIds: string[];
   attemptIds: string[];
   pendingEventIds: string[];
+  /** Complete authority-owned state required to reconstruct an active exam. */
+  payload: ExamReplicationPayload;
   checksum: string;
 }
 

@@ -40,6 +40,7 @@ import {
   type AttemptTimerState,
   type ExamAuthorityRecord,
   type ExamAuthorityLeaseRecord,
+  type ExamReplicationPayload,
   type ExamReplicationSnapshot,
   type ViolationPolicy,
   type SecurityViolation,
@@ -225,6 +226,11 @@ export class ExaminationRepository {
 
   static async open(): Promise<ExaminationRepository> {
     return new ExaminationRepository(await loadExaminationState());
+  }
+
+  /** Create an isolated repository view for deterministic HA/disaster tests. */
+  static fromSnapshot(state: ExaminationState): ExaminationRepository {
+    return new ExaminationRepository(JSON.parse(JSON.stringify(state)) as ExaminationState);
   }
 
   get snapshot(): ExaminationState {
@@ -856,6 +862,31 @@ export class ExaminationRepository {
     await this.save();
   }
 
+  /**
+   * Install a server-produced snapshot on a secondary. The checksum is
+   * verified before replacing the secondary's in-memory view, and the complete
+   * state is then durably saved as one encrypted examination record.
+   */
+  async installReplicatedState(
+    payload: ExamReplicationPayload,
+    snapshot: ExamReplicationSnapshot,
+  ): Promise<void> {
+    if ((await digestJson(payload)) !== snapshot.checksum)
+      throw new Error('Replication snapshot checksum validation failed.');
+    const previous = this.state;
+    const snapshots = [...this.state.replicationSnapshots, snapshot].filter(
+      (item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index,
+    );
+    this.state = {
+      ...JSON.parse(JSON.stringify(payload)),
+      replicationSnapshots: snapshots,
+    } as ExaminationState;
+    if (!(await this.save())) {
+      this.state = previous;
+      throw new Error('Secondary replication state could not be durably persisted.');
+    }
+  }
+
   async applyAuthorityTakeover(
     sessionId: string,
     serverId: string,
@@ -1220,6 +1251,7 @@ export class ExaminationRepository {
     sessionId: string,
     events: SyncEvent[],
     authoritativeAt = new Date().toISOString(),
+    options: { reconcile?: boolean } = {},
   ): Promise<{
     ok: boolean;
     applied: number;
@@ -1247,7 +1279,7 @@ export class ExaminationRepository {
       }
 
       const previousState = JSON.parse(JSON.stringify(this.state)) as ExaminationState;
-      const reason = this.validateIncomingEvent(session, incoming);
+      const reason = this.validateIncomingEvent(session, incoming, options);
       if (reason) {
         const rejected = existing || {
           ...incoming,
@@ -1319,9 +1351,16 @@ export class ExaminationRepository {
     };
   }
 
-  private validateIncomingEvent(session: ExamSession, event: SyncEvent): string | undefined {
+  private validateIncomingEvent(
+    session: ExamSession,
+    event: SyncEvent,
+    options: { reconcile?: boolean } = {},
+  ): string | undefined {
     if (event.sessionId !== session.id) return 'Event session does not match the target session.';
-    if (event.authorityEpoch !== session.authorityEpoch) return 'Event authority epoch is stale.';
+    if (event.authorityEpoch > session.authorityEpoch)
+      return 'Event authority epoch is from the future.';
+    if (event.authorityEpoch < session.authorityEpoch && !options.reconcile)
+      return 'Event authority epoch is stale and requires recovery reconciliation.';
     if (!event.id || !event.eventId) return 'Event ID is required for replay protection.';
     if (!Number.isInteger(event.revision) || event.revision < 1)
       return 'Event revision is invalid.';
@@ -1334,12 +1373,13 @@ export class ExaminationRepository {
     );
     if (!device || device.role !== 'STUDENT' || device.sessionId !== session.id)
       return 'Device session is not authenticated for this examination session.';
-    if (device.status !== 'CONNECTED') return 'Device session is not connected.';
-    if (
-      attempt.deviceSessionId !== deviceSessionId &&
-      attempt.deviceSessionId !== device.id &&
-      attempt.deviceSessionId !== device.deviceId
-    )
+    if (device.status !== 'CONNECTED' && !options.reconcile)
+      return 'Device session is not connected.';
+    const ownsAttempt =
+      attempt.deviceSessionId === deviceSessionId ||
+      attempt.deviceSessionId === device.id ||
+      attempt.deviceSessionId === device.deviceId;
+    if (!ownsAttempt && (!options.reconcile || device.studentId !== attempt.studentId))
       return 'Device session does not own this attempt.';
     if (event.entity === 'ANSWER') {
       const answerRevision = event.answerRevision || 0;
