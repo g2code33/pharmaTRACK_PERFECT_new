@@ -400,7 +400,21 @@ export function queueSecretDeletion(providerId: ProviderId): void {
         );
       }
     })
-    .catch(() => console.error('AI credential deletion sync failed.'));
+    .catch(async (error) => {
+      const { markCredentialSyncStatus } = await import('./credentials');
+      await markCredentialSyncStatus(
+        providerId,
+        'pending',
+        'Credential deletion remains pending until the account is reachable.',
+      );
+      const revoked = error instanceof Error && /revoked|invalid device/i.test(error.message);
+      setStatus({
+        ...status,
+        state: revoked ? 'revoked' : offline() ? 'pending' : 'error',
+        message: 'Provider credential deletion remains pending.',
+      });
+      console.error('AI credential deletion sync failed.');
+    });
   secretQueues.set(providerId, next);
 }
 
@@ -476,7 +490,32 @@ async function restoreSecrets(session: DeviceSession, key: CryptoKey): Promise<n
   // Providers configured on another device may not exist locally at all.
   for (const remote of remoteRows) {
     if (local[remote.providerId] || !remote.encryptedSecret) continue;
-    if (metadata[remote.providerId]?.syncStatus === 'conflict') {
+    const remoteVersion = Number(remote.secretVersion ?? 0);
+    const localMeta = metadata[remote.providerId];
+    if (localMeta?.syncStatus === 'pending' && !localMeta.hasKey) {
+      versions[remote.providerId] = remoteVersion;
+      if (localMeta.serverVersion === remoteVersion) {
+        const result = await rpc<SecretWriteResponse>('pharmatrack_ai_delete_secret', {
+          p_device_id: session.deviceId,
+          p_device_token: session.deviceToken,
+          p_provider_id: remote.providerId,
+          p_credential_type: 'api_provider_credentials',
+          p_base_version: remoteVersion,
+        });
+        if (result.accepted) {
+          await markCredentialSyncStatus(remote.providerId, 'synced', undefined, remoteVersion);
+          delete versions[remote.providerId];
+          continue;
+        }
+      }
+      await markCredentialSyncStatus(
+        remote.providerId,
+        'conflict',
+        'The account credential changed while its deletion was pending; choose an explicit resolution.',
+      );
+      continue;
+    }
+    if (localMeta?.syncStatus === 'conflict') {
       versions[remote.providerId] = Number(remote.secretVersion ?? 0);
       await markCredentialSyncStatus(
         remote.providerId,

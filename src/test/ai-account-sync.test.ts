@@ -37,7 +37,7 @@ import {
   restoreAccountAIFromSession,
   unlockAccountAI,
 } from '../ai/accountSync';
-import { loadAllCredentialStatuses, saveCredentials } from '../ai/credentials';
+import { deleteCredentials, loadAllCredentialStatuses, saveCredentials } from '../ai/credentials';
 
 const SECRET = 'nvapi-account-sync-test-secret-123456';
 
@@ -207,6 +207,18 @@ describe('account AI synchronization', () => {
     expect(getAccountAIStatus().state).toBe('signed_out');
     expect(await loadAllCredentialStatuses()).toEqual({});
     expect(idbStore.has('pharmatrack_ai_credentials')).toBe(false);
+  });
+
+  it('preserves an offline deletion as a pending tombstone instead of restoring the key', async () => {
+    await unlockAccountAI('user-a', 'account-password');
+    await saveCredentials('nvidia', { apiKey: SECRET });
+    await flush();
+    Object.defineProperty(window.navigator, 'onLine', { value: false, configurable: true });
+    rpcMock.mockRejectedValue(new Error('network unavailable'));
+    await deleteCredentials('nvidia');
+    await flush();
+    expect((await loadAllCredentialStatuses()).nvidia?.syncStatus).toBe('pending');
+    expect((await loadAllCredentialStatuses()).nvidia?.hasKey).toBe(false);
   });
 
   it('keeps local operation available and marks restoration pending while offline', async () => {

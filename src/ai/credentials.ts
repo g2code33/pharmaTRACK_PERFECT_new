@@ -183,7 +183,7 @@ export async function mergeAccountCredentialStatuses(
       updatedAt: row.updatedAt,
       localVersion: local?.localVersion ?? 0,
       serverVersion: row.version,
-      syncStatus: local?.syncStatus === 'conflict' || local?.syncStatus === 'error'
+      syncStatus: local?.syncStatus === 'conflict' || local?.syncStatus === 'error' || local?.syncStatus === 'pending'
         ? local.syncStatus
         : local?.hasKey
           ? local.syncStatus
