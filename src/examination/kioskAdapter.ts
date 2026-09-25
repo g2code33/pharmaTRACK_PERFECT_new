@@ -29,6 +29,9 @@ export interface KioskAdapter {
   readonly matrix: PlatformCapabilityMatrix;
   install(): () => void;
   requestFullscreen(): Promise<boolean>;
+  /** Native hosts may enforce window controls and return a session-scoped handle. */
+  enterSecureMode?: (attemptId: string) => Promise<boolean>;
+  exitSecureMode?: () => Promise<boolean>;
 }
 
 function platform(): KioskPlatform {
@@ -45,8 +48,22 @@ function capability(
   enforceable: boolean,
   required: boolean,
   notes: string,
+  supportLevel: PlatformCapability['supportLevel'] = !supported
+    ? 'UNAVAILABLE'
+    : enforceable
+      ? 'SUPPORTED'
+      : 'NOT_GUARANTEED',
 ): PlatformCapability {
-  return { id, label, supported, enforceable, detected: supported, required, notes };
+  return {
+    id,
+    label,
+    supportLevel,
+    supported,
+    enforceable,
+    detected: supported,
+    required,
+    notes,
+  };
 }
 
 export function createCapabilityMatrix(
@@ -200,8 +217,6 @@ export function createBrowserKioskAdapter(
       if (link?.href && new URL(link.href, window.location.href).origin !== window.location.origin)
         prevent(event, 'EXTERNAL_LINK_ATTEMPT', 'External link activation was blocked.');
     };
-    const onBeforePrint = (event: Event) =>
-      prevent(event, 'ATTEMPTED_PRINT', 'Print lifecycle was attempted.');
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       onViolation({

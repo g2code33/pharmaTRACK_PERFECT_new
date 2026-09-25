@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  AlertTriangle,
   CheckCircle2,
   Clock3,
   Database,
@@ -9,7 +8,6 @@ import {
   Play,
   Plus,
   RefreshCw,
-  ShieldAlert,
   Square,
   Unlock,
   Wifi,
@@ -20,6 +18,14 @@ import { ExaminationRepository } from '../examination/service';
 import { examinationResultToQuizHistory } from '../examination/results';
 import { ExaminationHighAvailability, type AuthorityStatusView } from '../examination/ha';
 import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
+import {
+  createLanServerConfig,
+  isNativeLanServerAvailable,
+  lanExamServerStatus,
+  startLanExamServer,
+  stopLanExamServer,
+  type LanServerStatus,
+} from '../examination/lanServer';
 import type { ExaminationResult, ExamSession, StudentAttempt } from '../examination/types';
 
 const activeStatuses = [
@@ -47,6 +53,9 @@ const ExaminationAdmin: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   const [demo, setDemo] = useState<DemoSimulation | null>(null);
+  const [lanStatus, setLanStatus] = useState<LanServerStatus | null>(null);
+  const [lanHost, setLanHost] = useState('192.168.1.20');
+  const [lanToken, setLanToken] = useState('');
 
   const refresh = useCallback(async () => {
     const opened = await ExaminationRepository.open();
@@ -58,6 +67,7 @@ const ExaminationAdmin: React.FC = () => {
       null;
     setRepository(opened);
     setSession(nextSession);
+    if (nextSession?.authorityAccessToken) setLanToken(nextSession.authorityAccessToken);
     setAttempts(
       opened.snapshot.attempts.filter((attempt) => activeStatuses.includes(attempt.status)),
     );
@@ -69,6 +79,11 @@ const ExaminationAdmin: React.FC = () => {
       setAuthority(await coordinator.initialize());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Authority status unavailable.');
+    }
+    try {
+      setLanStatus(await lanExamServerStatus());
+    } catch {
+      setLanStatus(null);
     }
   }, [selectedAttemptId]);
 
@@ -168,6 +183,53 @@ const ExaminationAdmin: React.FC = () => {
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Administrator action failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startLanServer = async () => {
+    if (!session || !repository) return;
+    if (!isNativeLanServerAvailable()) {
+      setMessage('The real LAN server runs from the authorized Tauri admin/examination host.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const config = createLanServerConfig(repository, session, lanHost.trim());
+      const status = await startLanExamServer(config);
+      await repository.setSessionAuthority(
+        session.id,
+        status.endpoint,
+        config.accessToken,
+        status.serverId,
+        status.authorityEpoch,
+      );
+      setLanToken(config.accessToken);
+      setLanStatus(status);
+      setMessage(`LAN examination authority listening at ${status.endpoint}.`);
+      await refresh();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'The LAN examination server could not start.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopLanServer = async () => {
+    setBusy(true);
+    try {
+      await stopLanExamServer();
+      setLanStatus(await lanExamServerStatus());
+      setMessage(
+        'LAN examination authority stopped. Student devices retain encrypted local recovery state.',
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'The LAN examination server could not stop.',
+      );
     } finally {
       setBusy(false);
     }
@@ -331,6 +393,68 @@ const ExaminationAdmin: React.FC = () => {
           }
         />
       </section>
+      <section className="bg-white border rounded-2xl p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-black">Production LAN examination server</h2>
+            <p className="text-sm text-slate-500">
+              The Tauri host binds a real TCP authority on the LAN. Browser preview mode cannot
+              listen for student devices and will not show a fake connected state.
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              disabled={busy || !session}
+              onClick={() => void startLanServer()}
+              className="rounded-lg bg-emerald-600 text-white px-4 py-2 font-black"
+            >
+              Start LAN authority
+            </button>
+            <button
+              disabled={busy || !lanStatus?.running}
+              onClick={() => void stopLanServer()}
+              className="rounded-lg border px-4 py-2 font-bold"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+        <div className="grid md:grid-cols-3 gap-3">
+          <label className="text-sm font-bold">
+            Advertised LAN host/IP
+            <input
+              value={lanHost}
+              onChange={(event) => setLanHost(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2"
+              placeholder="192.168.1.20"
+            />
+          </label>
+          <div className="rounded-lg bg-slate-50 border p-3 text-sm">
+            <strong>Status</strong>
+            <br />
+            {lanStatus?.running
+              ? `${lanStatus.endpoint} · revision ${lanStatus.revision}`
+              : 'Stopped'}
+            <br />
+            <span className="text-slate-500">
+              Connected {lanStatus?.activeConnections ?? 0} · active{' '}
+              {lanStatus?.activeAttempts ?? 0} · submitted {lanStatus?.submittedAttempts ?? 0}
+            </span>
+            <br />
+            <span className="text-slate-500">Discovery: {lanStatus?.discoveryEndpoint || '—'}</span>
+          </div>
+          <label className="text-sm font-bold">
+            Session token for student devices
+            <input
+              type="password"
+              readOnly
+              value={lanToken}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              placeholder="Generated when server starts"
+            />
+          </label>
+        </div>
+      </section>
       <section className="bg-white border rounded-2xl p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -339,9 +463,18 @@ const ExaminationAdmin: React.FC = () => {
               Automatic failover is disabled to prevent split-brain; promotion requires explicit
               administrator confirmation.
             </p>
+            <p className="text-xs font-black uppercase tracking-wide text-slate-600 mt-2">
+              Replication state: {authority?.replicationState || 'UNKNOWN'} · epoch{' '}
+              {authority?.secondary.epoch ?? '—'}
+            </p>
           </div>
           <button
-            disabled={busy || !authority || !adminAuthenticated}
+            disabled={
+              busy ||
+              !authority ||
+              !adminAuthenticated ||
+              authority.replicationState === 'INTERRUPTED'
+            }
             onClick={() => void failover()}
             className="rounded-lg bg-amber-400 text-slate-950 px-4 py-2 font-black"
           >

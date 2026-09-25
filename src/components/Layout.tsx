@@ -6,8 +6,8 @@ import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
 import ErrorBoundary from './ErrorBoundary';
 import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, Library, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
@@ -158,7 +158,12 @@ const Layout: React.FC = () => {
           
           setUpdateStatus('done');
           alert('Update installed successfully! The app will now restart.');
-          await relaunch(); // Auto-restarts the app!
+          try {
+            await invoke('restart_application');
+          } catch {
+            // Browser mode and older hosts retain the normal reload fallback.
+            window.location.reload();
+          }
         } else {
           setUpdateStatus('idle');
         }

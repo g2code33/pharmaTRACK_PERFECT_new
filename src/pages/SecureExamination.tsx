@@ -108,11 +108,16 @@ const SecureExamination: React.FC = () => {
       );
       setMessage('');
       const session = opened.snapshot.sessions.find((item) => item.id === saved.sessionId);
+      const authority = session?.authorityEndpoint
+        ? new LanExamClient(session.authorityEndpoint, fetch, {
+            token: session.authorityAccessToken,
+            deviceSessionId: saved.deviceSessionId,
+            studentId: saved.studentId,
+          })
+        : new LocalExamAuthority(opened);
       let authorityNowAt = new Date().toISOString();
       try {
-        const health = session?.authorityEndpoint
-          ? await new LanExamClient(session.authorityEndpoint).health()
-          : await new LocalExamAuthority(opened).health();
+        const health = await authority.health();
         authorityNowAt = health.serverNowAt || health.checkedAt;
       } catch {
         /* encrypted local timer remains available while LAN reconnects */
@@ -121,7 +126,6 @@ const SecureExamination: React.FC = () => {
       const timer = await opened.getAttemptTimer(saved.id, authorityNowAt);
       setAttempt({ ...saved, timerState: timer.timer });
       setSeconds(Math.ceil(timer.remainingMilliseconds / 1000));
-      const authority = new LocalExamAuthority(opened);
       syncRef.current = new ExaminationSyncEngine(opened, authority, saved.sessionId);
       const adapter = await createPlatformKioskAdapter((violation) => {
         void opened
@@ -138,14 +142,37 @@ const SecureExamination: React.FC = () => {
       }, version.security.requiredCapabilities || []);
       adapterRef.current = adapter;
       cleanupKioskRef.current = adapter.install();
+      // The browser adapter is deliberately still installed in a native build:
+      // native window controls and browser event prevention cover different
+      // boundaries. Native entry is capability-based and session-scoped.
+      if (adapter.enterSecureMode) {
+        const entered = await adapter.enterSecureMode(saved.id);
+        if (!entered) {
+          await opened.recordSecurityViolation(
+            saved.id,
+            'SUSPICIOUS_STATE_TRANSITION',
+            'Native secure-exam window authorization could not be established.',
+          );
+        }
+      }
       void adapter.requestFullscreen();
     })();
     return () => {
       cancelled = true;
+      void adapterRef.current?.exitSecureMode?.();
       cleanupKioskRef.current?.();
       cleanupKioskRef.current = null;
     };
   }, [attemptId]);
+
+  useEffect(() => {
+    if (!submitted) return;
+    // Restore the normal desktop window as soon as the attempt is closed,
+    // rather than waiting for the student to click Return to Quiz.
+    void adapterRef.current?.exitSecureMode?.();
+    cleanupKioskRef.current?.();
+    cleanupKioskRef.current = null;
+  }, [submitted]);
 
   useEffect(() => {
     if (!repository || !attempt || submitted) return;
@@ -171,10 +198,16 @@ const SecureExamination: React.FC = () => {
     const refreshAuthorityClock = async () => {
       const session = repository.snapshot.sessions.find((item) => item.id === attempt.sessionId);
       try {
-        const health = session?.authorityEndpoint
-          ? await new LanExamClient(session.authorityEndpoint).health()
-          : await new LocalExamAuthority(repository).health();
+        const authority = session?.authorityEndpoint
+          ? new LanExamClient(session.authorityEndpoint, fetch, {
+              token: session.authorityAccessToken,
+              deviceSessionId: attempt.deviceSessionId,
+              studentId: attempt.studentId,
+            })
+          : new LocalExamAuthority(repository);
+        const health = await authority.health();
         setAuthorityClock(health.serverNowAt || health.checkedAt);
+        await authority.heartbeat?.(attempt.sessionId, attempt.deviceSessionId);
         const latest = repository.snapshot.attempts.find((item) => item.id === attempt.id);
         if (latest) setAttempt(latest);
       } catch {

@@ -4,6 +4,7 @@ import {
   type KioskAdapter,
   type KioskViolation,
 } from './kioskAdapter';
+import { createTauriKioskAdapter, isTauriRuntime } from './nativeKiosk';
 import type { PlatformCapabilityMatrix } from './types';
 
 /** Optional bridge implemented by the Android host. The web build never assumes it exists. */
@@ -43,6 +44,7 @@ export async function createAndroidKioskAdapter(
       if (status[capability.id] !== undefined) {
         capability.supported = Boolean(status[capability.id]);
         capability.enforceable = Boolean(status[capability.id]);
+        capability.supportLevel = status[capability.id] ? 'SUPPORTED' : 'UNAVAILABLE';
         capability.detected = true;
       }
     }
@@ -72,6 +74,7 @@ export async function createPlatformKioskAdapter(
   requiredIds: string[] = [],
 ): Promise<KioskAdapter> {
   const isAndroid = typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+  if (!isAndroid && isTauriRuntime()) return createTauriKioskAdapter(onViolation, requiredIds);
   return isAndroid
     ? createAndroidKioskAdapter(onViolation, requiredIds)
     : {

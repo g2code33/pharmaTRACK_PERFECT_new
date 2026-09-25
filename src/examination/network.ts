@@ -1,6 +1,13 @@
-import { digestJson, randomId } from './crypto';
-import type { ExaminationRepository } from './service';
-import type { ExamAnswer, ExamSession, RecoveryState, StudentAttempt, SyncEvent } from './types';
+import { digestJson, randomId, sha256 } from './crypto';
+import { buildExamPackageDraft, type ExaminationRepository } from './service';
+import type {
+  ExamAnswer,
+  ExamSession,
+  ExamVersion,
+  RecoveryState,
+  StudentAttempt,
+  SyncEvent,
+} from './types';
 
 export const EXAMINATION_PROTOCOL_VERSION = 1 as const;
 
@@ -52,13 +59,47 @@ export interface LanHealth {
   serverNowAt?: string;
 }
 
+export interface LanConnection {
+  ok: boolean;
+  server: ExamServerIdentity;
+  session?: ExamSession;
+  deviceSessionId?: string;
+  sessionToken?: string;
+}
+
+export interface LanPackageResponse {
+  ok: boolean;
+  sessionId: string;
+  examVersionId: string;
+  package: Record<string, unknown>;
+  version?: ExamVersion;
+  checksum?: string;
+}
+
+export interface LanAttemptResponse {
+  ok: boolean;
+  attempt?: StudentAttempt;
+  revision: number;
+  continued?: boolean;
+}
+
+export interface LanResultSummary {
+  attemptId: string;
+  studentId: string;
+  status: string;
+  submittedAt?: string;
+  answered: number;
+  serverRevision: number;
+}
+
 export interface LanExamTransport {
   health(): Promise<LanHealth>;
   connect(
     sessionId: string,
     deviceId: string,
     role: 'STUDENT' | 'ADMIN',
-  ): Promise<{ ok: boolean; server: ExamServerIdentity; session?: ExamSession }>;
+    options?: { studentId?: string; authProof?: string },
+  ): Promise<LanConnection>;
   submitAnswer(
     sessionId: string,
     attemptId: string,
@@ -79,23 +120,85 @@ export interface LanExamTransport {
     attemptId: string,
     state: RecoveryState,
   ): Promise<{ ok: boolean; attempt?: StudentAttempt; revision: number }>;
+  heartbeat?(
+    sessionId: string,
+    deviceSessionId: string,
+  ): Promise<{ ok: boolean; lastSeenAt: string }>;
+  fetchPackage?(sessionId: string): Promise<LanPackageResponse>;
+  createAttempt?(
+    sessionId: string,
+    studentId: string,
+    deviceSessionId: string,
+  ): Promise<LanAttemptResponse>;
+  submitAttempt?(
+    sessionId: string,
+    attemptId: string,
+    deviceSessionId?: string,
+  ): Promise<LanAttemptResponse>;
+  state?(sessionId: string): Promise<{
+    ok: boolean;
+    server: ExamServerIdentity;
+    connections: Array<Record<string, unknown>>;
+    attempts: Array<Record<string, unknown>>;
+    securityEvents: Array<Record<string, unknown>>;
+    revision: number;
+  }>;
+  fetchResults?(
+    sessionId: string,
+  ): Promise<{ ok: boolean; revision: number; results: LanResultSummary[] }>;
+}
+
+export interface LanExamClientOptions {
+  token?: string;
+  deviceSessionId?: string;
+  studentId?: string;
 }
 
 export class LanExamClient implements LanExamTransport {
   private readonly baseUrl: string;
   private readonly request: typeof fetch;
+  private token?: string;
+  private deviceSessionId?: string;
+  private studentId?: string;
 
-  constructor(baseUrl: string, request: typeof fetch = fetch) {
+  constructor(baseUrl: string, request: typeof fetch = fetch, options: LanExamClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.request = request;
+    this.token = options.token;
+    this.deviceSessionId = options.deviceSessionId;
+    this.studentId = options.studentId;
+  }
+
+  setSession(options: LanExamClientOptions): void {
+    this.token = options.token ?? this.token;
+    this.deviceSessionId = options.deviceSessionId ?? this.deviceSessionId;
+    this.studentId = options.studentId ?? this.studentId;
   }
 
   private async call<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await this.request(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: { 'content-type': 'application/json', ...(init.headers || {}) },
-    });
-    if (!response.ok) throw new Error(`LAN examination authority returned ${response.status}.`);
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      ...(init.headers as Record<string, string> | undefined),
+    };
+    if (this.token) {
+      headers['x-pharma-exam-token'] = this.token;
+      const body = typeof init.body === 'string' ? init.body : '';
+      headers['x-pharma-exam-signature'] = await sha256(
+        `${this.token}:${init.method || 'GET'}:${path}:${body}`,
+      );
+    }
+    if (this.deviceSessionId) headers['x-pharma-device-session'] = this.deviceSessionId;
+    const response = await this.request(`${this.baseUrl}${path}`, { ...init, headers });
+    if (!response.ok) {
+      let detail = `LAN examination authority returned ${response.status}.`;
+      try {
+        const body = (await response.json()) as { error?: string };
+        if (body.error) detail = body.error;
+      } catch {
+        // Preserve the deterministic HTTP error when the response is not JSON.
+      }
+      throw new Error(detail);
+    }
     return response.json() as Promise<T>;
   }
 
@@ -103,14 +206,31 @@ export class LanExamClient implements LanExamTransport {
     return this.call<LanHealth>('/pharmaexam/v1/health');
   }
 
-  connect(sessionId: string, deviceId: string, role: 'STUDENT' | 'ADMIN') {
-    return this.call<{ ok: boolean; server: ExamServerIdentity; session?: ExamSession }>(
+  connect(
+    sessionId: string,
+    deviceId: string,
+    role: 'STUDENT' | 'ADMIN',
+    options: { studentId?: string; authProof?: string } = {},
+  ) {
+    return this.call<LanConnection>(
       `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/connect`,
       {
         method: 'POST',
-        body: JSON.stringify({ deviceId, role, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
+        body: JSON.stringify({
+          deviceId,
+          role,
+          studentId: options.studentId || this.studentId,
+          authProof: options.authProof,
+          protocolVersion: EXAMINATION_PROTOCOL_VERSION,
+        }),
       },
-    );
+    ).then((connection) => {
+      this.setSession({
+        token: connection.sessionToken,
+        deviceSessionId: connection.deviceSessionId,
+      });
+      return connection;
+    });
   }
 
   submitAnswer(sessionId: string, attemptId: string, answer: ExamAnswer) {
@@ -134,6 +254,63 @@ export class LanExamClient implements LanExamTransport {
       method: 'POST',
       body: JSON.stringify({ events, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
     });
+  }
+
+  heartbeat(sessionId: string, deviceSessionId = this.deviceSessionId || '') {
+    return this.call<{ ok: boolean; lastSeenAt: string }>(
+      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ deviceSessionId, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
+      },
+    );
+  }
+
+  fetchPackage(sessionId: string) {
+    return this.call<LanPackageResponse>(
+      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/package`,
+    );
+  }
+
+  createAttempt(sessionId: string, studentId: string, deviceSessionId: string) {
+    return this.call<LanAttemptResponse>(
+      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/attempts`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          studentId,
+          deviceSessionId,
+          protocolVersion: EXAMINATION_PROTOCOL_VERSION,
+        }),
+      },
+    );
+  }
+
+  state(sessionId: string) {
+    return this.call<{
+      ok: boolean;
+      server: ExamServerIdentity;
+      connections: Array<Record<string, unknown>>;
+      attempts: Array<Record<string, unknown>>;
+      securityEvents: Array<Record<string, unknown>>;
+      revision: number;
+    }>(`/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/state`);
+  }
+
+  fetchResults(sessionId: string) {
+    return this.call<{ ok: boolean; revision: number; results: LanResultSummary[] }>(
+      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/results`,
+    );
+  }
+
+  submitAttempt(sessionId: string, attemptId: string, deviceSessionId = this.deviceSessionId) {
+    return this.call<LanAttemptResponse>(
+      `/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/attempts/${encodeURIComponent(attemptId)}/submit`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ deviceSessionId, protocolVersion: EXAMINATION_PROTOCOL_VERSION }),
+      },
+    );
   }
 
   recover(sessionId: string, attemptId: string, state: RecoveryState) {
@@ -180,54 +357,125 @@ export class LocalExamAuthority implements LanExamTransport {
     };
   }
 
-  async connect(sessionId: string, deviceId: string, role: 'STUDENT' | 'ADMIN') {
+  async connect(
+    sessionId: string,
+    deviceId: string,
+    role: 'STUDENT' | 'ADMIN',
+    options: { studentId?: string } = {},
+  ) {
+    const snapshot = this.repository.snapshot;
+    const session = snapshot.sessions.find((item) => item.id === sessionId);
+    if (!session) throw new Error('Examination session was not found on this authority.');
+    const existing = snapshot.deviceSessions.find(
+      (item) =>
+        item.deviceId === deviceId && item.sessionId === sessionId && item.status === 'CONNECTED',
+    );
+    const device =
+      existing ||
+      (await this.repository.createDeviceSession({
+        deviceId,
+        studentId: options.studentId,
+        role,
+        sessionId,
+        capabilities: ['encrypted-local-state', 'offline-recovery', 'lan-authenticated'],
+      }));
+    return {
+      ok: true,
+      server: this.identity,
+      session,
+      deviceSessionId: device.id,
+      sessionToken: `local:${session.id}:${device.id}`,
+    };
+  }
+
+  async submitAnswer(sessionId: string, attemptId: string, answer: ExamAnswer) {
+    const attempt = this.repository.snapshot.attempts.find((item) => item.id === attemptId);
+    if (!attempt || attempt.sessionId !== sessionId)
+      throw new Error('Attempt does not belong to this session.');
+    const event: SyncEvent = {
+      id: answer.eventId || randomId('sync_event'),
+      eventId: answer.eventId || randomId('answer_event'),
+      sessionId,
+      entity: 'ANSWER',
+      entityId: answer.eventId || answer.questionId,
+      sourceServerId: 'local-device',
+      authorityEpoch:
+        this.repository.snapshot.sessions.find((item) => item.id === sessionId)?.authorityEpoch ||
+        1,
+      revision: Math.max(1, answer.revision || 1),
+      at: answer.answeredAt || new Date().toISOString(),
+      direction: 'LOCAL_TO_SERVER',
+      status: 'PENDING',
+      questionId: answer.questionId,
+      answerRevision: Math.max(1, answer.revision || 1),
+      payload: {
+        attemptId,
+        answer: answer.answer,
+        selectedOption: answer.selectedOption,
+        deviceSessionId: answer.deviceSessionId,
+        isFinal: answer.isFinal,
+      },
+    };
+    const result = await this.repository.processIncomingSyncEvents(sessionId, [event]);
+    if (!result.ok && !result.acknowledgedEventIds.includes(event.id))
+      throw new Error(result.conflicts[0] || 'Answer was rejected by the examination authority.');
+    this.identity = {
+      ...this.identity,
+      revision: result.revision,
+      lastHeartbeatAt: new Date().toISOString(),
+    };
+    return { ok: true, revision: result.revision };
+  }
+
+  async sync(sessionId: string, events: SyncEvent[]) {
+    const result = await this.repository.processIncomingSyncEvents(sessionId, events);
+    this.identity = {
+      ...this.identity,
+      revision: result.revision,
+      lastHeartbeatAt: new Date().toISOString(),
+    };
+    return result;
+  }
+
+  async heartbeat(sessionId: string, deviceSessionId: string) {
+    const lastSeenAt = await this.repository.heartbeatDeviceSession(deviceSessionId, sessionId);
+    this.identity = { ...this.identity, lastHeartbeatAt: lastSeenAt };
+    return { ok: true, lastSeenAt };
+  }
+
+  async fetchPackage(sessionId: string): Promise<LanPackageResponse> {
     const session = this.repository.snapshot.sessions.find((item) => item.id === sessionId);
     if (!session) throw new Error('Examination session was not found on this authority.');
-    await this.repository.createDeviceSession({
-      deviceId,
-      role,
-      sessionId,
-      capabilities: ['encrypted-local-state', 'offline-recovery'],
-    });
-    return { ok: true, server: this.identity, session };
-  }
-
-  async submitAnswer(_sessionId: string, attemptId: string, answer: ExamAnswer) {
-    const { answeredAt: _answeredAt, revision: _revision, ...answerInput } = answer;
-    const saved = await this.repository.recordAnswer(attemptId, answerInput);
-    this.identity = {
-      ...this.identity,
-      revision: this.identity.revision + 1,
-      lastHeartbeatAt: new Date().toISOString(),
-    };
-    return { ok: true, revision: saved.revision };
-  }
-
-  async sync(_sessionId: string, events: SyncEvent[]) {
-    const conflicts: string[] = [];
-    const alreadyApplied = new Set(
-      this.repository.snapshot.syncEvents
-        .filter((event) => event.status === 'APPLIED')
-        .map((event) => event.id),
+    const version = this.repository.snapshot.versions.find(
+      (item) => item.id === session.examVersionId,
     );
-    const fresh = events.filter(
-      (event) => !alreadyApplied.has(event.id) && event.status !== 'CONFLICT',
-    );
-    const applied = fresh.length;
-    this.identity = {
-      ...this.identity,
-      revision: this.identity.revision + applied,
-      lastHeartbeatAt: new Date().toISOString(),
-    };
+    if (!version) throw new Error('The immutable examination version was not found.');
     return {
-      ok: conflicts.length === 0,
-      applied,
-      conflicts,
-      revision: this.identity.revision,
-      acknowledgedEventIds: events
-        .filter((event) => event.status !== 'CONFLICT')
-        .map((event) => event.id),
+      ok: true,
+      sessionId,
+      examVersionId: version.id,
+      package: buildExamPackageDraft(version),
+      version,
+      checksum: version.versionHash,
     };
+  }
+
+  async createAttempt(sessionId: string, studentId: string, deviceSessionId: string) {
+    const result = await this.repository.createAttempt(sessionId, studentId, deviceSessionId);
+    return {
+      ok: true,
+      attempt: result.attempt,
+      continued: result.continued,
+      revision: result.attempt.serverRevision,
+    };
+  }
+
+  async submitAttempt(sessionId: string, attemptId: string, deviceSessionId?: string) {
+    const attempt = this.repository.snapshot.attempts.find((item) => item.id === attemptId);
+    if (!attempt || attempt.sessionId !== sessionId)
+      throw new Error('Attempt does not belong to this session.');
+    const submitted = await this.repository.submitAttempt(attemptId, false, deviceSessionId);
+    return { ok: true, attempt: submitted, revision: submitted.serverRevision };
   }
 
   async recover(_sessionId: string, attemptId: string, _state: RecoveryState) {
