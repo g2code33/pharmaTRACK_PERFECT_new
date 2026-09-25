@@ -512,16 +512,19 @@ const KioskEntry: React.FC = () => {
                 </span>
                 <span
                   className={
-                    capability.supported && capability.enforceable
+                    capability.supportLevel === 'SUPPORTED'
                       ? 'text-emerald-700 font-bold'
-                      : 'text-amber-700 font-bold'
+                      : capability.supportLevel === 'UNAVAILABLE'
+                        ? 'text-slate-500 font-bold'
+                        : 'text-amber-700 font-bold'
                   }
                 >
-                  {capability.supported
-                    ? capability.enforceable
-                      ? 'Enforceable'
-                      : 'Detected / not guaranteed'
-                    : 'Unavailable'}
+                  {capability.supportLevel ||
+                    (capability.supported
+                      ? capability.enforceable
+                        ? 'SUPPORTED'
+                        : 'NOT GUARANTEED'
+                      : 'UNAVAILABLE')}
                 </span>
               </div>
             ))}

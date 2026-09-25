@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -474,11 +475,13 @@ const SlideReader: React.FC = () => {
 
   const openExternalWeb = async () => {
     try {
-      const { open } = await import('@tauri-apps/plugin-shell');
-      await open('https://chatgpt.com');
-    } catch (e) {
-      console.error('Shell Open Error:', e);
-      window.open('https://chatgpt.com', '_blank');
+      // This native command is authorized against secure-exam state before it
+      // reaches the OS opener. The shell capability is not granted directly to
+      // the webview.
+      await invoke('open_external_url', { url: 'https://chatgpt.com' });
+    } catch {
+      // Browser mode and older hosts keep the existing browser fallback.
+      window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
     }
   };
 

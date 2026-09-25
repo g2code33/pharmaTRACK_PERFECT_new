@@ -34,9 +34,13 @@ export type SecurityViolation =
   | 'RECOVERY'
   | 'ADMIN_INTERVENTION';
 
+export type CapabilitySupportLevel = 'SUPPORTED' | 'PARTIAL' | 'NOT_GUARANTEED' | 'UNAVAILABLE';
+
 export interface PlatformCapability {
   id: string;
   label: string;
+  /** Honest deployment status; supported/enforceable remain for policy compatibility. */
+  supportLevel?: CapabilitySupportLevel;
   supported: boolean;
   enforceable: boolean;
   detected: boolean;

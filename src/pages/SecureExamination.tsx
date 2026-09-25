@@ -142,14 +142,37 @@ const SecureExamination: React.FC = () => {
       }, version.security.requiredCapabilities || []);
       adapterRef.current = adapter;
       cleanupKioskRef.current = adapter.install();
+      // The browser adapter is deliberately still installed in a native build:
+      // native window controls and browser event prevention cover different
+      // boundaries. Native entry is capability-based and session-scoped.
+      if (adapter.enterSecureMode) {
+        const entered = await adapter.enterSecureMode(saved.id);
+        if (!entered) {
+          await opened.recordSecurityViolation(
+            saved.id,
+            'SUSPICIOUS_STATE_TRANSITION',
+            'Native secure-exam window authorization could not be established.',
+          );
+        }
+      }
       void adapter.requestFullscreen();
     })();
     return () => {
       cancelled = true;
+      void adapterRef.current?.exitSecureMode?.();
       cleanupKioskRef.current?.();
       cleanupKioskRef.current = null;
     };
   }, [attemptId]);
+
+  useEffect(() => {
+    if (!submitted) return;
+    // Restore the normal desktop window as soon as the attempt is closed,
+    // rather than waiting for the student to click Return to Quiz.
+    void adapterRef.current?.exitSecureMode?.();
+    cleanupKioskRef.current?.();
+    cleanupKioskRef.current = null;
+  }, [submitted]);
 
   useEffect(() => {
     if (!repository || !attempt || submitted) return;
