@@ -19,6 +19,20 @@
 
 body { background-color: #F8FAFC; color: #0F172A; }
 
+/* Mobile browser chrome and installed iPhone PWAs expose a dynamic viewport.
+   Keep the shell from growing behind the home indicator or forcing a page-level
+   horizontal scroll; individual viewers retain their own horizontal scrollers. */
+html, body, #root { min-height: 100%; }
+body { overflow-x: hidden; }
+@supports (height: 100dvh) {
+  #root { min-height: 100dvh; }
+  .app-shell { height: 100dvh; }
+}
+@media (max-width: 640px) {
+  input, select, textarea, button { max-width: 100%; }
+  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}
+
 @media print {
   body {
     -webkit-print-color-adjust: exact !important;

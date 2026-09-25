@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { listenNative, nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -105,78 +105,63 @@ const SlideReader: React.FC = () => {
     if (tab) setUrlInput(tab.url);
   }, [activeTabId, browserTabs]);
 
-  // Listen for "open in new tab" requests coming from the Rust side
-  // (e.g. target="_blank" links inside the embedded webview)
+  // Native webview events and commands are optional. In a browser this whole
+  // block becomes a no-op; the surrounding study reader remains usable.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('new-browser-tab', (event) => {
-        const url = event.payload;
-        const newId = uuidv4();
-        setBrowserTabs(tabs => [...tabs, { id: newId, url, title: titleFromUrl(url) }]);
-        setActiveTabId(newId);
-        setShowBrowserPanel(true);
-        setShowAIPanel(false);
-      }).then((u) => { unlisten = u; });
-    });
-    return () => { if (unlisten) unlisten(); };
+    void listenNative<string>('new-browser-tab', (event) => {
+      const url = event.payload;
+      const newId = uuidv4();
+      setBrowserTabs(tabs => [...tabs, { id: newId, url, title: titleFromUrl(url) }]);
+      setActiveTabId(newId);
+      setShowBrowserPanel(true);
+      setShowAIPanel(false);
+    }).then((remove) => { unlisten = remove; });
+    return () => { unlisten?.(); };
   }, []);
 
-  // Listen for live navigation updates from the embedded webview (title/url changes
-  // as the user clicks around inside it), so the tab bar and address bar stay accurate.
+  // Listen for live navigation updates from the embedded webview (title/url
+  // changes as the user clicks around inside it).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
-        const { label, url, title } = event.payload;
-        const tabId = label.replace('browser_tab_', '');
-        setBrowserTabs(tabs => tabs.map(t =>
-          t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
-        ));
-        if (tabId === activeTabId) setUrlInput(url);
-        setWebviewReady(true);
-      }).then((u) => { unlisten = u; });
-    });
-    return () => { if (unlisten) unlisten(); };
+    void listenNative<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
+      const { label, url, title } = event.payload;
+      const tabId = label.replace('browser_tab_', '');
+      setBrowserTabs(tabs => tabs.map(t =>
+        t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
+      ));
+      if (tabId === activeTabId) setUrlInput(url);
+      setWebviewReady(true);
+    }).then((remove) => { unlisten = remove; });
+    return () => { unlisten?.(); };
   }, [activeTabId]);
 
   const updateWebview = async () => {
+    if (!detectRuntimeCapabilities().nativeWebview) return;
     if (showBrowserPanel && browserContainerRef.current) {
       const bounds = getBrowserContainerBounds();
       const activeTab = browserTabs.find(t => t.id === activeTabId);
       if (!activeTab || !bounds) {
-        if (!bounds) {
-          console.warn('embed_website skipped: container not laid out yet');
-        }
+        if (!bounds) console.warn('embed_website skipped: container not laid out yet');
         return;
       }
 
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        for (const tab of browserTabs) {
-          if (tab.id !== activeTabId) {
-            invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-          }
+      for (const tab of browserTabs) {
+        if (tab.id !== activeTabId) {
+          void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
         }
-        await invoke('embed_website', {
-          label: `browser_tab_${activeTabId}`,
-          url: activeTab.url,
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        });
-      } catch (e) {
-        console.error('embed_website failed:', e);
       }
+      await nativeInvoke('embed_website', {
+        label: `browser_tab_${activeTabId}`,
+        url: activeTab.url,
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      });
     } else {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        for (const tab of browserTabs) {
-          invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-        }
-      } catch (e) {
-        // no-op: hiding tabs is best-effort
+      for (const tab of browserTabs) {
+        void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
       }
     }
   };
@@ -198,7 +183,7 @@ const SlideReader: React.FC = () => {
   // Track the browser container's own size changes (panel drag, flex reflow, etc.)
   useEffect(() => {
     const el = browserContainerRef.current;
-    if (!el || !showBrowserPanel) return;
+    if (!el || !showBrowserPanel || !detectRuntimeCapabilities().nativeWebview) return;
 
     const observer = new ResizeObserver(() => scheduleWebviewBoundsUpdate());
     observer.observe(el);
@@ -206,14 +191,13 @@ const SlideReader: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showBrowserPanel, activeTabId, panelWidth]);
 
-  // Destroy every tab's native webview on unmount so nothing leaks across a long session
+  // Destroy every tab's native webview on unmount so nothing leaks across a long session.
   useEffect(() => {
     return () => {
-      import('@tauri-apps/api/core').then(({ invoke }) => {
-        for (const tab of browserTabs) {
-          invoke('destroy_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-        }
-      });
+      if (!detectRuntimeCapabilities().nativeWebview) return;
+      for (const tab of browserTabs) {
+        void nativeInvoke('destroy_website', { label: `browser_tab_${tab.id}` });
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -223,9 +207,7 @@ const SlideReader: React.FC = () => {
       t.id === activeTabId ? { ...t, url: finalUrl, title: titleFromUrl(finalUrl) } : t
     ));
     setWebviewReady(false);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl }).catch(console.error);
-    });
+    void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
   };
 
   const handleAddressBarSubmit = () => {
@@ -234,22 +216,16 @@ const SlideReader: React.FC = () => {
   };
 
   const handleBack = () => {
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_back', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
   };
 
   const handleForward = () => {
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_forward', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
   };
 
   const handleReload = () => {
     setWebviewReady(false);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_reload', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
   };
 
   const openNewTab = () => {
@@ -263,9 +239,7 @@ const SlideReader: React.FC = () => {
     if (browserTabs.length === 1) return;
     const remaining = browserTabs.filter(t => t.id !== tabId);
     setBrowserTabs(remaining);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('destroy_website', { label: `browser_tab_${tabId}` }).catch(() => {});
-    });
+    void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
     if (activeTabId === tabId) setActiveTabId(remaining[0].id);
   };
 
@@ -478,7 +452,11 @@ const SlideReader: React.FC = () => {
       // This native command is authorized against secure-exam state before it
       // reaches the OS opener. The shell capability is not granted directly to
       // the webview.
-      await invoke('open_external_url', { url: 'https://chatgpt.com' });
+      if (!detectRuntimeCapabilities().nativeHost) {
+        window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
+        return;
+      }
+      await nativeInvoke('open_external_url', { url: 'https://chatgpt.com' });
     } catch {
       // Browser mode and older hosts keep the existing browser fallback.
       window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
@@ -674,7 +652,16 @@ const SlideReader: React.FC = () => {
               )}
             </button>
             <button
-              onClick={() => { setShowBrowserPanel(true); setShowAIPanel(false); setActivePanel('browser'); }}
+              onClick={() => {
+                if (!detectRuntimeCapabilities().nativeWebview) {
+                  void openExternalWeb();
+                  return;
+                }
+                setShowBrowserPanel(true);
+                setShowAIPanel(false);
+                setActivePanel('browser');
+              }}
+              title={detectRuntimeCapabilities().nativeWebview ? 'Embedded browser' : 'Open browser in a new tab'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'browser' && showBrowserPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Globe className="w-3.5 h-3.5" /> Browser

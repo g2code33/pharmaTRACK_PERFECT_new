@@ -1,9 +1,29 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import fs from 'node:fs'
+import path from 'node:path'
+
+function versionServiceWorker(): Plugin {
+  return {
+    name: 'pharmatrack-version-service-worker',
+    closeBundle() {
+      const packageJson = JSON.parse(
+        fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'),
+      ) as { version: string };
+      const serviceWorker = path.resolve(process.cwd(), 'dist/sw.js');
+      if (!fs.existsSync(serviceWorker)) return;
+      const source = fs.readFileSync(serviceWorker, 'utf8');
+      fs.writeFileSync(
+        serviceWorker,
+        source.replaceAll('__PHARMATRACK_VERSION__', packageJson.version),
+      );
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), versionServiceWorker()],
   base: './',
   
   // This explicitly forces Vite to read the GitHub Action secrets!

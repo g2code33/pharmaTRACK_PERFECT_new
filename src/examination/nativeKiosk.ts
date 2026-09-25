@@ -50,6 +50,9 @@ export async function consumePharmaExamLaunches(
 }
 
 export async function readPharmaExamLaunch(path: string): Promise<Uint8Array> {
+  if (!isTauriRuntime()) {
+    throw new Error('Native .pharmaexam paths are unavailable in a browser; choose the file with the web picker.');
+  }
   const bytes = await invoke<number[]>('read_pharmaexam_file', { path });
   return new Uint8Array(bytes);
 }

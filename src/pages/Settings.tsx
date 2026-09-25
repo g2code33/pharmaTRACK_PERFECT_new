@@ -37,7 +37,7 @@ import { clear } from 'idb-keyval';
 import CompleteSemesterModal from '../components/CompleteSemesterModal';
 
 const Settings: React.FC = () => {
-  const { state, dispatch, logout } = useApp();
+  const { state, dispatch, logout, deleteAccount } = useApp();
   const navigate = useNavigate();
 
   // `/settings?tab=ai` (and `/settings#ai`) are the deep links used by the AI
@@ -55,6 +55,7 @@ const Settings: React.FC = () => {
   }, [location.search, location.hash]);
 
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [showCompleteSemester, setShowCompleteSemester] = useState(false);
 
   // Signs out via the shared logout() so the Supabase session is actually
@@ -70,6 +71,24 @@ const Settings: React.FC = () => {
       setIsSigningOut(false);
     }
   };
+  const handleDeleteAccount = async () => {
+    if (!state.isLoggedIn) return;
+    const confirmed = window.confirm(
+      'Delete your normal PharmaTRACK account permanently?\n\n' +
+        'This removes the Supabase account and cloud profile. Your local study workspace stays on this device so you can export or clear it separately. The examination Kiosk identity is not affected.',
+    );
+    if (!confirmed) return;
+    setIsDeletingAccount(true);
+    try {
+      await deleteAccount();
+      navigate('/', { replace: true });
+    } catch (reason: any) {
+      window.alert(`Account deletion failed: ${reason?.message || reason}`);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   const [showExamModal, setShowExamModal] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamDate | null>(null);
   const [examForm, setExamForm] = useState({
@@ -556,6 +575,24 @@ const Settings: React.FC = () => {
                 </button>
               )}
             </div>
+
+            {state.isLoggedIn && (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
+                <h3 className="font-bold text-red-800">Delete normal account</h3>
+                <p className="mt-1 text-sm text-red-700">
+                  Permanently removes the Supabase account and cloud profile. This is separate from the examination Kiosk identity.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteAccount()}
+                  disabled={isDeletingAccount}
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-red-300 bg-white px-4 py-2.5 font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {isDeletingAccount ? 'Deleting account…' : 'Delete account'}
+                </button>
+              </div>
+            )}
 
             {/* Emergency Fix Section */}
             <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 mb-4">

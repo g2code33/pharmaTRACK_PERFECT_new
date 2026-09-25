@@ -18,6 +18,7 @@ import {
 import { readPharmaExamLaunch } from '../examination/nativeKiosk';
 import { subscribePharmaExamLaunches, takePharmaExamLaunches } from '../examination/packageLaunch';
 import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
+import { BROWSER_PHARMAEXAM_ACCEPT } from '../platform/fileSelection';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
@@ -358,7 +359,7 @@ const KioskEntry: React.FC = () => {
         </div>
         <input
           type="file"
-          accept=".pharmaexam,application/zip"
+          accept={BROWSER_PHARMAEXAM_ACCEPT}
           onChange={(event) => void choosePackage(event.target.files?.[0])}
           className="block w-full rounded-lg border p-3"
         />

@@ -30,7 +30,12 @@ import {
 } from '../ai/settings';
 import { saveCredentials, storedApiKey } from '../ai/credentials';
 import { aiManager } from '../ai/manager';
-import { supabase, purgeStoredSession } from '../utils/supabase';
+import { supabase } from '../utils/supabase';
+import {
+  deleteCurrentAccount,
+  onAuthChange,
+  signOutEverywhereOnThisDevice,
+} from '../auth/authService';
 import { lockAccountAI, restoreAccountAIFromSession } from '../ai/accountSync';
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
@@ -113,10 +118,12 @@ const appReducer = (state: AppState, action: Action): AppState => {
       // restart and make the UI claim a cloud session that doesn't exist
       // (e.g. showing "End Session" to a signed-out user). The real session
       // lives in the Supabase token; checkSession() sets this flag from that,
-      // and that is the only thing allowed to turn it on.
+      // and that is the only thing allowed to turn it on. Preserve the
+      // reducer's current value so a later async schema migration cannot
+      // overwrite a session restored during the same boot.
       return {
         ...action.payload,
-        isLoggedIn: false,
+        isLoggedIn: state.isLoggedIn,
         learningRecords: recordsOf(action.payload),
         learningSettings: setIntervals(action.payload.learningSettings?.intervals),
         clinicalCases: Array.isArray(action.payload.clinicalCases) ? action.payload.clinicalCases : [],
@@ -537,6 +544,7 @@ interface AppContextType {
   getExamDatesForCourse: (courseId: string) => ExamDate[];
   addActivity: (type: Activity['type'], description: string, courseId?: string, topicId?: string) => void;
   logout: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -570,17 +578,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     hasSignedOutRef.current = true;
     lockAccountAI();
     try {
-      // 'local' clears this device only and, unlike the default 'global'
-      // scope, doesn't need the server to accept the request to be meaningful.
-      await supabase.auth.signOut({ scope: 'local' });
+      // 'local' clears this device only. Other devices remain signed in, which
+      // is the expected multi-device account behavior.
+      await signOutEverywhereOnThisDevice();
     } catch (err) {
       console.error('Supabase sign-out failed, clearing local session anyway:', err);
     } finally {
-      purgeStoredSession();
       // Ends the cloud session but keeps the student profile, so the app stays
       // fully usable offline afterwards instead of demanding onboarding again.
       dispatch({ type: 'SET_LOGGED_IN', payload: false });
     }
+  }, []);
+
+  const deleteAccount = useCallback(async () => {
+    // The server-side function deletes auth.users and cascaded account rows.
+    // It cannot be replaced by auth.user_metadata or a client-side admin call.
+    await deleteCurrentAccount();
+    lockAccountAI();
+    hasSignedOutRef.current = true;
+    // Account deletion removes the cloud identity, not this device's academic
+    // workspace. Keep the local student/data available for export or continued
+    // offline study, while marking the cloud session signed out.
+    dispatch({ type: 'SET_LOGGED_IN', payload: false });
   }, []);
 
   // Warm the full-text search index from IndexedDB so global search can run
@@ -613,28 +632,65 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const fetchProfile = async (userId: string) => {
     try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,full_name,university,level,program,semester,avatar_url,created_at')
+        .eq('id', userId)
+        .single();
       const currentLocalStudent = loadState().student;
 
+      if (currentLocalStudent && currentLocalStudent.id !== userId) {
+        // Do not silently attach an existing local workspace to whichever
+        // account was just authenticated. Login shows the explicit migration
+        // confirmation and links it only after the user accepts.
+        return;
+      }
+
       if (data && !error) {
+        // The Supabase auth UUID is the only stable account identity. Local
+        // onboarding IDs are never copied into a cloud profile.
         dispatch({
           type: 'SET_STUDENT',
-          payload: { 
-            id: userId, 
-            name: data.full_name || currentLocalStudent?.name || 'Student', 
-            level: data.level || currentLocalStudent?.level || '100', 
-            semester: data.semester || currentLocalStudent?.semester || '1st', 
-            program: data.program || currentLocalStudent?.program || 'Pharmacy', 
-            university: data.university || currentLocalStudent?.university || 'UCC', 
-            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url, createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString() 
-          }
+          payload: {
+            id: userId,
+            name: data.full_name || 'Student',
+            level: data.level || '100',
+            semester: data.semester || '1st',
+            program: data.program || 'Pharmacy',
+            university: data.university || 'UCC',
+            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url,
+            createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
+          },
         });
-      } else {
-        if(currentLocalStudent) {
-           dispatch({ type: 'SET_STUDENT', payload: currentLocalStudent });
-        }
+      } else if (!currentLocalStudent) {
+        // The signup trigger normally creates this row. This fallback keeps
+        // older projects usable until the SQL migration has been applied.
+        const fallback = {
+          id: userId,
+          full_name: 'Student',
+          level: '100',
+          updated_at: new Date().toISOString(),
+        };
+        const { error: createError } = await supabase.from('profiles').upsert(fallback, { onConflict: 'id' });
+        if (createError) console.warn('Profile row is not available yet:', createError.message);
+        dispatch({
+          type: 'SET_STUDENT',
+          payload: {
+            id: userId,
+            name: 'Student',
+            level: '100',
+            semester: '1st',
+            program: 'Pharmacy',
+            university: 'UCC',
+            createdAt: new Date().toISOString(),
+          },
+        });
       }
-    } catch (e) { console.error("Profile fetch fail:", e); }
+      // A mismatched local student is deliberately left untouched here. Login
+      // performs an explicit migration prompt before linking that workspace.
+    } catch (e) {
+      console.error('Profile fetch failed:', e);
+    }
   };
 
   useEffect(() => {
@@ -656,34 +712,45 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       try {
+        // Supabase restores/refreshes the persisted SDK session here. Cloud
+        // writes perform the stronger getUser() validation in requireAuth.
         const { data: { session } } = await supabase.auth.getSession();
         if (hasSignedOutRef.current) return; // logout may have happened while awaiting
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
-          fetchProfile(session.user.id);
+          void fetchProfile(session.user.id);
           void restoreAccountAIFromSession(session.user.id);
         } else if (state.isLoggedIn) {
+          // Expired/revoked sessions are handled as signed out, while local
+          // academic data remains available on the device.
           dispatch({ type: 'SET_LOGGED_IN', payload: false });
         }
       } catch (err) {
         // Network hiccup while checking. Leave the current state alone rather
-        // than signing the user out over a failed request.
+        // than signing the user out over a transient request failure.
       }
     };
 
     checkSession();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const subscription = onAuthChange((event, session) => {
       // A real sign-in clears the signed-out latch so the user can get back in.
-      // Only SIGNED_IN counts: INITIAL_SESSION/TOKEN_REFRESHED can fire from the
-      // very session we just discarded and would otherwise undo the logout.
+      // INITIAL_SESSION is not treated as proof by itself; the online boot
+      // check uses getUser(), while TOKEN_REFRESHED/USER_UPDATED are emitted
+      // by the SDK after a validated auth operation.
       if (event === 'SIGNED_IN') hasSignedOutRef.current = false;
 
-      if (session?.user) {
+      const trustedSessionEvent =
+        event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED';
+      if (session?.user && trustedSessionEvent) {
         if (hasSignedOutRef.current) return;
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
-        if (navigator.onLine) fetchProfile(session.user.id);
+        if (navigator.onLine) void fetchProfile(session.user.id);
       } else if (event === 'SIGNED_OUT') {
+        // A remote expiry/revocation is also a real sign-out. Latch it so an
+        // in-flight restoration response cannot resurrect the expired token;
+        // the next SIGNED_IN event clears the latch.
+        hasSignedOutRef.current = true;
         // Only a genuine SIGNED_OUT clears the session. Other session-less
         // events (a token refresh that failed offline, INITIAL_SESSION with no
         // session) must not log anyone out, and must never null the student —
@@ -826,8 +893,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       getExamDatesForCourse,
       addActivity,
       logout,
+      deleteAccount,
     }),
-    [state, logout],
+    [state, logout, deleteAccount],
   );
 
   return (
