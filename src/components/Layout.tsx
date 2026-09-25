@@ -5,11 +5,17 @@ import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
 import ErrorBoundary from './ErrorBoundary';
-import { check } from '@tauri-apps/plugin-updater';
-import { getVersion } from '@tauri-apps/api/app';
-import { invoke } from '@tauri-apps/api/core';
+import {
+  checkNativeUpdate,
+  detectRuntimeCapabilities,
+  getApplicationVersion,
+  restartNativeApplication,
+} from '../platform/runtime';
+import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, Library, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
+
+const APP_VERSION_FALLBACK = '1.1.84';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -45,13 +51,28 @@ const Layout: React.FC = () => {
   const [indexTick, setIndexTick] = useState(0);
   const searchBoxRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [isOffline, setIsOffline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine === false : false,
+  );
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.1.84');
+  const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
+  const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const runtime = detectRuntimeCapabilities();
 
   useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
-  useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(console.error); }, []);
+  useEffect(() => {
+    void getApplicationVersion(APP_VERSION_FALLBACK).then(setAppVersion);
+  }, []);
+  useEffect(() => {
+    const onPwaUpdate = () => setPwaUpdateAvailable(true);
+    window.addEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+    // The registration starts before React mounts. Check for an already waiting
+    // worker as well as listening for future update events.
+    const waiting = getPwaRegistration()?.waiting;
+    if (waiting && navigator.serviceWorker.controller) setPwaUpdateAvailable(true);
+    return () => window.removeEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+  }, []);
   
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -137,9 +158,20 @@ const Layout: React.FC = () => {
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
   const checkForUpdates = async (silent = false) => {
+    // A browser/PWA is updated by its service worker, not by Tauri's native
+    // updater. Keeping this branch explicit prevents a missing native bridge
+    // from turning a normal web boot into an exception.
+    if (runtime.platform === 'web') {
+      if (!silent) {
+        alert('The web app updates automatically. Reload when a new version is available.');
+        window.location.reload();
+      }
+      return;
+    }
+
     try {
       setUpdateStatus('checking');
-      const update = await check();
+      const update = await checkNativeUpdate();
 
       if (update) {
         setUpdateStatus('available');
@@ -148,30 +180,20 @@ const Layout: React.FC = () => {
 
         if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
           setUpdateStatus('downloading');
-          
-          // Natively download and install in the background
-          await update.downloadAndInstall((event) => {
+          await update.downloadAndInstall((event: any) => {
             if (event.event === 'Started') contentLength = event.data.contentLength || 0;
             if (event.event === 'Progress') downloaded += event.data.chunkLength;
             console.log(`Downloaded ${downloaded} of ${contentLength}`);
           });
-          
+
           setUpdateStatus('done');
           alert('Update installed successfully! The app will now restart.');
-          try {
-            await invoke('restart_application');
-          } catch {
-            // Browser mode and older hosts retain the normal reload fallback.
-            window.location.reload();
-          }
+          if (!await restartNativeApplication()) window.location.reload();
         } else {
           setUpdateStatus('idle');
         }
       } else {
-        if (!silent) {
-          const currentVersion = await getVersion();
-          alert('You are already on the latest version (' + currentVersion + ')!');
-        }
+        if (!silent) alert(`You are already on the latest version (${appVersion})!`);
         setUpdateStatus('idle');
       }
     } catch (error: any) {
@@ -196,8 +218,20 @@ const Layout: React.FC = () => {
   }, []);
 
   return (
-    <div className={`flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className={`app-shell flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
+      {pwaUpdateAvailable && (
+        <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
+          <span>A newer PharmaTRACK web app is ready.</span>
+          <button
+            type="button"
+            onClick={() => { setPwaUpdateAvailable(false); void activatePwaUpdate(); }}
+            className="rounded-full bg-white px-3 py-1 font-black text-emerald-800 hover:bg-emerald-50"
+          >
+            Reload safely
+          </button>
+        </div>
+      )}
       <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
         <aside className={`fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
@@ -235,7 +269,7 @@ const Layout: React.FC = () => {
           {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
               this element a stacking context, so the search dropdown inside it
               can never escape — the header itself has to sit above them. */}
-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 flex-shrink-0 relative z-[120]">
+          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
             <div className="flex items-center gap-4 lg:gap-6">
               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
               
@@ -384,7 +418,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 relative">
+          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
             {/* Scoped to the page area so a crashing route leaves the sidebar,
                 search and navigation usable. resetKey clears the error when the
                 user navigates away. */}

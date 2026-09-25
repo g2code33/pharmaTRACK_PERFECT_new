@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "PharmaTRACK",
+  "short_name": "PharmaTRACK",
+  "description": "Offline-first pharmacy study, examination, and academic workspace.",
+  "start_url": "./index.html#/",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon.ico",
+      "sizes": "16x16 24x24 32x32 48x48",
+      "type": "image/x-icon",
+      "purpose": "any"
+    }
+  ]
+}
