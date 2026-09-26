@@ -30,6 +30,7 @@ import {
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
 import { supabase } from '../utils/supabase';
+import { flushAccountSync, queueAccountRecord } from '../account/sync';
 import { withCloudAccess } from '../utils/requireAuth';
 import { clear } from 'idb-keyval';
 
@@ -93,22 +94,26 @@ const Settings: React.FC = () => {
         student: { ...currentState.student, ...profileForm }
       } as any);
 
-      if (navigator.onLine) {
+      if (state.isLoggedIn) {
         try {
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
-            await supabase.from('profiles').upsert({
-              id: user.id,
-              full_name: profileForm.name,
+            await queueAccountRecord(user.id, 'profile', 'profile_preferences', {
+              fullName: profileForm.name,
               university: profileForm.university,
               level: profileForm.level,
               program: profileForm.program,
               semester: profileForm.semester,
-              updated_at: new Date().toISOString()
             });
+            const sync = await flushAccountSync(user.id);
+            if (sync.state === 'conflict') {
+              console.warn('A newer account profile exists; local profile remains pending for explicit resolution.');
+            }
           }
         } catch (e) {
-          console.error("Supabase sync failed (likely missing SQL columns). Safely saved offline.");
+          // The local profile is already committed. The account queue remains
+          // retryable if this device is offline or the migration is unavailable.
+          console.error('Account profile sync failed; safely saved locally.');
         }
       }
 
