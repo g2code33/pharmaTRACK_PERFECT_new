@@ -54,6 +54,7 @@ const getVersions = () => {
 
   // The hardcoded fallback shown before Tauri's getVersion() resolves.
   out['src/components/Layout.tsx'] =
+    read(FILES.layout).match(/APP_VERSION_FALLBACK\s*=\s*['"](\d+\.\d+\.\d+)['"]/)?.[1] ??
     read(FILES.layout).match(/useState\(['"](\d+\.\d+\.\d+)['"]\)/)?.[1] ?? null;
 
   return out;
@@ -93,10 +94,15 @@ const setVersion = (v) => {
 
   write(
     FILES.layout,
-    read(FILES.layout).replace(
-      /(useState\(['"])\d+\.\d+\.\d+(['"]\))/,
-      `$1${v}$2`,
-    ),
+    read(FILES.layout)
+      .replace(
+        /(APP_VERSION_FALLBACK\s*=\s*['"])\d+\.\d+\.\d+(['"])/,
+        `$1${v}$2`,
+      )
+      .replace(
+        /(useState\(['"])\d+\.\d+\.\d+(['"]\))/,
+        `$1${v}$2`,
+      ),
   );
 
   console.log(`✔ Version set to ${v} in all 5 locations:`);

@@ -11,6 +11,8 @@ src-tauri/target/
 .env
 .env.local
 .env.*.local
+.dev.vars
+.wrangler/
 
 # Logs
 logs/

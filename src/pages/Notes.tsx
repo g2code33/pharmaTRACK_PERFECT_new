@@ -1,13 +1,27 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Note } from '../types';
-import { Link } from 'react-router-dom';
-import { StickyNote, Plus, Edit2, Trash2, X, Search, BookOpen, ChevronDown, ChevronUp, Sparkles, Download, Clock, Paperclip, Loader2, FileText, Image, XCircle } from 'lucide-react';
+import { StickyNote, Plus, Edit2, Trash2, X, Search, ChevronDown, ChevronUp, Sparkles, Paperclip, Loader2, FileText, XCircle } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
+import {
+  AIEngineError,
+  aiManager,
+  buildContext,
+  buildTaskRequest,
+  buildTopicDigest,
+  profileById,
+} from '../ai';
+import { useAI } from '../ai/state';
 
 const Notes: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, getSlidesForTopic } = useApp();
+  const ai = useAI();
+  const [params] = useSearchParams();
+  const noteId = params.get('note');
+  const noteRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const appliedNote = useRef('');
   const [selectedCourse, setSelectedCourse] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,6 +45,25 @@ const Notes: React.FC = () => {
     if (searchQuery && !note.noteText.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  useEffect(() => {
+    if (!noteId || appliedNote.current === noteId) return;
+    const note = state.notes.find((n) => n.id === noteId);
+    if (!note) return;
+    appliedNote.current = noteId;
+    setSelectedCourse('');
+    setSelectedTopic('');
+    setSearchQuery('');
+    setExpandedNotes((prev) => {
+      const next = new Set(prev);
+      next.add(noteId);
+      return next;
+    });
+    const timer = window.setTimeout(() => {
+      noteRefs.current[noteId]?.scrollIntoView({ block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [noteId, state.notes]);
 
   const toggleNote = (id: string) => {
     const newExpanded = new Set(expandedNotes);
@@ -81,28 +114,101 @@ const Notes: React.FC = () => {
     if (window.confirm('Delete this note permanently?')) dispatch({ type: 'DELETE_NOTE', payload: id });
   };
 
+  /**
+   * AI Auto-Summarize, through the engine.
+   *
+   * The old version hard-coded one Gemini URL and told the user to "add your
+   * Gemini 2.5 Flash API Key". Now the summary is a normal engine request: the
+   * active profile and provider decide who answers, the provider may fail over,
+   * and the note records which provider actually wrote it.
+   */
   const generateAiSummary = async (topicId: string) => {
     const slides = getSlidesForTopic(topicId);
-    if (!slides.length) { alert('No study material to summarize for this topic.'); return; }
-    
-    setIsGenerating(true);
-    const content = slides.map(s => s.contentText).join('\n\n').substring(0, 3000);
+    if (!slides.length) {
+      alert('No study material to summarize for this topic.');
+      return;
+    }
 
+    setIsGenerating(true);
     try {
-      if (state.openAIKey) {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${state.openAIKey}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: "Summarize this material in 3 bullet points: " + content }] }] })
-        });
-        const data = await response.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          dispatch({ type: 'ADD_NOTE', payload: { id: uuidv4(), topicId, noteText: "🤖 AI Summary:\n" + text, isAiGenerated: true, createdAt: new Date().toISOString() } });
-        }
-      } else {
-         setTimeout(() => { dispatch({ type: 'ADD_NOTE', payload: { id: uuidv4(), topicId, noteText: "🤖 AI Summary:\nTo enable AI summaries, add your Gemini 2.5 Flash API Key in Settings.", isAiGenerated: true, createdAt: new Date().toISOString() } }); }, 1000);
+      const topic = state.topics.find((t) => t.id === topicId);
+      const course = state.courses.find((c) => c.id === topic?.courseId);
+
+      const appStateLike = {
+        student: state.student ? { level: state.student.level, semester: state.student.semester, program: state.student.program } : null,
+        courses: state.courses,
+        topics: state.topics,
+        slides: state.slides,
+        learningObjectives: state.learningObjectives,
+        notes: state.notes,
+        quizHistory: state.quizHistory,
+        studyPlans: state.studyPlans,
+      };
+
+      /**
+       * Local retrieval picks the passages instead of concatenating every slide
+       * in the topic. A small topic goes across whole; a large one contributes
+       * the chunks that fit the budget, each still labelled with its source.
+       */
+      const digest = await buildTopicDigest(appStateLike, {
+        topicId,
+        courseId: course?.id,
+        query: topic?.topicName,
+        budgetTokens: 6_000,
+      });
+
+      if (!digest.text.trim()) {
+        alert('No readable text in this topic’s materials yet.');
+        setIsGenerating(false);
+        return;
       }
-    } catch (e) { alert("Failed to connect to AI"); } finally { setIsGenerating(false); }
+
+      const context = buildContext(
+        appStateLike,
+        {
+          topicId,
+          courseId: course?.id,
+          materialText: {
+            label: `${topic?.topicName ?? 'Topic'} material${digest.materialsUsed > 1 ? ` (${digest.materialsUsed} files)` : ''}`,
+            text: digest.text,
+          },
+          retrieval: digest.hits,
+          includeObjectives: false,
+          includeNotes: false,
+        },
+      );
+
+      const request = buildTaskRequest({
+        task: 'summarize',
+        question: 'Summarise this topic’s material as 3–5 bullet points for revision.',
+        context,
+        profile: profileById(ai.settings.profiles, 'study'),
+        stream: false,
+      });
+
+      const response = await aiManager.generate(request);
+      dispatch({
+        type: 'ADD_NOTE',
+        payload: {
+          id: uuidv4(),
+          topicId,
+          noteText: `🤖 AI Summary (${response.providerId.toUpperCase()}${
+            response.model ? ` • ${response.model}` : ''
+          }):\n${response.content}`,
+          isAiGenerated: true,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      const report = err instanceof AIEngineError ? err.toReport() : null;
+      alert(
+        report
+          ? `${report.title}\n\n${report.reason}\n\nCheck:\n${report.checks.map((c) => `• ${c}`).join('\n')}`
+          : 'Failed to generate the summary. Open Settings → AI to check your provider.',
+      );
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -139,7 +245,7 @@ const Notes: React.FC = () => {
             const isExpanded = expandedNotes.has(note.id);
 
             return (
-              <div key={note.id} className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm hover:shadow-md transition-shadow group">
+              <div key={note.id} ref={(el) => { noteRefs.current[note.id] = el; }} data-note-id={note.id} className={`bg-white rounded-xl p-5 border shadow-sm hover:shadow-md transition-shadow group ${noteId === note.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-gray-100'}`}>
                 <div className="flex justify-between items-start mb-3">
                   <div>
                     <h3 className="font-bold text-gray-800 text-lg mb-1">{topic?.topicName}</h3>

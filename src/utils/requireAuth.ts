@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getAuthenticatedUser } from '../auth/authService';
 
 /**
  * Gate for the handful of features that genuinely need the cloud.
@@ -24,10 +24,13 @@ export type AuthGateResult =
 export const checkCloudAccess = async (): Promise<AuthGateResult> => {
   if (!navigator.onLine) return { ok: false, reason: 'offline' };
 
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) return { ok: false, reason: 'signed-out' };
+  // getSession can be backed by persisted browser storage. It is useful for
+  // restoration, but it is not sufficient proof for a cloud write. Ask
+  // Supabase to validate the access token before allowing the action.
+  const user = await getAuthenticatedUser();
+  if (!user) return { ok: false, reason: 'signed-out' };
 
-  return { ok: true, userId: session.user.id };
+  return { ok: true, userId: user.id };
 };
 
 /** Wording shared by every cloud action, so the promise to the user is consistent. */
