@@ -16,11 +16,43 @@ import {
   Highlight,
   SavedInsight,
   ChatMessageStore,
+  ClinicalAttempt,
+  ClinicalCase,
 } from '../types';
 import { loadState, saveState } from '../utils/storage';
-import { supabase, purgeStoredSession } from '../utils/supabase';
+import { ensureSchema } from '../utils/storageManager';
+import {
+  findLegacyKey,
+  loadAISettings,
+  migrateLegacySettings,
+  providerForLegacyKey,
+  saveAISettings,
+} from '../ai/settings';
+import { saveCredentials, storedApiKey } from '../ai/credentials';
+import { aiManager } from '../ai/manager';
+import { supabase } from '../utils/supabase';
+import {
+  deleteCurrentAccount,
+  onAuthChange,
+  signOutEverywhereOnThisDevice,
+} from '../auth/authService';
+import { lockAccountAI, restoreAccountAIFromSession } from '../ai/accountSync';
 import { loadSearchIndex } from '../utils/searchIndex';
-import { TimetableItem } from '../types';
+import { ensureArchiveCatalog } from '../utils/archiveCatalog';
+import { ensureConversationIndex } from '../utils/conversationSearch';
+import {
+  applyQuiz,
+  markReviewed,
+  markStudied,
+  recordsOf,
+  setIntervals,
+  setTopicConfidence,
+  setTopicImportance,
+  setTopicStatus,
+} from '../utils/learningEngine';
+import { flagAttemptedQuestions } from '../utils/questionBank';
+import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
+import { TimetableItem, LearningStatus } from '../types';
 
 type Action =
   | { type: 'SET_STUDENT'; payload: Student }
@@ -59,8 +91,19 @@ type Action =
   | { type: 'DELETE_HIGHLIGHT'; payload: string }
   | { type: 'SAVE_INSIGHT'; payload: Omit<SavedInsight, 'id' | 'timestamp'> }
   | { type: 'DELETE_INSIGHT'; payload: string }
+  | { type: 'SET_TOPIC_STATUS'; payload: { topicId: string; status: LearningStatus } }
+  | { type: 'SET_TOPIC_CONFIDENCE'; payload: { topicId: string; confidence: number } }
+  | { type: 'SET_TOPIC_IMPORTANCE'; payload: { topicId: string; importance: number } }
+  | { type: 'MARK_TOPIC_STUDIED'; payload: { topicId: string } }
+  | { type: 'MARK_TOPIC_REVIEWED'; payload: { topicId: string } }
+  | { type: 'SET_LEARNING_INTERVALS'; payload: number[] }
+  | { type: 'ADD_CLINICAL_CASE'; payload: ClinicalCase }
+  | { type: 'UPDATE_CLINICAL_CASE'; payload: { id: string; updates: Partial<ClinicalCase> } }
+  | { type: 'DELETE_CLINICAL_CASE'; payload: string }
+  | { type: 'ADD_CLINICAL_ATTEMPT'; payload: ClinicalAttempt }
   | { type: 'SET_OPENAI_KEY'; payload: string }
   | { type: 'ADD_TIMETABLE_ITEMS'; payload: { items: TimetableItem[], category: 'class' | 'quiz' | 'exam' } }
+  | { type: 'UPDATE_TIMETABLE_ITEM'; payload: { id: string; category: 'class' | 'quiz' | 'exam'; updates: Partial<TimetableItem> } }
   | { type: 'DELETE_TIMETABLE_ITEM'; payload: { id: string, category: 'class' | 'quiz' | 'exam' } }
   | { type: 'SET_TIMETABLE_PDF'; payload: string | null }
   | { type: 'LOGOUT' }
@@ -75,8 +118,17 @@ const appReducer = (state: AppState, action: Action): AppState => {
       // restart and make the UI claim a cloud session that doesn't exist
       // (e.g. showing "End Session" to a signed-out user). The real session
       // lives in the Supabase token; checkSession() sets this flag from that,
-      // and that is the only thing allowed to turn it on.
-      return { ...action.payload, isLoggedIn: false };
+      // and that is the only thing allowed to turn it on. Preserve the
+      // reducer's current value so a later async schema migration cannot
+      // overwrite a session restored during the same boot.
+      return {
+        ...action.payload,
+        isLoggedIn: state.isLoggedIn,
+        learningRecords: recordsOf(action.payload),
+        learningSettings: setIntervals(action.payload.learningSettings?.intervals),
+        clinicalCases: Array.isArray(action.payload.clinicalCases) ? action.payload.clinicalCases : [],
+        clinicalAttempts: Array.isArray(action.payload.clinicalAttempts) ? action.payload.clinicalAttempts : [],
+      };
 
     case 'SET_LOGGED_IN':
       return { ...state, isLoggedIn: action.payload };
@@ -160,12 +212,15 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
-    case 'DELETE_COURSE':
+    case 'DELETE_COURSE': {
+      const gone = new Set(state.topics.filter((t) => t.courseId === action.payload).map((t) => t.id));
       return {
         ...state,
         courses: state.courses.filter((c) => c.id !== action.payload),
         topics: state.topics.filter((t) => t.courseId !== action.payload),
+        learningRecords: recordsOf(state).filter((r) => !gone.has(r.topicId)),
       };
+    }
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -182,6 +237,7 @@ const appReducer = (state: AppState, action: Action): AppState => {
       return {
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
+        learningRecords: recordsOf(state).filter((r) => r.topicId !== action.payload),
       };
 
     case 'REORDER_TOPICS':
@@ -253,8 +309,61 @@ const appReducer = (state: AppState, action: Action): AppState => {
         examQuestions: state.examQuestions.filter((eq) => eq.id !== action.payload),
       };
 
-    case 'ADD_QUIZ_HISTORY':
-      return { ...state, quizHistory: [...state.quizHistory, action.payload] };
+    case 'ADD_QUIZ_HISTORY': {
+      const examQuestions = flagAttemptedQuestions(state.examQuestions, action.payload);
+      const next = { ...state, examQuestions, quizHistory: [...state.quizHistory, action.payload] };
+      return { ...next, learningRecords: applyQuiz(next, action.payload) };
+    }
+
+    case 'SET_TOPIC_STATUS':
+      return { ...state, learningRecords: setTopicStatus(state, action.payload.topicId, action.payload.status) };
+
+    case 'SET_TOPIC_CONFIDENCE':
+      return { ...state, learningRecords: setTopicConfidence(state, action.payload.topicId, action.payload.confidence) };
+
+    case 'SET_TOPIC_IMPORTANCE':
+      return { ...state, learningRecords: setTopicImportance(state, action.payload.topicId, action.payload.importance) };
+
+    case 'MARK_TOPIC_STUDIED': {
+      const learningRecords = markStudied(state, action.payload.topicId);
+      if (learningRecords === recordsOf(state)) return state;
+      return { ...state, learningRecords };
+    }
+
+    case 'MARK_TOPIC_REVIEWED':
+      return { ...state, learningRecords: markReviewed(state, action.payload.topicId) };
+
+    case 'SET_LEARNING_INTERVALS':
+      return { ...state, learningSettings: setIntervals(action.payload) };
+
+    case 'ADD_CLINICAL_CASE': {
+      const item = { ...action.payload, fictional: true as const, origin: 'manual' as const };
+      if (isBuiltinCase(item.id) || !caseIsStudyMaterial(item)) return state;
+      return { ...state, clinicalCases: [...(state.clinicalCases ?? []), item] };
+    }
+
+    case 'UPDATE_CLINICAL_CASE': {
+      if (isBuiltinCase(action.payload.id)) return state;
+      const current = (state.clinicalCases ?? []).find((item) => item.id === action.payload.id);
+      if (!current) return state;
+      const next = { ...current, ...action.payload.updates, fictional: true as const, origin: 'manual' as const, updatedAt: new Date().toISOString() };
+      if (!caseIsStudyMaterial(next)) return state;
+      return {
+        ...state,
+        clinicalCases: (state.clinicalCases ?? []).map((item) => item.id === next.id ? next : item),
+      };
+    }
+
+    case 'DELETE_CLINICAL_CASE':
+      if (isBuiltinCase(action.payload)) return state;
+      return {
+        ...state,
+        clinicalCases: (state.clinicalCases ?? []).filter((item) => item.id !== action.payload),
+        clinicalAttempts: (state.clinicalAttempts ?? []).filter((item) => item.caseId !== action.payload),
+      };
+
+    case 'ADD_CLINICAL_ATTEMPT':
+      return { ...state, clinicalAttempts: [...(state.clinicalAttempts ?? []), action.payload] };
 
     case 'ADD_STUDY_PLAN':
       return { ...state, studyPlans: [...state.studyPlans, action.payload] };
@@ -318,6 +427,16 @@ const appReducer = (state: AppState, action: Action): AppState => {
 
     case 'ADD_TIMETABLE_ITEMS':
       return { ...state, timetables: { ...state.timetables, [action.payload.category]: [...state.timetables[action.payload.category], ...action.payload.items] } };
+    case 'UPDATE_TIMETABLE_ITEM':
+      return {
+        ...state,
+        timetables: {
+          ...state.timetables,
+          [action.payload.category]: state.timetables[action.payload.category].map((item) =>
+            item.id === action.payload.id ? { ...item, ...action.payload.updates } : item
+          ),
+        },
+      };
     case 'DELETE_TIMETABLE_ITEM':
       return { ...state, timetables: { ...state.timetables, [action.payload.category]: state.timetables[action.payload.category].filter(i => i.id !== action.payload.id) } };
     case 'SET_TIMETABLE_PDF':
@@ -353,10 +472,61 @@ const initialState: AppState = {
   chatHistory: [],
   highlights: [],
   savedInsights: [],
+  learningRecords: [],
+  learningSettings: { intervals: [1, 3, 7, 14, 30] },
+  clinicalCases: [],
+  clinicalAttempts: [],
   openAIKey: '',
   timetables: { class: [], quiz: [], exam: [] },
   timetablePdf: null,
 };
+
+/**
+ * Moves a pre-AI-engine `openAIKey` (which was always used against Google's
+ * endpoint, despite the name) into the multi-provider configuration:
+ *
+ *   old: state.openAIKey          new: providers.gemini.apiKey (IndexedDB)
+ *                                       profiles.default → gemini
+ *
+ * Order matters — the provider entry and its credential are written first, and
+ * the legacy field is cleared only afterwards, so an interrupted migration
+ * leaves the user's key intact and simply retries on the next launch.
+ */
+async function migrateLegacyAiKey(state: AppState): Promise<void> {
+  const legacy = findLegacyKey(state as unknown as Record<string, unknown>);
+  if (!legacy) return;
+
+  const targetId = providerForLegacyKey(legacy.key).kind;
+  // A different key already in the AI store is left alone. Clearing the legacy
+  // field in that case would drop the only copy of this key.
+  const alreadyStored = await storedApiKey(targetId);
+  if (alreadyStored && alreadyStored !== legacy.key) return;
+
+  if (alreadyStored !== legacy.key) {
+    const settings = loadAISettings();
+    const { settings: migrated, providerId } = migrateLegacySettings(settings, legacy.key);
+    const saved = saveAISettings(migrated);
+    if (!saved.providers.some((p) => p.id === providerId && p.enabled)) return;
+    await saveCredentials(providerId, { apiKey: legacy.key });
+    aiManager.reload();
+    await aiManager.ensureCredentials();
+    // Cache is not proof. The key stays in the semester file until IndexedDB has it.
+    if ((await storedApiKey(providerId)) !== legacy.key) return;
+  }
+
+  try {
+    const stored = loadState();
+    if (stored.openAIKey) {
+      saveState({ ...stored, openAIKey: '' });
+      console.warn(
+        'PharmaTRACK AI: moved your existing API key into AI Settings (Settings → AI). ' +
+          'API keys are no longer part of your academic data or backups.',
+      );
+    }
+  } catch {
+    /* keep the legacy field if clearing fails — it is harmless, just unused */
+  }
+}
 
 interface AppContextType {
   state: AppState;
@@ -374,12 +544,20 @@ interface AppContextType {
   getExamDatesForCourse: (courseId: string) => ExamDate[];
   addActivity: (type: Activity['type'], description: string, courseId?: string, topicId?: string) => void;
   logout: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [state, dispatch] = useReducer(appReducer, initialState);
+  const [state, rawDispatch] = useReducer(appReducer, initialState);
+  // A boot migration is async. If the student already added something, applying
+  // the pre-edit snapshot afterwards would wipe that work.
+  const editedDuringBoot = useRef(false);
+  const dispatch = useCallback((action: Action) => {
+    if (action.type !== 'LOAD_STATE' && action.type !== 'SET_LOGGED_IN') editedDuringBoot.current = true;
+    rawDispatch(action);
+  }, []);
 
   // Set the moment the user signs out, and read synchronously by the session
   // effect below. A ref (not state) is required because the effect and the
@@ -398,62 +576,121 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
    */
   const logout = useCallback(async () => {
     hasSignedOutRef.current = true;
+    lockAccountAI();
     try {
-      // 'local' clears this device only and, unlike the default 'global'
-      // scope, doesn't need the server to accept the request to be meaningful.
-      await supabase.auth.signOut({ scope: 'local' });
+      // 'local' clears this device only. Other devices remain signed in, which
+      // is the expected multi-device account behavior.
+      await signOutEverywhereOnThisDevice();
     } catch (err) {
       console.error('Supabase sign-out failed, clearing local session anyway:', err);
     } finally {
-      purgeStoredSession();
       // Ends the cloud session but keeps the student profile, so the app stays
       // fully usable offline afterwards instead of demanding onboarding again.
       dispatch({ type: 'SET_LOGGED_IN', payload: false });
     }
   }, []);
 
+  const deleteAccount = useCallback(async () => {
+    // The server-side function deletes auth.users and cascaded account rows.
+    // It cannot be replaced by auth.user_metadata or a client-side admin call.
+    await deleteCurrentAccount();
+    lockAccountAI();
+    hasSignedOutRef.current = true;
+    // Account deletion removes the cloud identity, not this device's academic
+    // workspace. Keep the local student/data available for export or continued
+    // offline study, while marking the cloud session signed out.
+    dispatch({ type: 'SET_LOGGED_IN', payload: false });
+  }, []);
+
   // Warm the full-text search index from IndexedDB so global search can run
   // synchronously against it.
-  useEffect(() => { void loadSearchIndex(); }, []);
-
-  // Initial Load from IDB/LocalStorage
   useEffect(() => {
-    const savedState = loadState();
-    // Default them to True if they are offline and had a student!
-    // Deliberately no "offline + has student => isLoggedIn = true" fudge here.
-    // That existed only to get past the old login wall. Now that the app runs
-    // without an account, faking a session would wrongly advertise cloud
-    // features to local-only users. isLoggedIn reflects a real Supabase
-    // session and nothing else; checkSession() below restores it if one exists.
-    // ensure timetable arrays exist for old users
-    if (!savedState.timetables) savedState.timetables = { class: [], quiz: [], exam: [] };
-    dispatch({ type: 'LOAD_STATE', payload: savedState });
+    void loadSearchIndex();
+    void ensureArchiveCatalog();
+    void ensureConversationIndex();
+  }, []);
+
+  // Readable data is applied synchronously so a click in the same turn is not
+  // overwritten by an empty snapshot. Migration is async and only replaces
+  // state if the student has not edited yet.
+  useEffect(() => {
+    let cancelled = false;
+    const saved = loadState();
+    if (!saved.timetables) saved.timetables = { class: [], quiz: [], exam: [] };
+    rawDispatch({ type: 'LOAD_STATE', payload: saved });
+
+    void (async () => {
+      const result = await ensureSchema();
+      if (cancelled || editedDuringBoot.current) return;
+      const next = result.state;
+      if (!next.timetables) next.timetables = { class: [], quiz: [], exam: [] };
+      rawDispatch({ type: 'LOAD_STATE', payload: next });
+      if (result.persist) void migrateLegacyAiKey(next);
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const fetchProfile = async (userId: string) => {
     try {
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id,full_name,university,level,program,semester,avatar_url,created_at')
+        .eq('id', userId)
+        .single();
       const currentLocalStudent = loadState().student;
 
+      if (currentLocalStudent && currentLocalStudent.id !== userId) {
+        // Do not silently attach an existing local workspace to whichever
+        // account was just authenticated. Login shows the explicit migration
+        // confirmation and links it only after the user accepts.
+        return;
+      }
+
       if (data && !error) {
+        // The Supabase auth UUID is the only stable account identity. Local
+        // onboarding IDs are never copied into a cloud profile.
         dispatch({
           type: 'SET_STUDENT',
-          payload: { 
-            id: userId, 
-            name: data.full_name || currentLocalStudent?.name || 'Student', 
-            level: data.level || currentLocalStudent?.level || '100', 
-            semester: data.semester || currentLocalStudent?.semester || '1st', 
-            program: data.program || currentLocalStudent?.program || 'Pharmacy', 
-            university: data.university || currentLocalStudent?.university || 'UCC', 
-            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url, createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString() 
-          }
+          payload: {
+            id: userId,
+            name: data.full_name || 'Student',
+            level: data.level || '100',
+            semester: data.semester || '1st',
+            program: data.program || 'Pharmacy',
+            university: data.university || 'UCC',
+            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url,
+            createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
+          },
         });
-      } else {
-        if(currentLocalStudent) {
-           dispatch({ type: 'SET_STUDENT', payload: currentLocalStudent });
-        }
+      } else if (!currentLocalStudent) {
+        // The signup trigger normally creates this row. This fallback keeps
+        // older projects usable until the SQL migration has been applied.
+        const fallback = {
+          id: userId,
+          full_name: 'Student',
+          level: '100',
+          updated_at: new Date().toISOString(),
+        };
+        const { error: createError } = await supabase.from('profiles').upsert(fallback, { onConflict: 'id' });
+        if (createError) console.warn('Profile row is not available yet:', createError.message);
+        dispatch({
+          type: 'SET_STUDENT',
+          payload: {
+            id: userId,
+            name: 'Student',
+            level: '100',
+            semester: '1st',
+            program: 'Pharmacy',
+            university: 'UCC',
+            createdAt: new Date().toISOString(),
+          },
+        });
       }
-    } catch (e) { console.error("Profile fetch fail:", e); }
+      // A mismatched local student is deliberately left untouched here. Login
+      // performs an explicit migration prompt before linking that workspace.
+    } catch (e) {
+      console.error('Profile fetch failed:', e);
+    }
   };
 
   useEffect(() => {
@@ -475,38 +712,51 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       try {
+        // Supabase restores/refreshes the persisted SDK session here. Cloud
+        // writes perform the stronger getUser() validation in requireAuth.
         const { data: { session } } = await supabase.auth.getSession();
         if (hasSignedOutRef.current) return; // logout may have happened while awaiting
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
-          fetchProfile(session.user.id);
+          void fetchProfile(session.user.id);
+          void restoreAccountAIFromSession(session.user.id);
         } else if (state.isLoggedIn) {
+          // Expired/revoked sessions are handled as signed out, while local
+          // academic data remains available on the device.
           dispatch({ type: 'SET_LOGGED_IN', payload: false });
         }
       } catch (err) {
         // Network hiccup while checking. Leave the current state alone rather
-        // than signing the user out over a failed request.
+        // than signing the user out over a transient request failure.
       }
     };
 
     checkSession();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const subscription = onAuthChange((event, session) => {
       // A real sign-in clears the signed-out latch so the user can get back in.
-      // Only SIGNED_IN counts: INITIAL_SESSION/TOKEN_REFRESHED can fire from the
-      // very session we just discarded and would otherwise undo the logout.
+      // INITIAL_SESSION is not treated as proof by itself; the online boot
+      // check uses getUser(), while TOKEN_REFRESHED/USER_UPDATED are emitted
+      // by the SDK after a validated auth operation.
       if (event === 'SIGNED_IN') hasSignedOutRef.current = false;
 
-      if (session?.user) {
+      const trustedSessionEvent =
+        event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED';
+      if (session?.user && trustedSessionEvent) {
         if (hasSignedOutRef.current) return;
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
-        if (navigator.onLine) fetchProfile(session.user.id);
+        if (navigator.onLine) void fetchProfile(session.user.id);
       } else if (event === 'SIGNED_OUT') {
+        // A remote expiry/revocation is also a real sign-out. Latch it so an
+        // in-flight restoration response cannot resurrect the expired token;
+        // the next SIGNED_IN event clears the latch.
+        hasSignedOutRef.current = true;
         // Only a genuine SIGNED_OUT clears the session. Other session-less
         // events (a token refresh that failed offline, INITIAL_SESSION with no
         // session) must not log anyone out, and must never null the student —
         // that would bounce a local-only user back to onboarding and lose the
         // identity their offline app depends on.
+        lockAccountAI();
         dispatch({ type: 'SET_LOGGED_IN', payload: false });
       }
     });
@@ -536,6 +786,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.studyPlans.length > 0 ||
         state.examDates.length > 0 ||
         state.learningObjectives.length > 0 ||
+        (state.learningRecords?.length ?? 0) > 0 ||
+        (state.clinicalCases?.length ?? 0) > 0 ||
+        (state.clinicalAttempts?.length ?? 0) > 0 ||
         state.activities.length > 0 ||
         state.timetablePdf !== null ||
         state.timetables.class.length > 0 ||
@@ -640,8 +893,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       getExamDatesForCourse,
       addActivity,
       logout,
+      deleteAccount,
     }),
-    [state, logout],
+    [state, logout, deleteAccount],
   );
 
   return (

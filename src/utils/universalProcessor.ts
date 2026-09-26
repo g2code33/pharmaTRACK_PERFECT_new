@@ -6,6 +6,7 @@
 import * as pdfjs from 'pdfjs-dist';
 import * as mammoth from 'mammoth';
 import JSZip from 'jszip';
+import { readBlobArrayBuffer } from './fileGuard';
 
 // Bundle the worker locally. This previously pointed at a CDN, which meant
 // PDF processing failed or silently half-completed whenever the user was
@@ -45,7 +46,7 @@ export const processAnyFile = async (file: File): Promise<ProcessedFile> => {
 };
 
 const handlePDF = async (file: File): Promise<ProcessedFile> => {
-  const arrayBuffer = await file.arrayBuffer();
+  const arrayBuffer = await readBlobArrayBuffer(file);
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
   let fullText = '';
   const pages: FilePage[] = [];
@@ -73,8 +74,11 @@ const handlePDF = async (file: File): Promise<ProcessedFile> => {
 };
 
 const handleDOCX = async (file: File): Promise<ProcessedFile> => {
-  const arrayBuffer = await file.arrayBuffer();
-  const result = await mammoth.extractRawText({ arrayBuffer });
+  const arrayBuffer = await readBlobArrayBuffer(file);
+  // The browser build calls this `arrayBuffer`; the Node build used by tests
+  // calls it `buffer`. Supplying both avoids a browser Buffer polyfill.
+  const mammothInput = { arrayBuffer, buffer: arrayBuffer as unknown as Buffer };
+  const result = await mammoth.extractRawText(mammothInput);
   const fullText = result.value;
   
   // Smart split for Word docs (every ~1500 chars or double newlines)

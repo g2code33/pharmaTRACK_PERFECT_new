@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { HIGHLIGHT_COLORS } from '../components/SelectionPopup';
 import {
-  Bookmark, Search, Trash2, ExternalLink, Copy, Check, X, Filter,
+  Bookmark, Search, Trash2, ExternalLink, Copy, Check, X, Filter, Lightbulb,
 } from 'lucide-react';
 
 /**
@@ -19,6 +19,9 @@ import {
 const Highlights: React.FC = () => {
   const { state, dispatch } = useApp();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const insightId = params.get('insight');
+  const insightRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [query, setQuery] = useState('');
   const [colorFilter, setColorFilter] = useState<string | null>(null);
   const [courseFilter, setCourseFilter] = useState<string | null>(null);
@@ -61,6 +64,14 @@ const Highlights: React.FC = () => {
     return state.courses.filter((c) => ids.has(c.id));
   }, [enriched, state.courses]);
 
+  useEffect(() => {
+    if (!insightId) return;
+    const timer = window.setTimeout(() => {
+      insightRefs.current[insightId]?.scrollIntoView({ block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [insightId, state.savedInsights]);
+
   const openHighlight = (h: { topicId: string; slideIndex: number; page?: number; id: string }) => {
     const params = new URLSearchParams({ slide: String(h.slideIndex) });
     if (h.page) params.set('page', String(h.page));
@@ -81,9 +92,11 @@ const Highlights: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="bg-gradient-to-r from-[#FFB703] to-[#FFA500] rounded-2xl p-6 text-white shadow-lg">
+      {/* Gold gradient: white text is invisible on this, so it uses the dark
+          brand green instead — the same pairing as every other gold surface. */}
+      <div className="bg-gradient-to-r from-[#FFB703] to-[#FFA500] rounded-2xl p-6 text-[#1B4332] shadow-lg">
         <h1 className="text-2xl font-bold mb-1 flex items-center gap-2">⭐ Study Bank</h1>
-        <p className="text-white/90 text-sm">
+        <p className="text-[#1B4332]/80 text-sm">
           {state.highlights.length === 0
             ? 'Highlights you save while reading will collect here.'
             : `${state.highlights.length} saved highlight${state.highlights.length === 1 ? '' : 's'}`}
@@ -234,6 +247,35 @@ const Highlights: React.FC = () => {
           )}
         </div>
       </div>
+
+      {(state.savedInsights.length > 0 || insightId) && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex items-center gap-2">
+            <Lightbulb className="w-4 h-4 text-amber-500" />
+            <h2 className="text-sm font-black uppercase tracking-widest text-gray-500">Saved insights</h2>
+          </div>
+          <div className="p-4 space-y-3">
+            {state.savedInsights.length === 0 ? (
+              <p className="text-sm text-gray-400">That insight is no longer in this semester.</p>
+            ) : state.savedInsights.map((insight) => {
+              const topic = topicById.get(insight.topicId);
+              return (
+                <div
+                  key={insight.id}
+                  ref={(el) => { insightRefs.current[insight.id] = el; }}
+                  data-insight-id={insight.id}
+                  className={`p-4 rounded-xl border ${insightId === insight.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40 bg-[#2D6A4F]/5' : 'border-amber-100 bg-amber-50/40'}`}
+                >
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{insight.content}</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-2">
+                    {insight.type === 'ai' ? 'AI' : 'Saved'}{topic ? ` · ${topic.topicName}` : ''}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

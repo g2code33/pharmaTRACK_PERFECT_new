@@ -19,6 +19,20 @@
 
 body { background-color: #F8FAFC; color: #0F172A; }
 
+/* Mobile browser chrome and installed iPhone PWAs expose a dynamic viewport.
+   Keep the shell from growing behind the home indicator or forcing a page-level
+   horizontal scroll; individual viewers retain their own horizontal scrollers. */
+html, body, #root { min-height: 100%; }
+body { overflow-x: hidden; }
+@supports (height: 100dvh) {
+  #root { min-height: 100dvh; }
+  .app-shell { height: 100dvh; }
+}
+@media (max-width: 640px) {
+  input, select, textarea, button { max-width: 100%; }
+  .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
+}
+
 @media print {
   body {
     -webkit-print-color-adjust: exact !important;
@@ -75,7 +89,29 @@ body { background-color: #F8FAFC; color: #0F172A; }
 /* Global Dark Mode */
 html.dark body { background-color: #0F172A !important; color: #f8fafc !important; }
 html.dark .bg-white { background-color: #1E293B !important; border-color: #334155 !important; color: #f8fafc !important; }
-html.dark .bg-slate-50, html.dark .bg-gray-50, html.dark .bg-gray-100 { background-color: #0F172A !important; border-color: #1E293B !important; color: #cbd5e1 !important; }
+/* Every light surface, not just the neutral ones. Tinted panels (amber-50,
+   green-100, red-50 …) used to keep their light background in dark mode while
+   inheriting near-white text from a `.bg-white` ancestor — white writing on a
+   white panel. Remapping all of them keeps text readable at any nesting. */
+html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200, html.dark .bg-gray-50, html.dark .bg-gray-100
+html.dark .bg-gray-200, html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200, html.dark .bg-neutral-50
+html.dark .bg-neutral-100, html.dark .bg-neutral-200, html.dark .bg-stone-50, html.dark .bg-stone-100
+html.dark .bg-stone-200, html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200, html.dark .bg-orange-50
+html.dark .bg-orange-100, html.dark .bg-orange-200, html.dark .bg-amber-50, html.dark .bg-amber-100
+html.dark .bg-amber-200, html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200
+html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200, html.dark .bg-green-50, html.dark .bg-green-100
+html.dark .bg-green-200, html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200
+html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200, html.dark .bg-cyan-50, html.dark .bg-cyan-100
+html.dark .bg-cyan-200, html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200, html.dark .bg-blue-50
+html.dark .bg-blue-100, html.dark .bg-blue-200, html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200
+html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200, html.dark .bg-purple-50
+html.dark .bg-purple-100, html.dark .bg-purple-200, html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100
+html.dark .bg-fuchsia-200, html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200, html.dark .bg-rose-50
+html.dark .bg-rose-100, html.dark .bg-rose-200 {
+  background-color: #0F172A !important;
+  border-color: #1E293B !important;
+  color: #cbd5e1 !important;
+}
 html.dark .text-gray-800, html.dark .text-gray-700, html.dark .text-slate-800 { color: #f1f5f9 !important; }
 html.dark .text-gray-500, html.dark .text-gray-600 { color: #94a3b8 !important; }
 html.dark .border-gray-100, html.dark .border-gray-200, html.dark .border-slate-100, html.dark .border-slate-200 { border-color: #334155 !important; }

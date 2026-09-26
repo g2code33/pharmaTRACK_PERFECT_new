@@ -1,0 +1,102 @@
+name: Deploy PharmaTRACK Web to Cloudflare
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Cloudflare environment to deploy manually
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      run_smoke:
+        description: Run authenticated upload/retrieval smoke test after deploy
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # A push to main is always a production deployment. Manual runs can target
+    # staging or production through the workflow_dispatch input.
+    environment:
+      name: ${{ github.event_name == 'push' && 'production' || inputs.environment }}
+    permissions:
+      contents: read
+    env:
+      DEPLOY_ENVIRONMENT: ${{ github.event_name == 'push' && 'production' || inputs.environment }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+      VITE_CLOUDFLARE_API_BASE_URL: ${{ vars.CLOUDFLARE_API_BASE_URL }}
+      CLOUDFLARE_API_BASE_URL: ${{ vars.CLOUDFLARE_API_BASE_URL }}
+      CLOUDFLARE_PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+      CLOUDFLARE_TEST_ORIGIN: ${{ vars.CLOUDFLARE_TEST_ORIGIN }}
+      CLOUDFLARE_TEST_ACCESS_TOKEN: ${{ secrets.CLOUDFLARE_TEST_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test -- --reporter=dot
+      - run: npm run cf:typecheck
+      - run: npm run build
+
+      # Deploy the script before setting its secret. Cloudflare returns 404
+      # when the secret endpoint is called for a Worker that does not exist yet.
+      - name: Deploy Worker API and R2 binding
+        run: npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
+
+      # This is a publishable Supabase key, but it remains an environment
+      # secret so no deployment configuration couples source control to a key.
+      - name: Set Worker Supabase publishable key
+        shell: bash
+        run: |
+          test -n "$VITE_SUPABASE_ANON_KEY"
+          printf '%s' "$VITE_SUPABASE_ANON_KEY" | npx wrangler secret put SUPABASE_ANON_KEY --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
+
+      - name: Deploy PWA to Cloudflare Pages
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_PAGES_PROJECT"
+          npx wrangler pages deploy dist \
+            --project-name "$CLOUDFLARE_PAGES_PROJECT" \
+            --branch main
+
+      # A manual run explicitly requesting smoke testing must provide all
+      # smoke-test inputs. Main pushes run smoke testing when those inputs are
+      # configured; an expired/missing short-lived token must not prevent the
+      # production build and deployment from completing.
+      - name: Validate requested manual smoke configuration
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_smoke }}
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_BASE_URL"
+          test -n "$CLOUDFLARE_TEST_ORIGIN"
+          test -n "$CLOUDFLARE_TEST_ACCESS_TOKEN"
+
+      - name: Check automatic smoke configuration
+        id: smoke_config
+        shell: bash
+        run: |
+          if [ -n "$CLOUDFLARE_API_BASE_URL" ] && [ -n "$CLOUDFLARE_TEST_ORIGIN" ] && [ -n "$CLOUDFLARE_TEST_ACCESS_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Smoke test skipped: production smoke variables or short-lived token are not configured."
+          fi
+
+      - name: Run authenticated Cloudflare smoke test
+        if: ${{ steps.smoke_config.outputs.enabled == 'true' && (github.event_name == 'push' || inputs.run_smoke) }}
+        shell: bash
+        run: npm run cf:smoke
