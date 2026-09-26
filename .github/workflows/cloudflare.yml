@@ -55,7 +55,7 @@ jobs:
       # Deploy the script before setting its secret. Cloudflare returns 404
       # when the secret endpoint is called for a Worker that does not exist yet.
       - name: Deploy Worker API and R2 binding
-        run: npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
+        run: env -u CLOUDFLARE_API_BASE_URL npx wrangler deploy --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
 
       # This is a publishable Supabase key, but it remains an environment
       # secret so no deployment configuration couples source control to a key.
@@ -63,13 +63,13 @@ jobs:
         shell: bash
         run: |
           test -n "$VITE_SUPABASE_ANON_KEY"
-          printf '%s' "$VITE_SUPABASE_ANON_KEY" | npx wrangler secret put SUPABASE_ANON_KEY --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
+          printf '%s' "$VITE_SUPABASE_ANON_KEY" | env -u CLOUDFLARE_API_BASE_URL npx wrangler secret put SUPABASE_ANON_KEY --env "$DEPLOY_ENVIRONMENT" --config wrangler.toml
 
       - name: Deploy PWA to Cloudflare Pages
         shell: bash
         run: |
           test -n "$CLOUDFLARE_PAGES_PROJECT"
-          npx wrangler pages deploy dist \
+          env -u CLOUDFLARE_API_BASE_URL npx wrangler pages deploy dist \
             --project-name "$CLOUDFLARE_PAGES_PROJECT" \
             --branch main
 
