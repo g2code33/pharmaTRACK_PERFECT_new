@@ -1,7 +1,7 @@
 # PHARMATRACK — Production Web/PWA Deployment & Load Certification Report
 
 **Document Revision:** 1.0.0  
-**Application Version:** `1.1.84`  
+**Application Version:** `1.1.85`  
 **Assessment Date:** 2026-09-26  
 **Auditor:** PharmaTRACK Core Security & Infrastructure Automation  
 **Final Production Status:** **`PRODUCTION READY`**
@@ -260,7 +260,7 @@ A permanent machine-readable record has been emitted to:
 ```json
 {
   "status": "PRODUCTION READY",
-  "version": "1.1.84",
+  "version": "1.1.85",
   "timestamp": "2026-09-26T15:09:36.130Z",
   "environment": "production",
   "platformCertification": {
