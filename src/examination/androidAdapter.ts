@@ -6,7 +6,7 @@ import {
   type KioskViolation,
 } from './kioskAdapter';
 import { createTauriKioskAdapter } from './nativeKiosk';
-import { detectDeviceFamily, detectRuntimePlatform } from '../platform/runtime';
+import { detectDeviceFamily, detectRuntimePlatform, hasAndroidNativeBridge } from '../platform/runtime';
 import type { PlatformCapabilityMatrix } from './types';
 
 /** Optional bridge implemented by the Android host. The web build never assumes it exists. */
@@ -110,11 +110,9 @@ export async function createPlatformKioskAdapter(
   policy: KioskRestrictionPolicy = {},
 ): Promise<KioskAdapter> {
   const runtime = detectRuntimePlatform();
-  const isAndroid = detectDeviceFamily() === 'android';
   if (runtime === 'native-pc') return createTauriKioskAdapter(onViolation, requiredIds, policy);
-  return isAndroid
-    ? createAndroidKioskAdapter(onViolation, requiredIds, bridgeFromWindow(), policy)
-    : {
-        ...createBrowserKioskAdapter(onViolation, requiredIds, policy),
-      };
+  if (runtime === 'android-native' || hasAndroidNativeBridge()) {
+    return createAndroidKioskAdapter(onViolation, requiredIds, bridgeFromWindow(), policy);
+  }
+  return createBrowserKioskAdapter(onViolation, requiredIds, policy, 'web');
 }

@@ -11,9 +11,28 @@
 import * as idb from 'idb-keyval';
 import type { ProviderId } from './types';
 import { loadEncryptedJson, saveEncryptedJson } from '../examination/secureStorage';
+import { recordAIAudit } from './audit';
 
 export const CREDENTIAL_STORAGE_KEY = 'pharmatrack_ai_credentials';
 export const CREDENTIAL_METADATA_KEY = 'pharmatrack_ai_credential_metadata';
+
+type CredentialChangeListener = () => void;
+const changeListeners = new Set<CredentialChangeListener>();
+
+export function onCredentialsChanged(listener: CredentialChangeListener): () => void {
+  changeListeners.add(listener);
+  return () => changeListeners.delete(listener);
+}
+
+export function notifyCredentialChange(): void {
+  for (const listener of changeListeners) {
+    try {
+      listener();
+    } catch {
+      /* observer errors must not interrupt credential workflows */
+    }
+  }
+}
 
 export interface ProviderCredentials {
   apiKey?: string;
@@ -70,7 +89,11 @@ async function persistMetadata(next: MetadataMap): Promise<void> {
   }
 }
 
-function metadataFor(providerId: ProviderId, credentials: ProviderCredentials, previous?: CredentialMetadata): CredentialMetadata {
+function metadataFor(
+  providerId: ProviderId,
+  credentials: ProviderCredentials,
+  previous?: CredentialMetadata,
+): CredentialMetadata {
   return {
     providerId,
     hasKey: Boolean(credentials.apiKey),
@@ -106,7 +129,8 @@ async function read(): Promise<CredentialMap> {
     if (!(raw && typeof raw === 'object' && (raw as { encrypted?: unknown }).encrypted === true)) {
       await saveEncryptedJson(CREDENTIAL_STORAGE_KEY, encrypted);
       const verified = await loadEncryptedJson<unknown>(CREDENTIAL_STORAGE_KEY);
-      if (!isCredentialMap(verified)) throw new Error('Encrypted AI credential migration could not be verified.');
+      if (!isCredentialMap(verified))
+        throw new Error('Encrypted AI credential migration could not be verified.');
     }
     cache = encrypted;
     return cache;
@@ -183,18 +207,25 @@ export async function mergeAccountCredentialStatuses(
       updatedAt: row.updatedAt,
       localVersion: local?.localVersion ?? 0,
       serverVersion: row.version,
-      syncStatus: local?.syncStatus === 'conflict' || local?.syncStatus === 'error' || local?.syncStatus === 'pending'
-        ? local.syncStatus
-        : local?.hasKey
+      syncStatus:
+        local?.syncStatus === 'conflict' ||
+        local?.syncStatus === 'error' ||
+        local?.syncStatus === 'pending'
           ? local.syncStatus
-          : 'locked',
+          : local?.hasKey
+            ? local.syncStatus
+            : 'locked',
       lastError: local?.lastError,
     };
   }
   await persistMetadata(next);
 }
 
-async function persistLocal(providerId: ProviderId, credentials: ProviderCredentials, status: CredentialMetadata): Promise<void> {
+async function persistLocal(
+  providerId: ProviderId,
+  credentials: ProviderCredentials,
+  status: CredentialMetadata,
+): Promise<void> {
   const all = { ...(await read()) };
   if (Object.keys(credentials).length) all[providerId] = credentials;
   else delete all[providerId];
@@ -202,7 +233,8 @@ async function persistLocal(providerId: ProviderId, credentials: ProviderCredent
   // Do not update the cache until encrypted persistence and decryption verify.
   await saveEncryptedJson(CREDENTIAL_STORAGE_KEY, all);
   const verified = await loadEncryptedJson<unknown>(CREDENTIAL_STORAGE_KEY);
-  if (!isCredentialMap(verified)) throw new Error('Encrypted AI credential write could not be verified.');
+  if (!isCredentialMap(verified))
+    throw new Error('Encrypted AI credential write could not be verified.');
   cache = all;
   const metadata = await readMetadata();
   await persistMetadata({ ...metadata, [providerId]: status });
@@ -214,7 +246,9 @@ export async function saveCredentials(
   creds: ProviderCredentials,
   options: { sync?: boolean; preserveExisting?: boolean } = {},
 ): Promise<void> {
-  const clean: ProviderCredentials = options.preserveExisting ? await loadCredentials(providerId) : {};
+  const clean: ProviderCredentials = options.preserveExisting
+    ? await loadCredentials(providerId)
+    : {};
   if (creds.apiKey !== undefined) {
     if (creds.apiKey.trim()) clean.apiKey = creds.apiKey.trim();
     else delete clean.apiKey;
@@ -235,6 +269,11 @@ export async function saveCredentials(
   const status = metadataFor(providerId, clean, previous);
   try {
     await persistLocal(providerId, clean, status);
+    notifyCredentialChange();
+    if (clean.apiKey) {
+      const action = previous?.hasKey ? 'provider updated' : 'provider configured';
+      void recordAIAudit(action, providerId, { maskedSuffix: status.maskedSuffix });
+    }
     if (options.sync !== false) {
       void import('./accountSync')
         .then(({ queueSecretSync }) => queueSecretSync?.(providerId, clean, status.localVersion))
@@ -253,8 +292,32 @@ export async function saveCredentials(
   }
 }
 
+/** Removes local credential record without queueing a server deletion. */
+export async function deleteCredentialsLocal(providerId: ProviderId): Promise<void> {
+  const all = { ...(await read()) };
+  delete all[providerId];
+  await saveEncryptedJson(CREDENTIAL_STORAGE_KEY, all);
+  cache = all;
+
+  const metadata = await readMetadata();
+  const next = { ...metadata };
+  next[providerId] = {
+    providerId,
+    hasKey: false,
+    accountConfigured: false,
+    maskedSuffix: undefined,
+    updatedAt: new Date().toISOString(),
+    localVersion: (next[providerId]?.localVersion ?? 0) + 1,
+    serverVersion: next[providerId]?.serverVersion,
+    syncStatus: 'synced',
+  };
+  await persistMetadata(next);
+  notifyCredentialChange();
+}
+
 export async function deleteCredentials(providerId: ProviderId): Promise<void> {
-  await saveCredentials(providerId, {}, { sync: false });
+  await deleteCredentialsLocal(providerId);
+  void recordAIAudit('provider removed', providerId);
   void import('./accountSync')
     .then(({ queueSecretDeletion }) => queueSecretDeletion?.(providerId))
     .catch(() => {
@@ -279,6 +342,7 @@ export async function replaceCredentialsFromAccount(
     syncStatus: 'synced',
   };
   await persistLocal(providerId, credentials, metadata);
+  notifyCredentialChange();
 }
 
 /** Marks a local credential as synchronized without changing its secret. */
@@ -293,7 +357,12 @@ export async function markCredentialSyncStatus(
   if (!current) return;
   await persistMetadata({
     ...metadata,
-    [providerId]: { ...current, syncStatus, lastError, serverVersion: serverVersion ?? current.serverVersion },
+    [providerId]: {
+      ...current,
+      syncStatus,
+      lastError,
+      serverVersion: serverVersion ?? current.serverVersion,
+    },
   });
 }
 
@@ -307,12 +376,19 @@ export async function clearAllCredentials(): Promise<void> {
   } catch {
     console.error('AI credentials could not be cleared.');
   }
+  notifyCredentialChange();
 }
 
-export function stripCredentials<T extends { apiKey?: unknown; organization?: unknown; project?: unknown; headers?: unknown }>(
-  config: T,
-): Omit<T, 'apiKey' | 'organization' | 'project' | 'headers'> {
-  const { apiKey: _apiKey, organization: _organization, project: _project, headers: _headers, ...rest } = config;
+export function stripCredentials<
+  T extends { apiKey?: unknown; organization?: unknown; project?: unknown; headers?: unknown },
+>(config: T): Omit<T, 'apiKey' | 'organization' | 'project' | 'headers'> {
+  const {
+    apiKey: _apiKey,
+    organization: _organization,
+    project: _project,
+    headers: _headers,
+    ...rest
+  } = config;
   return rest;
 }
 
@@ -327,7 +403,11 @@ export function scrubSecretsDeep(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      if (/^(api[_-]?key|apikey|authorization|secret|access[_-]?token|refresh[_-]?token|openaiKey)$/i.test(key)) {
+      if (
+        /^(api[_-]?key|apikey|authorization|secret|access[_-]?token|refresh[_-]?token|openaiKey)$/i.test(
+          key,
+        )
+      ) {
         out[key] = undefined;
         continue;
       }
@@ -364,7 +444,10 @@ export function scrubSecretUrl(value: string): string {
     }
     return parsed.toString().replace(/[?&]$/, '');
   } catch {
-    return value.replace(/([?&](?:api[_-]?key|key|token|secret|password|authorization|auth)=)[^&#]*/gi, '$1[redacted]');
+    return value.replace(
+      /([?&](?:api[_-]?key|key|token|secret|password|authorization|auth)=)[^&#]*/gi,
+      '$1[redacted]',
+    );
   }
 }
 

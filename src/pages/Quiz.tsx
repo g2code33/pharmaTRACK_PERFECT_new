@@ -219,6 +219,28 @@ const Quiz: React.FC = () => {
   if (!quizStarted) {
     return (
       <div className="max-w-2xl mx-auto space-y-6">
+        {/* Secure Examination Client Banner */}
+        <div className="bg-gradient-to-r from-slate-900 to-[#1B4332] text-white rounded-2xl p-5 sm:p-6 shadow-md border border-emerald-900/40 text-left">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <span className="inline-block px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-xs font-bold rounded-full mb-2 uppercase tracking-wider">
+                Official Examination Mode · Web / PWA
+              </span>
+              <h2 className="text-xl font-bold">PharmaTRACK Secure Examination</h2>
+              <p className="text-sm text-slate-300 mt-1">
+                Take supervised course examinations directly in the browser with local encrypted caching,
+                authoritative timer, and LAN synchronization.
+              </p>
+            </div>
+            <Link
+              to="/examinations/kiosk"
+              className="inline-flex items-center justify-center gap-2 px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-black shrink-0 transition-colors shadow-sm text-sm"
+            >
+              Enter Kiosk Examination
+            </Link>
+          </div>
+        </div>
+
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl mb-4">
             <Brain className="w-8 h-8 text-white" />

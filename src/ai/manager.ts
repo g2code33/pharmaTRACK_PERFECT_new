@@ -33,8 +33,9 @@ import { AIEngineError, normalizeError, reportFor } from './errors';
 import { adapterFor, presetFor, requiresKey } from './providers';
 import { resolveModelInfo } from './models';
 import { profileById } from './profiles';
-import { loadAllCredentials, loadCredentials } from './credentials';
+import { loadAllCredentials, loadCredentials, onCredentialsChanged } from './credentials';
 import { loadAISettings, saveAISettings } from './settings';
+import { recordAIAudit } from './audit';
 import type { CallContext, ProviderAdapter } from './providers/base';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -42,11 +43,27 @@ const DEFAULT_MAX_RETRIES = 2;
 /** Retries are only sensible for these categories, and only with backoff. */
 const RETRY_BACKOFF_MS = 700;
 
+export interface CredentialResolver {
+  resolve(providerId: ProviderId): Promise<{
+    apiKey?: string;
+    organization?: string;
+    project?: string;
+    headers?: Record<string, string>;
+  }>;
+  isConfigured(providerId: ProviderId): Promise<boolean>;
+}
+
 export interface ManagerDeps {
   /** Overridable for tests; defaults to loadAISettings/loadAllCredentials. */
   loadSettings?: () => AISettings;
   saveSettings?: (settings: AISettings) => AISettings;
-  loadCreds?: () => Promise<Record<string, { apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> }>>;
+  loadCreds?: () => Promise<
+    Record<
+      string,
+      { apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> }
+    >
+  >;
+  credentialResolver?: CredentialResolver;
 }
 
 /** Internal listener registry, so the UI can show "connecting → streaming". */
@@ -69,15 +86,31 @@ function emitStatus(event: AIStatusEvent): void {
 
 export class AIManager {
   private settings: AISettings;
-  private credentials: Record<string, { apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> }> = {};
+  private credentials: Record<
+    string,
+    { apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> }
+  > = {};
   private credentialsLoaded = false;
   private deps: ManagerDeps;
+  private credentialResolver: CredentialResolver;
   /** Live runs, so Stop can abort the exact request (spec §15). */
   private runs = new Map<string, AbortController>();
 
   constructor(deps: ManagerDeps = {}) {
     this.deps = deps;
     this.settings = (deps.loadSettings ?? loadAISettings)();
+    this.credentialResolver = deps.credentialResolver ?? {
+      async resolve(id: ProviderId) {
+        return loadCredentials(id);
+      },
+      async isConfigured(id: ProviderId) {
+        const creds = await loadCredentials(id);
+        return Boolean(creds.apiKey);
+      },
+    };
+    onCredentialsChanged(() => {
+      this.clearCredentialCache();
+    });
   }
 
   /* ---------------------------------------------------------------- */
@@ -111,8 +144,28 @@ export class AIManager {
   /** Loads credentials into memory; called lazily so the AI screen is cheap. */
   async ensureCredentials(): Promise<void> {
     if (this.credentialsLoaded) return;
-    this.credentials = this.deps.loadCreds ? await this.deps.loadCreds() : await loadAllCredentials();
+    this.credentials = this.deps.loadCreds
+      ? await this.deps.loadCreds()
+      : await loadAllCredentials();
     this.credentialsLoaded = true;
+  }
+
+  /** Resolves credentials internally via the configured credential resolver. */
+  async resolveCredentials(
+    id: ProviderId,
+  ): Promise<{
+    apiKey?: string;
+    organization?: string;
+    project?: string;
+    headers?: Record<string, string>;
+  }> {
+    await this.ensureCredentials();
+    return this.credentials[id] ?? (await this.credentialResolver.resolve(id));
+  }
+
+  /** Returns the active credential resolver instance. */
+  getCredentialResolver(): CredentialResolver {
+    return this.credentialResolver;
   }
 
   /** A provider config with its credentials attached, ready to call. */
@@ -120,7 +173,7 @@ export class AIManager {
     await this.ensureCredentials();
     const base = this.settings.providers.find((p) => p.id === id);
     if (!base) return null;
-    const creds = this.credentials[id] ?? {};
+    const creds = this.credentials[id] ?? (await this.credentialResolver.resolve(id));
     return {
       ...base,
       apiKey: creds.apiKey,
@@ -181,7 +234,11 @@ export class AIManager {
     const canServe = (config: ProviderConfig): boolean => {
       if (!capability) return true;
       const adapter = adapterFor(config);
-      const info = resolveModelInfo(config, req.model ?? config.model, adapter.baselineCapabilities);
+      const info = resolveModelInfo(
+        config,
+        req.model ?? config.model,
+        adapter.baselineCapabilities,
+      );
       return info.capabilities.includes(capability);
     };
 
@@ -257,9 +314,7 @@ export class AIManager {
    * attempts) once the stream ends. Stop is real: the abort propagates into the
    * provider request, not just into the UI.
    */
-  async *stream(
-    req: AIRequest,
-  ): AsyncGenerator<AIStreamDelta, AIResponse, void> {
+  async *stream(req: AIRequest): AsyncGenerator<AIStreamDelta, AIResponse, void> {
     const runId = req.runId ?? `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const controller = new AbortController();
     this.runs.set(runId, controller);
@@ -280,15 +335,18 @@ export class AIManager {
       notify = null;
     };
 
-    const run = this.execute({ ...req, stream: true }, {
-      runId,
-      signal,
-      stream: true,
-      onDelta: (delta) => {
-        queue.push(delta);
-        wake();
+    const run = this.execute(
+      { ...req, stream: true },
+      {
+        runId,
+        signal,
+        stream: true,
+        onDelta: (delta) => {
+          queue.push(delta);
+          wake();
+        },
       },
-    })
+    )
       .then((response) => {
         finalResponse = response;
       })
@@ -331,7 +389,10 @@ export class AIManager {
     const response = finalResponse as (AIResponse & { error?: unknown }) | null;
     if (response && 'error' in response && response.error) throw response.error;
     if (!response) {
-      throw new AIEngineError({ category: 'UNKNOWN', message: 'The AI run ended without a response.' });
+      throw new AIEngineError({
+        category: 'UNKNOWN',
+        message: 'The AI run ended without a response.',
+      });
     }
     return response;
   }
@@ -375,7 +436,11 @@ export class AIManager {
         at,
         checks: [{ name: 'Provider', ok: false, detail: 'This provider is not configured.' }],
         error: reportFor(
-          new AIEngineError({ category: 'INVALID_REQUEST', message: 'Provider not configured.', providerId }),
+          new AIEngineError({
+            category: 'INVALID_REQUEST',
+            message: 'Provider not configured.',
+            providerId,
+          }),
         ),
       };
     }
@@ -426,7 +491,11 @@ export class AIManager {
         stream: false,
       });
       const sample = generation.content.trim().slice(0, 80);
-      checks.push({ name: 'Generation', ok: true, detail: sample ? `Model replied: “${sample}”` : 'Model replied.' });
+      checks.push({
+        name: 'Generation',
+        ok: true,
+        detail: sample ? `Model replied: “${sample}”` : 'Model replied.',
+      });
       const result: AIConnectionTest = {
         providerId,
         model: target,
@@ -439,7 +508,10 @@ export class AIManager {
       this.recordTest(result);
       return result;
     } catch (err) {
-      const error = err instanceof AIEngineError ? err : await normalizeError(err, { providerId, secrets: [config.apiKey] });
+      const error =
+        err instanceof AIEngineError
+          ? err
+          : await normalizeError(err, { providerId, secrets: [config.apiKey] });
       checks.push({ name: 'Generation', ok: false, detail: error.message });
       const result: AIConnectionTest = {
         providerId,
@@ -460,9 +532,20 @@ export class AIManager {
   private recordTest(result: AIConnectionTest): void {
     const next: AISettings = {
       ...this.settings,
-      providers: this.settings.providers.map((p) => (p.id === result.providerId ? { ...p, lastTest: result } : p)),
+      providers: this.settings.providers.map((p) =>
+        p.id === result.providerId ? { ...p, lastTest: result } : p,
+      ),
     };
     this.updateSettings(next);
+    void recordAIAudit(
+      result.ok ? 'provider test succeeded' : 'provider test failed',
+      result.providerId,
+      {
+        model: result.model,
+        latencyMs: result.latencyMs,
+        checksSummary: result.checks.map((c) => `${c.name}:${c.ok ? 'OK' : 'FAIL'}`).join(', '),
+      },
+    );
   }
 
   /** Model discovery where supported; returns [] when the provider can't list. */
@@ -512,7 +595,9 @@ export class AIManager {
       throw error;
     }
 
-    const profile = req.profileId ? profileById(this.settings.profiles, req.profileId) : this.profile;
+    const profile = req.profileId
+      ? profileById(this.settings.profiles, req.profileId)
+      : this.profile;
     let lastError: AIEngineError | null = null;
     // What the request "asked for": the named provider, the profile's provider,
     // or — when a profile is still unbound — whichever provider the engine tried
@@ -550,12 +635,15 @@ export class AIManager {
           status: 'connecting',
           providerId: config.id,
           model,
-          message: tryIndex === 0 ? undefined : `Retrying ${config.label} (attempt ${tryIndex + 1})…`,
+          message:
+            tryIndex === 0 ? undefined : `Retrying ${config.label} (attempt ${tryIndex + 1})…`,
         });
 
         try {
           const startedAt = Date.now();
-          const wantStream = Boolean(opts.stream && req.stream !== false && config.streaming && adapter.stream);
+          const wantStream = Boolean(
+            opts.stream && req.stream !== false && config.streaming && adapter.stream,
+          );
           let content = '';
           let usage: AIResponse['usage'];
           let streamed = false;
@@ -602,7 +690,9 @@ export class AIManager {
                   usedModel: model,
                   reason: lastError?.category ?? 'PROVIDER_ERROR',
                   message: `${requestedLabel || 'The selected provider'} unavailable. Switched to ${config.label} fallback.`,
-                  attempts: attempts.map((a) => `${a.providerId}${a.ok ? ' ✓' : ` ✗ ${a.category ?? ''}`}`),
+                  attempts: attempts.map(
+                    (a) => `${a.providerId}${a.ok ? ' ✓' : ` ✗ ${a.category ?? ''}`}`,
+                  ),
                 }
               : undefined;
 

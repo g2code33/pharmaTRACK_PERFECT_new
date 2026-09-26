@@ -34,20 +34,40 @@ import { aiManager, onAIStatus } from './manager';
 import {
   deleteCredentials,
   loadAllCredentialStatuses,
+  onCredentialsChanged,
   saveCredentials,
   clearAllCredentials,
 } from './credentials';
-import { clearAISettings, mergeModels as mergeModelLists, saveAISettings, withPriority } from './settings';
+import {
+  clearAISettings,
+  mergeModels as mergeModelLists,
+  saveAISettings,
+  withPriority,
+} from './settings';
 import { defaultSettings, normalizeSettings } from './settings';
 import { createProviderConfig } from './settings';
 import { presetFor, protocolForKind, requiresKey } from './providers';
 import { AI_SETTINGS_KEY } from './settings';
-import { deleteAccountAIData, getAccountAIStatus, onAccountAIStatus, type AccountAIStatus } from './accountSync';
+import {
+  deleteAccountAIData,
+  getAccountAIStatus,
+  onAccountAIStatus,
+  type AccountAIStatus,
+} from './accountSync';
 
 interface AIProviderState {
   settings: AISettings;
   /** Provider configs annotated with non-secret credential status only. */
-  providers: Array<ProviderConfig & { hasKey: boolean; accountConfigured: boolean; maskedSuffix?: string; usable: boolean; credentialSyncStatus?: string }>;
+  providers: Array<
+    ProviderConfig & {
+      hasKey: boolean;
+      accountConfigured: boolean;
+      maskedSuffix?: string;
+      usable: boolean;
+      credentialSyncStatus?: string;
+      updatedAt?: string;
+    }
+  >;
   credentialsLoaded: boolean;
   accountSyncStatus: AccountAIStatus;
   /** Providers that are enabled *and* keyed, newest test result included. */
@@ -69,7 +89,16 @@ interface AIProviderState {
   setAutomaticFallback: (enabled: boolean) => void;
   setProviderPriority: (ids: ProviderId[]) => void;
   /** Writes settings + credentials and refreshes the manager. */
-  commit: (next: AISettings, creds?: { id: ProviderId; apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> }) => Promise<void>;
+  commit: (
+    next: AISettings,
+    creds?: {
+      id: ProviderId;
+      apiKey?: string;
+      organization?: string;
+      project?: string;
+      headers?: Record<string, string>;
+    },
+  ) => Promise<void>;
   resetAll: () => Promise<void>;
 }
 
@@ -83,7 +112,9 @@ function readSettings(): AISettings {
 
 export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [settings, setSettings] = useState<AISettings>(readSettings);
-  const [credentialStatuses, setCredentialStatuses] = useState<Record<ProviderId, Awaited<ReturnType<typeof loadAllCredentialStatuses>>[ProviderId]>>({});
+  const [credentialStatuses, setCredentialStatuses] = useState<
+    Record<ProviderId, Awaited<ReturnType<typeof loadAllCredentialStatuses>>[ProviderId]>
+  >({});
   const [credentialsLoaded, setCredentialsLoaded] = useState(false);
   const [accountSyncStatus, setAccountSyncStatus] = useState<AccountAIStatus>(getAccountAIStatus);
 
@@ -98,13 +129,22 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
 
   useEffect(() => {
     void refreshCredentials();
-    return onAccountAIStatus((next) => {
+    const unsubSync = onAccountAIStatus((next) => {
       setAccountSyncStatus(next);
       if (next.state === 'signed_out') aiManager.clearCredentialCache();
       else aiManager.reload();
       void refreshCredentials();
       setSettings(aiManager.getSettings());
     });
+    const unsubCreds = onCredentialsChanged(() => {
+      aiManager.clearCredentialCache();
+      void refreshCredentials();
+      setSettings(aiManager.getSettings());
+    });
+    return () => {
+      unsubSync();
+      unsubCreds();
+    };
   }, [refreshCredentials]);
 
   // Pick up settings written by another tab/tool (storage event).
@@ -122,7 +162,13 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const commit = useCallback(
     async (
       next: AISettings,
-      creds?: { id: ProviderId; apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> },
+      creds?: {
+        id: ProviderId;
+        apiKey?: string;
+        organization?: string;
+        project?: string;
+        headers?: Record<string, string>;
+      },
     ) => {
       // withPriority keeps each provider's rank in step with the ordered list,
       // so adding or removing a provider cannot leave the ranks out of sync.
@@ -130,7 +176,12 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       aiManager.updateSettings(saved);
       if (creds) {
         // apiKey === undefined means "leave the stored one alone"; '' clears it.
-        const patch: { apiKey?: string; organization?: string; project?: string; headers?: Record<string, string> } = {
+        const patch: {
+          apiKey?: string;
+          organization?: string;
+          project?: string;
+          headers?: Record<string, string>;
+        } = {
           organization: creds.organization,
           project: creds.project,
           headers: creds.headers,
@@ -156,6 +207,7 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
           accountConfigured: Boolean(credentialStatus?.accountConfigured || hasKey),
           maskedSuffix: credentialStatus?.maskedSuffix,
           credentialSyncStatus: credentialStatus?.syncStatus,
+          updatedAt: credentialStatus?.updatedAt,
           // A local server answers with no key, so "usable" is not "has a key".
           usable: p.enabled && (hasKey || !requiresKey(p.kind)),
         };
@@ -179,7 +231,8 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     // the same order the manager falls through, so the UI never claims
     // something the engine would not actually do.
     const usable = (id: ProviderId) => providers.find((p) => p.id === id && p.usable);
-    const routed = usable(activeProfile.providerId) ?? settings.providerPriority.map(usable).find(Boolean);
+    const routed =
+      usable(activeProfile.providerId) ?? settings.providerPriority.map(usable).find(Boolean);
     const readyCount = providers.filter((p) => p.usable).length;
 
     return {
@@ -190,7 +243,10 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       readyCount,
       ready: Boolean(routed),
       activeProviderLabel: routed?.label ?? '',
-      activeModel: (routed && (activeProfile.providerId === routed.id ? activeProfile.model : undefined)) || routed?.model || '',
+      activeModel:
+        (routed && (activeProfile.providerId === routed.id ? activeProfile.model : undefined)) ||
+        routed?.model ||
+        '',
       activeProfile,
 
       async saveProvider(provider) {
@@ -198,7 +254,10 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         const base = current();
         const exists = base.providers.some((p) => p.id === rest.id);
         const next: AISettings = exists
-          ? { ...base, providers: base.providers.map((p) => (p.id === rest.id ? { ...p, ...rest } : p)) }
+          ? {
+              ...base,
+              providers: base.providers.map((p) => (p.id === rest.id ? { ...p, ...rest } : p)),
+            }
           : {
               ...base,
               providers: [...base.providers, { ...rest }],
@@ -219,11 +278,13 @@ export const AIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
         const base = current();
         const next: AISettings = {
           ...base,
-          providers: base.providers.map((p) =>
-            p.kind === 'custom' || p.kind === 'local'
-              ? p
-              : { ...p, enabled: false, lastTest: undefined, models: undefined },
-          ).filter((p) => p.id !== id || p.kind === 'custom' || p.kind === 'local'),
+          providers: base.providers
+            .map((p) =>
+              p.kind === 'custom' || p.kind === 'local'
+                ? p
+                : { ...p, enabled: false, lastTest: undefined, models: undefined },
+            )
+            .filter((p) => p.id !== id || p.kind === 'custom' || p.kind === 'local'),
           profiles: base.profiles.map((p) => ({
             ...p,
             providerId: p.providerId === id ? '' : p.providerId,
