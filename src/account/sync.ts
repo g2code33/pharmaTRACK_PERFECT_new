@@ -376,6 +376,7 @@ export class AccountSyncEngine {
     recordType: AccountSyncRecordType,
     input: AccountSyncPayload,
   ): Promise<AccountSyncStatus> {
+    if (!this.activeUserId) this.activeUserId = userId;
     if (!ACCOUNT_SYNC_RECORD_TYPES.includes(recordType))
       throw new Error('This record type is not syncable.');
     if (!recordId || recordId.length > 160)
@@ -488,6 +489,7 @@ export class AccountSyncEngine {
     try {
       await this.authenticated(userId);
       const remote = (await this.transport.pull(userId)).map(normalizeRemote);
+      if (this.activeUserId !== userId) return this.status;
       local = await this.mergeRemote(userId, local, remote);
       await this.store.write(userId, local);
       return this.flushInternal(userId, local);
@@ -547,6 +549,7 @@ export class AccountSyncEngine {
     userId: string,
     local: AccountSyncStoreState,
   ): Promise<AccountSyncStatus> {
+    if (this.activeUserId !== userId) return this.status;
     if (isOffline()) {
       return this.statusFor(
         userId,
@@ -558,11 +561,13 @@ export class AccountSyncEngine {
     try {
       await this.authenticated(userId);
       for (const key of Object.keys(local.pending)) {
+        if (this.activeUserId !== userId) return this.status;
         const change = local.pending[key];
         if (local.conflicts[key]) continue;
         change.attempts += 1;
         await this.store.write(userId, local);
         const result = await this.transport.push(userId, change);
+        if (this.activeUserId !== userId) return this.status;
         if (!result.accepted) {
           if (result.record) {
             local.conflicts[key] = {
