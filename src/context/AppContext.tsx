@@ -37,6 +37,14 @@ import {
   signOutEverywhereOnThisDevice,
 } from '../auth/authService';
 import { lockAccountAI, restoreAccountAIFromSession } from '../ai/accountSync';
+import {
+  clearAccountSyncData,
+  getAccountRecord,
+  getAccountSyncStatus,
+  lockAccountSync,
+  restoreAccountSync,
+  type ProfilePreferences,
+} from '../account/sync';
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
@@ -577,6 +585,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const logout = useCallback(async () => {
     hasSignedOutRef.current = true;
     lockAccountAI();
+    void lockAccountSync();
     try {
       // 'local' clears this device only. Other devices remain signed in, which
       // is the expected multi-device account behavior.
@@ -593,7 +602,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const deleteAccount = useCallback(async () => {
     // The server-side function deletes auth.users and cascaded account rows.
     // It cannot be replaced by auth.user_metadata or a client-side admin call.
+    const accountUserId = getAccountSyncStatus().userId;
     await deleteCurrentAccount();
+    if (accountUserId) await clearAccountSyncData(accountUserId);
+    await lockAccountSync();
     lockAccountAI();
     hasSignedOutRef.current = true;
     // Account deletion removes the cloud identity, not this device's academic
@@ -693,6 +705,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const restoreNormalAccount = async (userId: string) => {
+    const sync = await restoreAccountSync(userId);
+    if (getAccountSyncStatus().userId !== userId) return;
+    // A conflict is intentionally not applied to AppState. The local value
+    // remains visible until the user explicitly resolves the conflict through
+    // the account-sync API; no newer remote value is silently discarded.
+    if (sync.state === 'revoked' || sync.state === 'error' || sync.state === 'conflict') return;
+    const profile = await getAccountRecord<ProfilePreferences>(userId, 'profile');
+    if (!profile) return;
+    const current = loadState().student;
+    if (current && current.id !== userId) return;
+    dispatch({
+      type: 'SET_STUDENT',
+      payload: {
+        id: userId,
+        name: profile.fullName || current?.name || 'Student',
+        university: profile.university || current?.university || 'UCC',
+        level: profile.level || current?.level || '100',
+        program: profile.program || current?.program || 'Pharmacy',
+        semester: profile.semester || current?.semester || '1st',
+        createdAt: current?.createdAt || new Date().toISOString(),
+        avatar_url: current?.avatar_url,
+      },
+    });
+  };
+
   useEffect(() => {
     const checkSession = async () => {
       // Never auto-restore a session the user explicitly ended. This effect
@@ -707,7 +745,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // UI offer cloud features they have no account for.
       if (!navigator.onLine) {
         const { data: { session } } = await supabase.auth.getSession();
-        if (session?.user) dispatch({ type: 'SET_LOGGED_IN', payload: true });
+        if (session?.user) {
+          dispatch({ type: 'SET_LOGGED_IN', payload: true });
+          void restoreNormalAccount(session.user.id);
+        }
         return;
       }
 
@@ -719,6 +760,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (session?.user) {
           dispatch({ type: 'SET_LOGGED_IN', payload: true });
           void fetchProfile(session.user.id);
+          void restoreNormalAccount(session.user.id);
           void restoreAccountAIFromSession(session.user.id);
         } else if (state.isLoggedIn) {
           // Expired/revoked sessions are handled as signed out, while local
@@ -745,6 +787,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (session?.user && trustedSessionEvent) {
         if (hasSignedOutRef.current) return;
         dispatch({ type: 'SET_LOGGED_IN', payload: true });
+        void restoreNormalAccount(session.user.id);
         if (navigator.onLine) void fetchProfile(session.user.id);
       } else if (event === 'SIGNED_OUT') {
         // A remote expiry/revocation is also a real sign-out. Latch it so an
@@ -757,6 +800,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // that would bounce a local-only user back to onboarding and lose the
         // identity their offline app depends on.
         lockAccountAI();
+        void lockAccountSync();
         dispatch({ type: 'SET_LOGGED_IN', payload: false });
       }
     });
