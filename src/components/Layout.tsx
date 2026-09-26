@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
+import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
@@ -42,6 +43,10 @@ const Layout: React.FC = () => {
   const { state, logout } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
+
+  const [kioskState, setKioskState] = useState(getSecureKioskState());
+  useEffect(() => subscribeSecureKiosk(setKioskState), []);
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,6 +63,11 @@ const Layout: React.FC = () => {
   const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+
+  if (kioskState.active) {
+    const target = kioskState.attemptId ? `/examination/secure/${kioskState.attemptId}` : '/examinations/kiosk';
+    return <Navigate to={target} replace />;
+  }
   const runtime = detectRuntimeCapabilities();
 
   useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);

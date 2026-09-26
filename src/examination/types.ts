@@ -21,14 +21,21 @@ export type KioskPlatform =
   | 'ANDROID_NATIVE'
   | 'UNKNOWN';
 export type ViolationPolicy =
+  | 'LOG'
+  | 'WARN'
+  | 'LOCK'
+  | 'ADMIN_INTERVENTION'
+  | 'FORCE_SUBMIT'
   | 'LOG_ONLY'
   | 'WARNING'
   | 'LOCK_TEMPORARILY'
   | 'REQUIRE_ADMIN_UNLOCK'
-  | 'TERMINATE_ATTEMPT'
-  | 'FORCE_SUBMIT';
+  | 'TERMINATE_ATTEMPT';
 export type SecurityViolation =
   | 'FOCUS_LOST'
+  | 'VISIBILITY_CHANGE'
+  | 'PAGE_HIDDEN'
+  | 'FULLSCREEN_EXIT'
   | 'ATTEMPTED_EXIT'
   | 'ATTEMPTED_NAVIGATION'
   | 'ATTEMPTED_PRINT'
@@ -140,6 +147,9 @@ export type SecurityEventType =
   | 'ANSWER_RECORDED'
   | 'NAVIGATION_BLOCKED'
   | 'FOCUS_LOST'
+  | 'VISIBILITY_CHANGE'
+  | 'PAGE_HIDDEN'
+  | 'FULLSCREEN_EXIT'
   | 'DISCONNECTED'
   | 'RECONNECTED'
   | 'RECOVERY_STARTED'

@@ -49,6 +49,7 @@ const SecureExamination: React.FC = () => {
   const [syncState, setSyncState] = useState<'SYNCHRONIZED' | 'DEGRADED' | 'RECOVERY_PENDING'>(
     'SYNCHRONIZED',
   );
+  const [fullscreenActive, setFullscreenActive] = useState(true);
   const [navigationBusy, setNavigationBusy] = useState(false);
   const adapterRef = useRef<KioskAdapter | null>(null);
   const cleanupKioskRef = useRef<(() => void) | null>(null);
@@ -96,6 +97,20 @@ const SecureExamination: React.FC = () => {
       payload: examinationResultToQuizHistory(result, version),
     });
   };
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const checkFullscreen = () => {
+      setFullscreenActive(Boolean(document.fullscreenElement));
+    };
+    checkFullscreen();
+    document.addEventListener('fullscreenchange', checkFullscreen);
+    document.addEventListener('webkitfullscreenchange', checkFullscreen);
+    return () => {
+      document.removeEventListener('fullscreenchange', checkFullscreen);
+      document.removeEventListener('webkitfullscreenchange', checkFullscreen);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -226,9 +241,17 @@ const SecureExamination: React.FC = () => {
               result.policy === 'LOCK_TEMPORARILY' ||
               result.policy === 'REQUIRE_ADMIN_UNLOCK' ||
               result.policy === 'TERMINATE_ATTEMPT' ||
-              result.policy === 'FORCE_SUBMIT'
-            )
+              result.policy === 'FORCE_SUBMIT' ||
+              result.policy === 'LOCK' ||
+              result.policy === 'ADMIN_INTERVENTION'
+            ) {
               setAttempt(result.attempt);
+              if (result.policy === 'FORCE_SUBMIT') {
+                setSubmitted(true);
+              }
+            } else if (result.policy === 'WARN' || result.policy === 'WARNING') {
+              setAttempt(result.attempt);
+            }
           });
       }, version.security.requiredCapabilities || [], {
         navigation: version.security.disableNavigation !== false,
@@ -598,6 +621,26 @@ const SecureExamination: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {!fullscreenActive && !submitted && (
+        <div className="max-w-6xl mx-auto mt-4 bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 sm:p-4 text-amber-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              <strong>Fullscreen exited:</strong> Fullscreen mode is recommended for this secure examination.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              void adapterRef.current?.requestFullscreen();
+            }}
+            className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded-lg text-xs shrink-0 transition-colors"
+          >
+            Return to Fullscreen
+          </button>
+        </div>
+      )}
 
       <main className="max-w-6xl mx-auto grid lg:grid-cols-[1fr_280px] gap-6 mt-6">
         {/* Main Question Card Section */}

@@ -43,6 +43,12 @@ Web browsers operate inside sandboxes and cannot manipulate host operating syste
 | `immersive` | Fullscreen request | Yes | No | `NOT_GUARANTEED` | HTML5 Fullscreen API requested; escape key controlled by browser. |
 | `window-controls` | Window manipulation restriction | **No** | **No** | `UNAVAILABLE` | Browser cannot prevent minimize, close, or OS task switching. |
 | `screen-capture` | Screen capture restriction | **No** | **No** | `UNAVAILABLE` | Browser cannot prevent OS-level screenshots or screen capture. |
+| `screen-recording` | Screen recording restriction | **No** | **No** | `UNAVAILABLE` | Browser APIs cannot detect or prevent operating-system screen recording. |
+| `app-switch` | OS application switch restriction | **No** | **No** | `UNAVAILABLE` | Operating-system application switching (Alt+Tab) cannot be blocked. |
+| `home-gesture` | Mobile home gesture restriction | **No** | **No** | `UNAVAILABLE` | Mobile swipe gestures and hardware buttons cannot be intercepted. |
+| `os-shortcuts` | OS keyboard shortcut restriction | **No** | **No** | `UNAVAILABLE` | Global OS shortcuts (Windows key, Cmd+Tab, Ctrl+Alt+Del) are outside reach. |
+| `process-kill` | Browser process kill restriction | **No** | **No** | `UNAVAILABLE` | Browser cannot prevent user or OS terminating the browser process. |
+| `second-device` | Secondary physical device restriction | **No** | **No** | `UNAVAILABLE` | Web client cannot prevent a student using another physical device. |
 | `lock-task` | OS lockdown / Lock-task | **No** | **No** | `UNAVAILABLE` | OS lockdown requires native Tauri or Android Device Owner host bridge. |
 | `file-association` | OS-level file associations | **No** | **No** | `UNAVAILABLE` | Browsers use standard file selection flow without OS associations. |
 

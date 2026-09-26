@@ -44,6 +44,8 @@ import {
   type ExamReplicationSnapshot,
   type ViolationPolicy,
   type SecurityViolation,
+  type SecuritySeverity,
+  type SecurityEventType,
   type SyncEvent,
   type SecurityEvent,
   type StudentAttempt,
@@ -899,6 +901,16 @@ export class ExaminationRepository {
         severity: 'info',
         details: 'Authoritative timer expiry finalized the attempt without a password or student action.',
       });
+    } else if (trigger === 'MANUAL') {
+      await this.logSecurityEvent({
+        attemptId: attempt.id,
+        sessionId: attempt.sessionId,
+        studentId: attempt.studentId,
+        deviceSessionId: attempt.deviceSessionId,
+        type: 'SUBMITTED',
+        severity: 'info',
+        details: 'Student submitted the examination; no password was requested.',
+      });
     }
     return attempt;
   }
@@ -1345,34 +1357,55 @@ export class ExaminationRepository {
     detail: string,
   ): Promise<{ policy: ViolationPolicy; attempt: StudentAttempt }> {
     const attempt = this.requireAttempt(attemptId);
-    const policy =
+    const rawPolicy: ViolationPolicy =
       attempt.settingsSnapshot.security.violationPolicies?.[violation] ||
-      (violation === 'NETWORK_LOSS' || violation === 'SERVER_DISCONNECT' ? 'LOG_ONLY' : 'WARNING');
-    const severity = policy === 'LOG_ONLY' ? 'info' : policy === 'WARNING' ? 'warning' : 'critical';
-    const eventType =
+      (violation === 'VISIBILITY_CHANGE' || violation === 'PAGE_HIDDEN' || violation === 'FULLSCREEN_EXIT'
+        ? attempt.settingsSnapshot.security.violationPolicies?.['FOCUS_LOST']
+        : undefined) ||
+      (violation === 'NETWORK_LOSS' || violation === 'SERVER_DISCONNECT' || violation === 'RECOVERY'
+        ? 'LOG'
+        : 'WARN');
+    const policy = rawPolicy;
+    const isLog = policy === 'LOG' || policy === 'LOG_ONLY';
+    const isWarn = policy === 'WARN' || policy === 'WARNING';
+    const isLock = policy === 'LOCK' || policy === 'LOCK_TEMPORARILY';
+    const isAdmin = policy === 'ADMIN_INTERVENTION' || policy === 'REQUIRE_ADMIN_UNLOCK';
+    const isForceSubmit = policy === 'FORCE_SUBMIT';
+    const isTerminate = policy === 'TERMINATE_ATTEMPT';
+
+    const severity: SecuritySeverity = isLog ? 'info' : isWarn ? 'warning' : 'critical';
+
+    const eventType: SecurityEventType =
       violation === 'FOCUS_LOST'
         ? 'FOCUS_LOST'
-        : violation === 'RECOVERY'
-          ? 'RECOVERY_COMPLETED'
-          : violation === 'NETWORK_LOSS'
-            ? 'NETWORK_LOSS'
-            : violation === 'DEVICE_DISCONNECT'
-              ? 'DEVICE_DISCONNECT'
-              : violation === 'SERVER_DISCONNECT'
-                ? 'SERVER_DISCONNECT'
-                : violation === 'ATTEMPTED_EXIT'
-                  ? 'ATTEMPTED_EXIT'
-                  : violation === 'ATTEMPTED_NAVIGATION'
-                    ? 'ATTEMPTED_NAVIGATION'
-                    : violation === 'ATTEMPTED_PRINT'
-                      ? 'ATTEMPTED_PRINT'
-                      : violation === 'ATTEMPTED_COPY_PASTE'
-                        ? 'ATTEMPTED_COPY_PASTE'
-                        : violation === 'EXTERNAL_LINK_ATTEMPT'
-                          ? 'EXTERNAL_LINK_ATTEMPT'
-                          : violation === 'DEVELOPER_TOOL_ATTEMPT'
-                            ? 'DEVELOPER_TOOL_ATTEMPT'
-                            : 'SUSPICIOUS_STATE_TRANSITION';
+        : violation === 'VISIBILITY_CHANGE'
+          ? 'VISIBILITY_CHANGE'
+          : violation === 'PAGE_HIDDEN'
+            ? 'PAGE_HIDDEN'
+            : violation === 'FULLSCREEN_EXIT'
+              ? 'FULLSCREEN_EXIT'
+              : violation === 'RECOVERY'
+                ? 'RECOVERY_COMPLETED'
+                : violation === 'NETWORK_LOSS'
+                  ? 'NETWORK_LOSS'
+                  : violation === 'DEVICE_DISCONNECT'
+                    ? 'DEVICE_DISCONNECT'
+                    : violation === 'SERVER_DISCONNECT'
+                      ? 'SERVER_DISCONNECT'
+                      : violation === 'ATTEMPTED_EXIT'
+                        ? 'ATTEMPTED_EXIT'
+                        : violation === 'ATTEMPTED_NAVIGATION'
+                          ? 'ATTEMPTED_NAVIGATION'
+                          : violation === 'ATTEMPTED_PRINT'
+                            ? 'ATTEMPTED_PRINT'
+                            : violation === 'ATTEMPTED_COPY_PASTE'
+                              ? 'ATTEMPTED_COPY_PASTE'
+                              : violation === 'EXTERNAL_LINK_ATTEMPT'
+                                ? 'EXTERNAL_LINK_ATTEMPT'
+                                : violation === 'DEVELOPER_TOOL_ATTEMPT'
+                                  ? 'DEVELOPER_TOOL_ATTEMPT'
+                                  : 'SUSPICIOUS_STATE_TRANSITION';
+
     await this.logSecurityEvent({
       attemptId,
       sessionId: attempt.sessionId,
@@ -1382,16 +1415,28 @@ export class ExaminationRepository {
       severity,
       details: `${policy}: ${detail}`,
     });
-    if (violation === 'FOCUS_LOST') attempt.focusLosses += 1;
-    if (policy === 'LOCK_TEMPORARILY' || policy === 'REQUIRE_ADMIN_UNLOCK') {
-      attempt.status = 'LOCKED';
-      attempt.securityState = policy === 'REQUIRE_ADMIN_UNLOCK' ? 'ADMIN_REVIEW' : 'LOCKED';
+
+    if (
+      violation === 'FOCUS_LOST' ||
+      violation === 'VISIBILITY_CHANGE' ||
+      violation === 'PAGE_HIDDEN' ||
+      violation === 'FULLSCREEN_EXIT'
+    ) {
+      attempt.focusLosses += 1;
     }
-    if (policy === 'TERMINATE_ATTEMPT') {
+
+    if (isWarn) {
+      attempt.securityState = 'WARNING';
+    } else if (isLock) {
+      attempt.status = 'LOCKED';
+      attempt.securityState = 'LOCKED';
+    } else if (isAdmin) {
+      attempt.status = 'LOCKED';
+      attempt.securityState = 'ADMIN_REVIEW';
+    } else if (isTerminate) {
       attempt.status = 'LOCKED';
       attempt.submissionState = 'TERMINATED';
-    }
-    if (policy === 'FORCE_SUBMIT') {
+    } else if (isForceSubmit) {
       const finalized = await this.submitAttempt(
         attempt.id,
         true,
@@ -1400,6 +1445,7 @@ export class ExaminationRepository {
       );
       return { policy, attempt: finalized };
     }
+
     await this.save();
     return { policy, attempt };
   }

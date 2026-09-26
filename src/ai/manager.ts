@@ -33,6 +33,7 @@ import { AIEngineError, normalizeError, reportFor } from './errors';
 import { adapterFor, presetFor, requiresKey } from './providers';
 import { resolveModelInfo } from './models';
 import { profileById } from './profiles';
+import { getSecureKioskState } from '../examination/kioskState';
 import { loadAllCredentials, loadCredentials, onCredentialsChanged } from './credentials';
 import { loadAISettings, saveAISettings } from './settings';
 import { recordAIAudit } from './audit';
@@ -578,6 +579,23 @@ export class AIManager {
       onDelta?: (delta: AIStreamDelta) => void;
     },
   ): Promise<AIResponse> {
+    if (typeof window !== 'undefined') {
+      try {
+        const kiosk = getSecureKioskState();
+        if (kiosk.active) {
+          const message = 'AI completion is disabled during an active examination.';
+          const error = new AIEngineError({
+            category: 'PROVIDER_ERROR',
+            message,
+          });
+          emitStatus({ runId: opts.runId, status: 'error', message });
+          throw error;
+        }
+      } catch (err) {
+        if (err instanceof AIEngineError) throw err;
+      }
+    }
+
     const { chain, reason } = await this.resolveChain(req);
     const started = Date.now();
     const attempts: AIResponse['attempts'] = [];

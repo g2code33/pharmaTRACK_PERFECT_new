@@ -41,6 +41,7 @@ import {
 } from '../ai';
 import { AIEngineError, reportFor } from '../ai/errors';
 import { useAI, useAIStatus, useOnline } from '../ai/state';
+import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 
 export interface AIChatPanelProps {
   /** Academic scope for the context builder. */
@@ -339,9 +340,13 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
     void ask(last.question, last.task);
   };
 
+  const [kioskState, setKioskState] = useState(getSecureKioskState());
+  useEffect(() => subscribeSecureKiosk(setKioskState), []);
+  const examBlocked = kioskState.active;
+
   const configured = readyCount > 0;
-  /** Ready to answer: something configured, and reachable from here. */
-  const canSend = configured && !offlineBlocked;
+  /** Ready to answer: something configured, reachable from here, and no exam in progress. */
+  const canSend = configured && !offlineBlocked && !examBlocked;
 
   return (
     <div className={`flex flex-col h-full bg-white ${className}`} data-testid="ai-chat-panel">
@@ -525,9 +530,16 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
       </div>
 
       {/* Composer */}
+      {examBlocked && (
+        <div className="bg-amber-50 border-t border-amber-200 px-3 py-2 text-amber-800 text-xs font-semibold flex items-center gap-1.5" data-testid="ai-exam-blocked-banner">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+          <span>PharmaTRACK AI is disabled during an active examination.</span>
+        </div>
+      )}
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (examBlocked) return;
           const question = input;
           setInput('');
           void ask(question, 'chat');
@@ -538,7 +550,15 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={canSend ? 'Ask about this material…' : offlineBlocked ? 'AI unavailable offline' : 'Configure a provider first…'}
+            placeholder={
+              examBlocked
+                ? 'AI is disabled during an active examination.'
+                : canSend
+                  ? 'Ask about this material…'
+                  : offlineBlocked
+                    ? 'AI unavailable offline'
+                    : 'Configure a provider first…'
+            }
             disabled={!canSend}
             className="flex-1 px-3 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/5 disabled:opacity-60"
             aria-label="Ask the AI"

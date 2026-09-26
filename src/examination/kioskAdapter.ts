@@ -14,6 +14,12 @@ export const KIOSK_CAPABILITY_IDS = {
   devTools: 'developer-tools-detection',
   windowControls: 'window-control-restriction',
   screenCapture: 'screen-capture-restriction',
+  screenRecording: 'screen-recording-restriction',
+  appSwitch: 'os-app-switch-restriction',
+  homeGesture: 'mobile-home-gesture-restriction',
+  osShortcuts: 'os-keyboard-shortcut-restriction',
+  processKill: 'browser-process-termination-restriction',
+  secondDevice: 'secondary-device-restriction',
   focus: 'focus-monitoring',
   immersive: 'immersive-window',
   lockTask: 'android-lock-task',
@@ -140,6 +146,61 @@ export function createCapabilityMatrix(
       android
         ? 'This web adapter cannot guarantee Android capture prevention; a native adapter must report actual support.'
         : 'This browser adapter cannot reliably prevent OS screenshots or capture.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.screenRecording,
+      'Screen recording restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.screenRecording),
+      'Browser APIs cannot detect or prevent operating-system screen recording.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.appSwitch,
+      'OS application switch restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.appSwitch),
+      'Operating-system application switching (Alt+Tab, app switcher) cannot be blocked by browser sandboxes.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.homeGesture,
+      'Mobile home gesture restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.homeGesture),
+      'Mobile swipe gestures and hardware navigation buttons cannot be intercepted by web pages.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.osShortcuts,
+      'OS keyboard shortcut restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.osShortcuts),
+      'Global OS shortcuts (Windows key, Command+Tab, Ctrl+Alt+Del) are outside browser reach.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.processKill,
+      'Browser process termination restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.processKill),
+      'The browser cannot prevent the user or OS from terminating the browser process.',
+      'UNAVAILABLE',
+    ),
+    capability(
+      KIOSK_CAPABILITY_IDS.secondDevice,
+      'Secondary physical device restriction',
+      false,
+      false,
+      requiredIds.includes(KIOSK_CAPABILITY_IDS.secondDevice),
+      'A web examination client cannot prevent a student from using another physical device.',
+      'UNAVAILABLE',
     ),
     capability(
       KIOSK_CAPABILITY_IDS.focus,
@@ -248,9 +309,37 @@ export function createBrowserKioskAdapter(
     const onClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       const link = target?.closest?.('a') as HTMLAnchorElement | null;
-      if (link?.href && new URL(link.href, window.location.href).origin !== window.location.origin)
-        prevent(event, 'EXTERNAL_LINK_ATTEMPT', 'External link activation was blocked.');
+      if (link?.href) {
+        let isExternal = false;
+        try {
+          const parsed = new URL(link.href, window.location.href);
+          if (parsed.origin !== window.location.origin) {
+            isExternal = true;
+          }
+        } catch {
+          isExternal = true;
+        }
+        if (isExternal) {
+          prevent(event, 'EXTERNAL_LINK_ATTEMPT', `External link activation was blocked: ${link.href}`);
+        }
+      }
     };
+    let originalOpen: typeof window.open | null = null;
+    if (restrictions.externalLinks && typeof window !== 'undefined') {
+      try {
+        originalOpen = window.open;
+        window.open = (url?: string | URL, target?: string, features?: string) => {
+          onViolation({
+            violation: 'EXTERNAL_LINK_ATTEMPT',
+            detail: `Opening external or new window (${url ?? 'about:blank'}) was blocked.`,
+            prevented: true,
+          });
+          return null;
+        };
+      } catch {
+        // window.open may be non-configurable in some environments
+      }
+    }
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       onViolation({
@@ -285,6 +374,27 @@ export function createBrowserKioskAdapter(
         detail: 'Exam window focus was restored.',
         prevented: false,
       });
+    const onPageHide = (event: PageTransitionEvent) =>
+      onViolation({
+        violation: 'PAGE_HIDDEN',
+        detail: `Exam page hide event triggered${event.persisted ? ' (cached in back-forward cache)' : ''}.`,
+        prevented: false,
+      });
+    const onPageShow = (event: PageTransitionEvent) =>
+      onViolation({
+        violation: 'RECOVERY',
+        detail: `Exam page show event triggered${event.persisted ? ' (restored from back-forward cache)' : ''}.`,
+        prevented: false,
+      });
+    const onFullscreenChange = () => {
+      if (typeof document !== 'undefined' && !document.fullscreenElement) {
+        onViolation({
+          violation: 'FULLSCREEN_EXIT',
+          detail: 'Fullscreen mode was exited during the examination.',
+          prevented: false,
+        });
+      }
+    };
     const secureHash = window.location.hash;
     const restoreSecureRoute = () => {
       if (!window.location.hash.includes('/examination/secure/')) {
@@ -300,12 +410,21 @@ export function createBrowserKioskAdapter(
         });
       }
     };
-    const onVisibility = () =>
-      onViolation({
-        violation: document.visibilityState === 'hidden' ? 'FOCUS_LOST' : 'RECOVERY',
-        detail: `Document visibility changed to ${document.visibilityState}.`,
-        prevented: false,
-      });
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        onViolation({
+          violation: 'VISIBILITY_CHANGE',
+          detail: 'Exam window visibility state changed to hidden.',
+          prevented: false,
+        });
+      } else {
+        onViolation({
+          violation: 'RECOVERY',
+          detail: 'Exam window visibility restored to visible.',
+          prevented: false,
+        });
+      }
+    };
     if (restrictions.copyPaste) {
       document.addEventListener('copy', onCopy);
       document.addEventListener('cut', onCopy);
@@ -320,7 +439,11 @@ export function createBrowserKioskAdapter(
     if (restrictions.focus) {
       window.addEventListener('blur', onBlur);
       window.addEventListener('focus', onFocus);
+      window.addEventListener('pagehide', onPageHide);
+      window.addEventListener('pageshow', onPageShow);
       document.addEventListener('visibilitychange', onVisibility);
+      document.addEventListener('fullscreenchange', onFullscreenChange);
+      document.addEventListener('webkitfullscreenchange', onFullscreenChange);
     }
     window.addEventListener('offline', onOffline);
     window.addEventListener('online', onOnline);
@@ -329,6 +452,13 @@ export function createBrowserKioskAdapter(
       window.addEventListener('popstate', restoreSecureRoute);
     }
     return () => {
+      if (originalOpen && typeof window !== 'undefined') {
+        try {
+          window.open = originalOpen;
+        } catch {
+          // Ignore
+        }
+      }
       if (restrictions.copyPaste) {
         document.removeEventListener('copy', onCopy);
         document.removeEventListener('cut', onCopy);
@@ -343,7 +473,11 @@ export function createBrowserKioskAdapter(
       if (restrictions.focus) {
         window.removeEventListener('blur', onBlur);
         window.removeEventListener('focus', onFocus);
+        window.removeEventListener('pagehide', onPageHide);
+        window.removeEventListener('pageshow', onPageShow);
         document.removeEventListener('visibilitychange', onVisibility);
+        document.removeEventListener('fullscreenchange', onFullscreenChange);
+        document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
       }
       window.removeEventListener('offline', onOffline);
       window.removeEventListener('online', onOnline);
@@ -357,10 +491,15 @@ export function createBrowserKioskAdapter(
     matrix,
     install,
     requestFullscreen: async () => {
-      if (typeof document === 'undefined' || !document.documentElement.requestFullscreen)
-        return false;
+      if (typeof document === 'undefined') return false;
       try {
-        await document.documentElement.requestFullscreen();
+        if (!document.fullscreenElement) {
+          if (document.documentElement.requestFullscreen) {
+            await document.documentElement.requestFullscreen();
+          } else if ((document.documentElement as any).webkitRequestFullscreen) {
+            await (document.documentElement as any).webkitRequestFullscreen();
+          }
+        }
         return true;
       } catch {
         return false;
@@ -373,5 +512,13 @@ export function policyForViolation(
   policyMap: Record<string, ViolationPolicy> | undefined,
   violation: SecurityViolation,
 ): ViolationPolicy {
-  return policyMap?.[violation] || 'LOG_ONLY';
+  return (
+    policyMap?.[violation] ||
+    (violation === 'VISIBILITY_CHANGE' || violation === 'PAGE_HIDDEN' || violation === 'FULLSCREEN_EXIT'
+      ? policyMap?.['FOCUS_LOST']
+      : undefined) ||
+    (violation === 'NETWORK_LOSS' || violation === 'SERVER_DISCONNECT' || violation === 'RECOVERY'
+      ? 'LOG'
+      : 'WARN')
+  );
 }
