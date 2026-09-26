@@ -294,11 +294,13 @@ const KioskEntry: React.FC = () => {
         role: 'STUDENT',
         studentId: authenticated.id,
         sessionId: session.id,
+        platform: 'web',
         capabilities: [
           'encrypted-local-state',
           'attempt-recovery',
           'platform-capability-matrix',
           'lan-authenticated',
+          'web-client',
         ],
       });
       let authoritativeStartedAt = new Date().toISOString();
@@ -354,28 +356,64 @@ const KioskEntry: React.FC = () => {
 
       <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
         <div className="flex items-center gap-2">
-          <FileKey2 className="text-[#2D6A4F]" />
+          <FileKey2 className="text-[#2D6A4F] w-6 h-6" />
           <h2 className="font-black text-xl">1. Choose .pharmaexam</h2>
         </div>
-        <input
-          type="file"
-          accept={BROWSER_PHARMAEXAM_ACCEPT}
-          onChange={(event) => void choosePackage(event.target.files?.[0])}
-          className="block w-full rounded-lg border p-3"
-        />
+        <p className="text-sm text-slate-600">
+          Open an official signed .pharmaexam package via standard browser file selection. No
+          OS-level file association registration is required.
+        </p>
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const file = e.dataTransfer.files?.[0];
+            if (file) void choosePackage(file);
+          }}
+          className="relative border-2 border-dashed border-slate-300 hover:border-emerald-500 rounded-xl p-6 text-center transition-colors bg-slate-50/50 hover:bg-emerald-50/30 cursor-pointer"
+          onClick={() => {
+            document.getElementById('pharmaexam-file-input')?.click();
+          }}
+        >
+          <input
+            id="pharmaexam-file-input"
+            type="file"
+            accept={BROWSER_PHARMAEXAM_ACCEPT}
+            onChange={(event) => void choosePackage(event.target.files?.[0])}
+            className="hidden"
+          />
+          <FileKey2 className="w-10 h-10 mx-auto text-slate-400 mb-2" />
+          <p className="text-sm font-bold text-slate-700">
+            Click to choose a .pharmaexam package or drag and drop it here
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            Browser file picker · Accepts .pharmaexam and signed exam packages
+          </p>
+        </div>
         {packageMessage && (
           <p className={`text-sm font-semibold ${staged ? 'text-emerald-700' : 'text-red-700'}`}>
             {packageMessage}
           </p>
         )}
         {staged && (
-          <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-sm">
-            <strong>{staged.exam.title}</strong>
-            <br />
-            Version {staged.exam.version} · {staged.exam.assessmentType} · {staged.questions.length}{' '}
-            questions
-            <br />
-            {staged.institution.name}
+          <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 text-sm text-slate-800">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <strong className="text-emerald-950 text-base">{staged.exam.title}</strong>
+                <p className="text-xs text-emerald-800 mt-0.5">
+                  Version {staged.exam.version} · {staged.exam.assessmentType} · {staged.questions.length}{' '}
+                  questions · Duration: {staged.exam.availability.durationMinutes} minutes
+                </p>
+                <p className="text-xs text-slate-600 mt-1">{staged.institution.name}</p>
+              </div>
+              <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-lg shrink-0">
+                Package Cached
+              </span>
+            </div>
           </div>
         )}
       </section>

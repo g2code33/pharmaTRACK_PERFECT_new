@@ -11,7 +11,15 @@ import type { ExamQuestion, QuestionSourceRef } from '../types';
 export const EXAMINATION_SCHEMA_VERSION = 1 as const;
 export const EXAM_PACKAGE_FORMAT_VERSION = 1 as const;
 
-export type KioskPlatform = 'PC_WEB' | 'ANDROID_WEB' | 'TAURI_PC' | 'ANDROID_NATIVE' | 'UNKNOWN';
+export type KioskPlatform =
+  | 'web'
+  | 'native-pc'
+  | 'android'
+  | 'PC_WEB'
+  | 'ANDROID_WEB'
+  | 'TAURI_PC'
+  | 'ANDROID_NATIVE'
+  | 'UNKNOWN';
 export type ViolationPolicy =
   | 'LOG_ONLY'
   | 'WARNING'
@@ -334,6 +342,7 @@ export interface StudentAttempt {
   examVersionId: string;
   studentId: string;
   deviceSessionId: string;
+  platform?: KioskPlatform;
   status: AttemptStatus;
   startedAt: string;
   submittedAt?: string;
@@ -467,6 +476,7 @@ export interface DeviceSession {
   label?: string;
   sessionId?: string;
   studentId?: string;
+  platform?: KioskPlatform;
   connectedAt: string;
   lastHeartbeatAt: string;
   status: 'CONNECTED' | 'DISCONNECTED' | 'RECOVERY_PENDING';

@@ -677,6 +677,7 @@ export class ExaminationRepository {
           : indexes;
     }
     const startedAt = new Date();
+    const device = this.state.deviceSessions.find((item) => item.id === deviceSessionId);
     const timerState = createAttemptTimer(
       version.availability.durationMinutes,
       authoritativeStartedAt || startedAt.toISOString(),
@@ -689,6 +690,7 @@ export class ExaminationRepository {
       examVersionId: version.id,
       studentId,
       deviceSessionId,
+      platform: device?.platform || 'web',
       status: 'ACTIVE',
       startedAt: startedAt.toISOString(),
       deadlineAt: timerState.authoritativeDeadlineAt,

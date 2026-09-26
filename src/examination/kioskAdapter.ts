@@ -45,11 +45,8 @@ export interface KioskAdapter {
   exitSecureMode?: () => Promise<boolean>;
 }
 
-function platform(): KioskPlatform {
-  if (typeof navigator === 'undefined') return 'UNKNOWN';
-  const agent = navigator.userAgent.toLowerCase();
-  if (agent.includes('android')) return 'ANDROID_WEB';
-  return 'PC_WEB';
+export function platform(): KioskPlatform {
+  return 'web';
 }
 
 function capability(
@@ -81,8 +78,8 @@ export function createCapabilityMatrix(
   kind: KioskPlatform = platform(),
   requiredIds: string[] = [],
 ): PlatformCapabilityMatrix {
-  const android = kind === 'ANDROID_WEB' || kind === 'ANDROID_NATIVE';
-  const native = kind === 'TAURI_PC' || kind === 'ANDROID_NATIVE';
+  const android = kind === 'ANDROID_WEB' || kind === 'ANDROID_NATIVE' || kind === 'android';
+  const native = kind === 'TAURI_PC' || kind === 'ANDROID_NATIVE' || kind === 'native-pc';
   const capabilities = [
     capability(
       KIOSK_CAPABILITY_IDS.navigation,
@@ -194,6 +191,7 @@ export function createBrowserKioskAdapter(
   onViolation: (event: KioskViolation) => void,
   requiredIds: string[] = [],
   policy: KioskRestrictionPolicy = {},
+  platformKind: KioskPlatform = 'web',
 ): KioskAdapter {
   const restrictions = {
     navigation: policy.navigation !== false,
@@ -204,7 +202,7 @@ export function createBrowserKioskAdapter(
     exit: policy.exit !== false,
     focus: policy.focus !== false,
   };
-  const matrix = createCapabilityMatrix(platform(), requiredIds);
+  const matrix = createCapabilityMatrix(platformKind, requiredIds);
   const prevent = (event: Event, violation: SecurityViolation, detail: string) => {
     event.preventDefault();
     onViolation({ violation, detail, prevented: true });
