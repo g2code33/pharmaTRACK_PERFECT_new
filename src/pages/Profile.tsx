@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { supabase } from '../utils/supabase';
 import { checkCloudAccess } from '../utils/requireAuth';
+import { flushAccountSync, queueAccountRecord } from '../account/sync';
 import { User, ShieldCheck, Loader2, Building, GraduationCap, BookOpen, Calendar, Cloud, CloudOff } from 'lucide-react';
 
 const LEVELS = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
@@ -57,17 +57,19 @@ const Profile = () => {
       // offline or signed out; the local save above already succeeded.
       const access = await checkCloudAccess();
       if (access.ok) {
-        const { error } = await supabase.from('profiles').upsert({
-          id: access.userId,
-          full_name: form.name,
+        await queueAccountRecord(access.userId, 'profile', 'profile_preferences', {
+          fullName: form.name,
           university: form.university,
           level: form.level,
           program: form.program,
           semester: form.semester,
-          updated_at: new Date().toISOString(),
         });
-        if (error) throw error;
-        setMsg('Saved and synced to your account.');
+        const sync = await flushAccountSync(access.userId);
+        setMsg(sync.state === 'conflict'
+          ? 'Saved on this device. A newer account profile exists; choose which version to keep.'
+          : sync.state === 'pending'
+            ? 'Saved on this device. Account sync is pending.'
+            : 'Saved and synced to your account.');
       }
     } catch (err: any) {
       setMsg('Saved on this device. Cloud sync failed: ' + err.message);

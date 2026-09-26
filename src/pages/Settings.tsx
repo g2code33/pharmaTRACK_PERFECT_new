@@ -1,9 +1,9 @@
 // PharmTrack - Settings Page
 
-import { invoke } from '@tauri-apps/api/core';
-import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import AISettingsPanel from '../components/AISettingsPanel';
 import { v4 as uuidv4 } from 'uuid';
 import { ExamDate } from '../types';
 import {
@@ -20,23 +20,44 @@ import {
   AlertTriangle,
   CheckCircle2,
   Sparkles,
-  ShieldCheck,
-  Key,
-  Eye,
-  EyeOff,
   LogOut,
   Cloud,
+  GraduationCap,
+  Archive,
+  HardDrive,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { clearState, saveState, loadState } from '../utils/storage';
+import { clearAllCredentials } from '../ai/credentials';
+import { clearConversations } from '../ai/conversations';
+import { clearAISettings } from '../ai/settings';
 import { supabase } from '../utils/supabase';
+import { flushAccountSync, queueAccountRecord } from '../account/sync';
 import { withCloudAccess } from '../utils/requireAuth';
 import { clear } from 'idb-keyval';
+import CompleteSemesterModal from '../components/CompleteSemesterModal';
 
 const Settings: React.FC = () => {
-  const { state, dispatch, logout } = useApp();
+  const { state, dispatch, logout, deleteAccount } = useApp();
   const navigate = useNavigate();
+
+  // `/settings?tab=ai` (and `/settings#ai`) are the deep links used by the AI
+  // panel, the dashboard badge and the AI workspace. Land the student on that
+  // section instead of the top of a long page.
+  const location = useLocation();
+  const aiSectionRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const wantsAI = new URLSearchParams(location.search).get('tab') === 'ai' || location.hash === '#ai';
+    if (!wantsAI) return;
+    const timer = window.setTimeout(() => {
+      aiSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [location.search, location.hash]);
+
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [showCompleteSemester, setShowCompleteSemester] = useState(false);
 
   // Signs out via the shared logout() so the Supabase session is actually
   // cleared. Locally cached study data is intentionally kept — use
@@ -51,11 +72,26 @@ const Settings: React.FC = () => {
       setIsSigningOut(false);
     }
   };
+  const handleDeleteAccount = async () => {
+    if (!state.isLoggedIn) return;
+    const confirmed = window.confirm(
+      'Delete your normal PharmaTRACK account permanently?\n\n' +
+        'This removes the Supabase account and cloud profile. Your local study workspace stays on this device so you can export or clear it separately. The examination Kiosk identity is not affected.',
+    );
+    if (!confirmed) return;
+    setIsDeletingAccount(true);
+    try {
+      await deleteAccount();
+      navigate('/', { replace: true });
+    } catch (reason: any) {
+      window.alert(`Account deletion failed: ${reason?.message || reason}`);
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   const [showExamModal, setShowExamModal] = useState(false);
   const [editingExam, setEditingExam] = useState<ExamDate | null>(null);
-  const [showApiKey, setShowApiKey] = useState(false);
-  const [apiKey, setApiKey] = useState(state.openAIKey);
-  const [apiKeySaved, setApiKeySaved] = useState(false);
   const [examForm, setExamForm] = useState({
     courseId: '',
     examDate: format(new Date(), 'yyyy-MM-dd'),
@@ -75,13 +111,6 @@ const Settings: React.FC = () => {
   const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
   const semesters = ['1st Semester', '2nd Semester'];
 
-  const handleSaveApiKey = () => {
-    dispatch({ type: 'SET_OPENAI_KEY', payload: apiKey });
-    setApiKeySaved(true);
-    setTimeout(() => setApiKeySaved(false), 2000);
-  };
-
-  
   const handleSaveProfile = async (e?: React.FormEvent) => {
     if(e) e.preventDefault();
     if (state.student) {
@@ -93,22 +122,26 @@ const Settings: React.FC = () => {
         student: { ...currentState.student, ...profileForm }
       } as any);
 
-      if (navigator.onLine) {
+      if (state.isLoggedIn) {
         try {
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
-            await supabase.from('profiles').upsert({
-              id: user.id,
-              full_name: profileForm.name,
+            await queueAccountRecord(user.id, 'profile', 'profile_preferences', {
+              fullName: profileForm.name,
               university: profileForm.university,
               level: profileForm.level,
               program: profileForm.program,
               semester: profileForm.semester,
-              updated_at: new Date().toISOString()
             });
+            const sync = await flushAccountSync(user.id);
+            if (sync.state === 'conflict') {
+              console.warn('A newer account profile exists; local profile remains pending for explicit resolution.');
+            }
           }
         } catch (e) {
-          console.error("Supabase sync failed (likely missing SQL columns). Safely saved offline.");
+          // The local profile is already committed. The account queue remains
+          // retryable if this device is offline or the migration is unavailable.
+          console.error('Account profile sync failed; safely saved locally.');
         }
       }
 
@@ -168,6 +201,11 @@ const Settings: React.FC = () => {
     ) {
       if (window.confirm('Really delete everything?')) {
         clearState();
+        // AI credentials live outside the app state (they are deliberately not
+        // part of academic data), so a nuclear wipe has to clear them too.
+        void clearAllCredentials();
+        void clearConversations();
+        clearAISettings();
         window.location.reload();
       }
     }
@@ -250,6 +288,16 @@ const Settings: React.FC = () => {
         <p className="text-gray-500">Manage your profile and app preferences</p>
       </div>
 
+      <Link to="/storage" className="block bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:border-[#2D6A4F]/30">
+        <div className="flex items-center gap-3">
+          <HardDrive className="w-5 h-5 text-[#2D6A4F]" />
+          <div>
+            <h2 className="font-semibold text-gray-800">Storage Manager</h2>
+            <p className="text-sm text-gray-500">See what is on this device, and recover without deleting a semester.</p>
+          </div>
+        </div>
+      </Link>
+
       {/* Profile Section */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="p-4 bg-gray-50 border-b border-gray-100">
@@ -279,7 +327,7 @@ const Settings: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Level</label>
               <select
@@ -339,100 +387,67 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
-      {/* PharmaGAME AI Connection Section */}
-      <div className="bg-[#0F172A] rounded-2xl border border-white/5 shadow-2xl overflow-hidden text-white">
-        <div className="p-5 bg-gradient-to-r from-[#1B4332] to-[#0F172A] border-b border-white/5">
-          <h2 className="font-bold flex items-center gap-2 tracking-tight">
-            <Sparkles className="w-5 h-5 text-[#FFB703]" />
-            PHARMAGAME AI CORE STATUS
+      {/* Semester Section */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+        <div className="p-4 bg-gray-50 border-b border-gray-100">
+          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+            <GraduationCap className="w-5 h-5 text-[#2D6A4F]" />
+            Semester
           </h2>
         </div>
-        <div className="p-6 space-y-6">
-          <div className="flex items-center justify-between p-4 bg-white/5 rounded-2xl border border-white/10">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-green-500/20 rounded-full flex items-center justify-center border border-green-500/50">
-                <ShieldCheck className="w-6 h-6 text-green-400" />
-              </div>
-              <div>
-                <p className="font-black text-sm uppercase tracking-widest text-[#FFB703]">Neural Bridge: Active</p>
-                <p className="text-xs text-gray-400">Authenticated via PharmaGAME Secure Session</p>
-              </div>
+        <div className="p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-gray-700">
+                Currently studying: <strong>{state.student?.level || '—'} · {state.student?.semester || '—'}</strong>
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                When a semester ends, complete it to archive everything locally —
+                courses, slides, files, notes and quizzes — then start a fresh workspace.
+                Past semesters stay in the Academic Archive.
+              </p>
             </div>
-            <div className="px-3 py-1 bg-green-500/10 text-green-400 text-[10px] font-black rounded-full border border-green-500/20 uppercase tracking-widest">
-              Secured
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <p className="text-xs font-bold text-gray-500 uppercase tracking-widest ml-1">Integrated Engine</p>
-            <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-bold">PharmaGAME LLM Core</span>
-                <span className="text-xs text-gray-400">v4.2.0-pharma</span>
-              </div>
-              <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                <div className="h-full bg-[#FFB703] w-[95%]" />
-              </div>
-              <p className="text-[10px] text-gray-500 mt-2 italic">* Direct linking active. No external API keys required.</p>
+            <div className="flex gap-2">
+              <Link
+                to="/archive"
+                className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm font-medium"
+              >
+                <Archive className="w-4 h-4" />
+                Academic Archive
+              </Link>
+              <button
+                onClick={() => setShowCompleteSemester(true)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] text-sm font-bold shadow-sm"
+              >
+                <GraduationCap className="w-4 h-4 text-[#FFB703]" />
+                Complete Semester…
+              </button>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Google AI Studio API Key Section */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="p-4 bg-gray-50 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-800 flex items-center gap-2">
-            <Key className="w-5 h-5 text-blue-600" />
-            Google AI Studio (Gemini) API Key
+      {/* AI ENGINE — multi-provider settings (NVIDIA, OpenAI, Gemini, Claude,
+          Groq, OpenRouter, Mistral, custom OpenAI-compatible, future local).
+          Provider-independent: every provider, model, profile and fallback
+          lives in the engine, never in this page. */}
+      <div
+        id="ai"
+        ref={aiSectionRef}
+        className="bg-[#0F172A] rounded-2xl border border-white/5 shadow-2xl overflow-hidden text-white scroll-mt-4"
+      >
+        <div className="p-5 bg-gradient-to-r from-[#1B4332] to-[#0F172A] border-b border-white/5">
+          <h2 className="font-bold flex items-center gap-2 tracking-tight">
+            <Sparkles className="w-5 h-5 text-[#FFB703]" />
+            AI ENGINE
           </h2>
-        </div>
-        <div className="p-5 space-y-4">
-          <p className="text-sm text-gray-600">
-            Add your Google AI Studio API key to enable real AI-powered question generation, summaries, and the study assistant. 
-            Get your free API key from{' '}
-            <a
-              href="https://aistudio.google.com/app/apikey"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:underline font-medium"
-            >
-              aistudio.google.com
-            </a>
+          <p className="text-xs text-gray-400 mt-1">
+            Connect one or many providers. PharmaTRACK switches between them automatically, and always tells you which
+            one answered.
           </p>
-
-          <div className="relative">
-            <input
-              type={showApiKey ? 'text' : 'password'}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="AIza..."
-              className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
-            />
-            <button
-              onClick={() => setShowApiKey(!showApiKey)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-            >
-              {showApiKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-            </button>
-          </div>
-
-          <button
-            onClick={handleSaveApiKey}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            {apiKeySaved ? (
-              <>
-                <CheckCircle2 className="w-4 h-4" />
-                Saved!
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" />
-                Save API Key
-              </>
-            )}
-          </button>
+        </div>
+        <div className="p-5 bg-white">
+          <AISettingsPanel />
         </div>
       </div>
 
@@ -566,6 +581,24 @@ const Settings: React.FC = () => {
               )}
             </div>
 
+            {state.isLoggedIn && (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4">
+                <h3 className="font-bold text-red-800">Delete normal account</h3>
+                <p className="mt-1 text-sm text-red-700">
+                  Permanently removes the Supabase account and cloud profile. This is separate from the examination Kiosk identity.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteAccount()}
+                  disabled={isDeletingAccount}
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-red-300 bg-white px-4 py-2.5 font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {isDeletingAccount ? 'Deleting account…' : 'Delete account'}
+                </button>
+              </div>
+            )}
+
             {/* Emergency Fix Section */}
             <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 mb-4">
               <h3 className="font-bold text-red-800 mb-2 flex items-center gap-2">
@@ -656,6 +689,9 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
+      {/* Complete Semester Modal */}
+      <CompleteSemesterModal open={showCompleteSemester} onClose={() => setShowCompleteSemester(false)} />
+
       {/* Exam Modal */}
       {showExamModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -688,7 +724,7 @@ const Settings: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Exam Type</label>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   {(['midsem', 'endsem', 'practical'] as const).map((type) => (
                     <button
                       key={type}

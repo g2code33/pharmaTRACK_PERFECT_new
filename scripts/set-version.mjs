@@ -33,6 +33,7 @@ const writeJson = (file, obj, original) => {
 
 const FILES = {
   pkg: p('package.json'),
+  pkgLock: p('package-lock.json'),
   tauriConf: p('src-tauri', 'tauri.conf.json'),
   cargoToml: p('src-tauri', 'Cargo.toml'),
   cargoLock: p('src-tauri', 'Cargo.lock'),
@@ -42,6 +43,9 @@ const FILES = {
 const getVersions = () => {
   const out = {};
   out['package.json'] = JSON.parse(read(FILES.pkg)).version;
+  if (fs.existsSync(FILES.pkgLock)) {
+    out['package-lock.json'] = JSON.parse(read(FILES.pkgLock)).version;
+  }
   out['src-tauri/tauri.conf.json'] = JSON.parse(read(FILES.tauriConf)).version;
 
   // Only the [package] version at the top of Cargo.toml, not dependencies'.
@@ -54,6 +58,7 @@ const getVersions = () => {
 
   // The hardcoded fallback shown before Tauri's getVersion() resolves.
   out['src/components/Layout.tsx'] =
+    read(FILES.layout).match(/APP_VERSION_FALLBACK\s*=\s*['"](\d+\.\d+\.\d+)['"]/)?.[1] ??
     read(FILES.layout).match(/useState\(['"](\d+\.\d+\.\d+)['"]\)/)?.[1] ?? null;
 
   return out;
@@ -69,6 +74,16 @@ const setVersion = (v) => {
   const pkg = JSON.parse(pkgRaw);
   pkg.version = v;
   writeJson(FILES.pkg, pkg, pkgRaw);
+
+  if (fs.existsSync(FILES.pkgLock)) {
+    const lockRaw = read(FILES.pkgLock);
+    const lock = JSON.parse(lockRaw);
+    lock.version = v;
+    if (lock.packages && lock.packages['']) {
+      lock.packages[''].version = v;
+    }
+    writeJson(FILES.pkgLock, lock, lockRaw);
+  }
 
   const confRaw = read(FILES.tauriConf);
   const conf = JSON.parse(confRaw);
@@ -93,11 +108,28 @@ const setVersion = (v) => {
 
   write(
     FILES.layout,
-    read(FILES.layout).replace(
-      /(useState\(['"])\d+\.\d+\.\d+(['"]\))/,
-      `$1${v}$2`,
-    ),
+    read(FILES.layout)
+      .replace(
+        /(APP_VERSION_FALLBACK\s*=\s*['"])\d+\.\d+\.\d+(['"])/,
+        `$1${v}$2`,
+      )
+      .replace(
+        /(useState\(['"])\d+\.\d+\.\d+(['"]\))/,
+        `$1${v}$2`,
+      ),
   );
+
+  const distSw = p('dist', 'sw.js');
+  if (fs.existsSync(distSw)) {
+    const swRaw = read(distSw);
+    write(
+      distSw,
+      swRaw.replace(
+        /const CACHE_VERSION = `\${CACHE_PREFIX}[^`]+`;/,
+        `const CACHE_VERSION = \`\${CACHE_PREFIX}${v}\`;`,
+      ),
+    );
+  }
 
   console.log(`✔ Version set to ${v} in all 5 locations:`);
   for (const [f, ver] of Object.entries(getVersions())) console.log(`   ${ver}  ${f}`);
