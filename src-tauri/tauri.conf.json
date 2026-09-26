@@ -14,7 +14,7 @@
     "fileAssociations": [
       {
         "ext": ["pharmaexam"],
-        "mimeType": ["application/x-pharmaexam"],
+        "mimeType": "application/x-pharmaexam",
         "description": "PharmaTRACK Secure Examination",
         "role": "Viewer"
       }
