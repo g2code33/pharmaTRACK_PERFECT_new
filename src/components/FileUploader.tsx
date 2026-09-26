@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import * as mammoth from 'mammoth';
 import { renderPptx } from '../utils/pptxRenderer';
+import { type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
+import { inspectFile } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
 import { saveFile } from '../utils/storage';
 import {
@@ -41,6 +44,10 @@ export interface UploadedMaterial {
   pageCount: number;
   sizeBytes: number;
   usedOcr: boolean;
+  materialKind?: MaterialKind;
+  originalName?: string;
+  ocrStatus?: OcrStatus;
+  visualStatus?: VisualStatus;
 }
 
 type ItemStatus = 'queued' | 'reading' | 'ocr' | 'saving' | 'done' | 'error' | 'cancelled';
@@ -53,6 +60,8 @@ interface QueueItem {
   progress: number;
   message: string;
   error?: string;
+  /** Non-blocking finding from the file guard (e.g. "really a Word document"). */
+  warning?: string;
   usedOcr: boolean;
   /** Set when we detect a scanned PDF and OCR wasn't requested. */
   looksScanned: boolean;
@@ -177,6 +186,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let text = '';
       let pages = 1;
       let usedOcr = false;
+      let visualStatus: VisualStatus = 'unknown';
       let pageTexts: { page: number; text: string }[] = [];
 
       if (item.kind === 'pdf') {
@@ -187,11 +197,23 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         const r = await mammoth.extractRawText({ arrayBuffer: buffer });
         text = r.value;
       } else if (item.kind === 'pptx') {
-        const deck = await renderPptx(item.file);
-        text = deck.fullText;
-        pages = deck.slides.length;
-        pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
-        deck.dispose();
+        // Text extraction must not decode every picture, and a failed render
+        // must not throw the original file away. The reader tries the visual
+        // render again and says so if it still cannot draw the slides.
+        try {
+          const deck = await renderPptx(item.file, { lazyMedia: true });
+          text = deck.fullText;
+          pages = deck.slides.length;
+          pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
+          visualStatus = pages > 0 ? 'ok' : 'failed';
+          deck.dispose();
+        } catch (err) {
+          console.error('Presentation could not be read as slides; keeping the original.', err);
+          text = '';
+          pages = 0;
+          pageTexts = [];
+          visualStatus = 'failed';
+        }
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
           update(item.id, { status: 'ocr', message: 'Reading text from image…' });
@@ -212,7 +234,14 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       // Binary lives in IndexedDB; only metadata + text go into app state.
       await saveFile(materialId, new Uint8Array(buffer));
 
-      update(item.id, { status: 'done', progress: 1, message: usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`, usedOcr });
+      update(item.id, {
+        status: 'done',
+        progress: 1,
+        message: visualStatus === 'failed'
+          ? 'Saved the original. Visual rendering failed — open it to read the extracted text.'
+          : usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`,
+        usedOcr,
+      });
 
       if (!pageTexts.length && text.trim()) pageTexts = [{ page: 1, text }];
 
@@ -244,6 +273,12 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const incoming: QueueItem[] = [];
+    const pending: File[] = [];
+
+    /**
+     * Synchronous rejections first (empty / oversized), so those never even
+     * enter the queue as processable work.
+     */
     for (const file of Array.from(files)) {
       if (file.size > maxSizeMb * 1048576) {
         incoming.push({
@@ -253,17 +288,43 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         });
         continue;
       }
-      incoming.push({
-        id: uuidv4(), file, kind: kindOf(file), status: 'queued', progress: 0,
-        message: 'Waiting…', usedOcr: false, looksScanned: false, controller: new AbortController(),
-      });
+      pending.push(file);
     }
 
     setQueue((q) => [...q, ...incoming]);
-    // Sequential, not parallel: several large PDFs decoded at once will
-    // exhaust memory on a modest laptop.
-    (async () => {
-      for (const item of incoming) {
+
+    /**
+     * Content checks read the head of each file, so they run in parallel and
+     * before any parsing. A file whose bytes contradict its name (or which is
+     * an executable wearing a .pdf badge) never reaches a parser.
+     */
+    void (async () => {
+      const accepted: QueueItem[] = [];
+      for (const file of pending) {
+        const verdict = await inspectFile(file, { maxBytes: maxSizeMb * 1048576 });
+        const warning = verdict.issues.find((i) => i.severity === 'warn')?.message;
+
+        if (!verdict.ok && verdict.blockedBy) {
+          setQueue((q) => [...q, {
+            id: uuidv4(), file, kind: kindOf(file), status: 'error', progress: 0, message: '',
+            error: verdict.blockedBy!.message,
+            usedOcr: false, looksScanned: false, controller: new AbortController(),
+          }]);
+          continue;
+        }
+
+        accepted.push({
+          id: uuidv4(), file, kind: kindOf(file), status: 'queued', progress: 0,
+          message: 'Waiting…', usedOcr: false, looksScanned: false, warning,
+          controller: new AbortController(),
+        });
+      }
+
+      if (!accepted.length) return;
+      setQueue((q) => [...q, ...accepted]);
+      // Sequential, not parallel: several large PDFs decoded at once will
+      // exhaust memory on a modest laptop.
+      for (const item of accepted) {
         if (item.status !== 'error') await processFile(item);
       }
     })();
@@ -356,6 +417,13 @@ const FileUploader: React.FC<FileUploaderProps> = ({
                   ) : (
                     <p className="text-xs text-slate-500 mt-0.5">{item.message}</p>
                   )}
+
+                  {item.warning && item.status !== 'error' ? (
+                    <p className="flex items-start gap-1 text-[11px] text-amber-700 mt-0.5" data-testid="upload-warning">
+                      <AlertTriangle className="w-3 h-3 shrink-0 mt-px" />
+                      {item.warning}
+                    </p>
+                  ) : null}
 
                   {active && (
                     <div className="h-1 bg-slate-100 rounded-full mt-1.5 overflow-hidden">

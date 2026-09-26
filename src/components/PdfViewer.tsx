@@ -40,7 +40,12 @@ type Tool = 'select' | 'hand';
 interface PdfViewerProps {
   fileUrl: string;
   title?: string;
-  onPageChange?: (page: number, total: number) => void;
+  /**
+   * Reports the page on screen. `text` is that page's extracted text, which is
+   * what the AI context builder sends — the page the student is reading, never
+   * the whole document.
+   */
+  onPageChange?: (page: number, total: number, text?: string) => void;
   onTextExtracted?: (pages: { page: number; text: string }[]) => void;
   highlights?: Highlight[];
   onCreateHighlight?: (h: { page: number; text: string; color: HighlightColor; rects: HighlightRect[] }) => void;
@@ -423,7 +428,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     if (doc) renderWindow(currentPage);
   }, [scale, rotation]);
 
-  useEffect(() => { onPageChange?.(currentPage, numPages); }, [currentPage, numPages]);
+  useEffect(
+    () => { onPageChange?.(currentPage, numPages, pageTexts[currentPage - 1] ?? ''); },
+    [currentPage, numPages, pageTexts],
+  );
 
   /* ---------------- zoom presets ---------------- */
   // Deliberately keyed off page 1's dimensions and NOT currentPage or scale.
