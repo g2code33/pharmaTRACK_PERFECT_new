@@ -45,6 +45,25 @@ const steps = [
     },
   },
   {
+    name: 'Production Build',
+    gate: 'production build',
+    run: () => {
+      execSync('npx vite build --mode production', { cwd: root, stdio: 'inherit' });
+      // Verify compiled dist output
+      const distIndex = path.join(root, 'dist', 'index.html');
+      const distSw = path.join(root, 'dist', 'sw.js');
+      const distManifest = path.join(root, 'dist', 'manifest.webmanifest');
+      if (!fs.existsSync(distIndex)) throw new Error('dist/index.html was not generated');
+      if (!fs.existsSync(distSw)) throw new Error('dist/sw.js was not generated');
+      if (!fs.existsSync(distManifest)) throw new Error('dist/manifest.webmanifest was not copied');
+
+      const distSwContent = fs.readFileSync(distSw, 'utf8');
+      if (!distSwContent.includes(pkg.version)) {
+        throw new Error(`dist/sw.js does not contain stamped version ${pkg.version}`);
+      }
+    },
+  },
+  {
     name: 'Unit Tests',
     gate: 'unit tests',
     run: () => {
@@ -100,25 +119,6 @@ const steps = [
 
       // Run deep PWA specification tests
       execSync('npx vitest run src/test/pwa-production-validation.test.ts', { cwd: root, stdio: 'inherit' });
-    },
-  },
-  {
-    name: 'Production Build',
-    gate: 'production build',
-    run: () => {
-      execSync('npx vite build --mode production', { cwd: root, stdio: 'inherit' });
-      // Verify compiled dist output
-      const distIndex = path.join(root, 'dist', 'index.html');
-      const distSw = path.join(root, 'dist', 'sw.js');
-      const distManifest = path.join(root, 'dist', 'manifest.webmanifest');
-      if (!fs.existsSync(distIndex)) throw new Error('dist/index.html was not generated');
-      if (!fs.existsSync(distSw)) throw new Error('dist/sw.js was not generated');
-      if (!fs.existsSync(distManifest)) throw new Error('dist/manifest.webmanifest was not copied');
-
-      const distSwContent = fs.readFileSync(distSw, 'utf8');
-      if (!distSwContent.includes(pkg.version)) {
-        throw new Error(`dist/sw.js does not contain stamped version ${pkg.version}`);
-      }
     },
   },
   {

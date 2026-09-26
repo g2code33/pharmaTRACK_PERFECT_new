@@ -16,7 +16,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.85';
+const APP_VERSION_FALLBACK = '1.1.86';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -180,14 +180,14 @@ const Layout: React.FC = () => {
 
       if (update) {
         setUpdateStatus('available');
-        let downloaded = 0;
-        let contentLength = 0;
+        let _downloaded = 0;
+        let _contentLength = 0;
 
         if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
           setUpdateStatus('downloading');
           await update.downloadAndInstall((event: any) => {
-            if (event.event === 'Started') contentLength = event.data.contentLength || 0;
-            if (event.event === 'Progress') downloaded += event.data.chunkLength;
+            if (event.event === 'Started') _contentLength = event.data.contentLength || 0;
+            if (event.event === 'Progress') _downloaded += event.data.chunkLength;
           });
 
           setUpdateStatus('done');

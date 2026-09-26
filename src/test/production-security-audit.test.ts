@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -146,7 +147,11 @@ describe('PHARMATRACK — PRODUCTION SECURITY AUDIT', () => {
   /* ======================================================================== */
   describe('2. Secrets Leak Prevention in Production Bundle & Source Code', () => {
     it('verifies that the dist/ production bundle contains zero service_role keys or secrets', () => {
-      const distFiles = collectFiles('dist');
+      let distFiles = collectFiles('dist');
+      if (distFiles.length === 0) {
+        execSync('npx vite build --mode production', { stdio: 'ignore' });
+        distFiles = collectFiles('dist');
+      }
       expect(distFiles.length).toBeGreaterThan(0);
 
       for (const file of distFiles) {
@@ -169,7 +174,11 @@ describe('PHARMATRACK — PRODUCTION SECURITY AUDIT', () => {
 
     it('verifies that no raw AI provider API keys are hardcoded in application source code or bundles', () => {
       const srcFiles = collectFiles('src').filter((f) => !f.includes('/test/'));
-      const distFiles = collectFiles('dist');
+      let distFiles = collectFiles('dist');
+      if (distFiles.length === 0) {
+        execSync('npx vite build --mode production', { stdio: 'ignore' });
+        distFiles = collectFiles('dist');
+      }
       const allRuntimeFiles = [...srcFiles, ...distFiles];
 
       for (const file of allRuntimeFiles) {
