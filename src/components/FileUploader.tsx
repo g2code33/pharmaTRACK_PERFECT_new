@@ -5,7 +5,7 @@ import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import * as mammoth from 'mammoth';
 import { renderPptx } from '../utils/pptxRenderer';
-import { kindFromExtension, ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
+import { type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
 import { inspectFile } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
 import { saveFile } from '../utils/storage';
