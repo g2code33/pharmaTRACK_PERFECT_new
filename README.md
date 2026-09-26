@@ -3,7 +3,7 @@
 A desktop study companion for pharmacy students. Cross-platform Tauri v2 app
 built with React, TypeScript and Tailwind CSS.
 
-![Version](https://img.shields.io/badge/version-1.1.82-blue)
+![Version](https://img.shields.io/badge/version-1.1.84-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-24C8D8)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 
@@ -122,6 +122,29 @@ supabase/       security-rls.sql — run this in the Supabase SQL editor
   stored locally.
 - The embedded webview navigates via parsed URLs rather than `eval`-ing
   JavaScript built from user input.
+
+## Troubleshooting
+
+### "`@layer base` is used but no matching `@tailwind base` directive is present"
+
+This project uses **Tailwind v4** (via `@tailwindcss/vite`), which has no
+`@tailwind base` directive — that error is thrown by **Tailwind v3**. If you
+see it, an old v3 install is being loaded from *outside* this project: Vite's
+postcss loader searches **upwards** through parent folders for a postcss
+config, so a stray `postcss.config.js` (or a `package.json` with a `"postcss"`
+key) in your home directory or any ancestor folder will be picked up, and its
+`tailwindcss` plugin resolves to whatever v3 copy sits in that folder's
+`node_modules`.
+
+The repo-root [`postcss.config.js`](./postcss.config.js) (no plugins — v4
+doesn't need any) stops that upward search at the project root. If you still
+hit this error, remove the strays and restart `npm run dev`:
+
+```bash
+find ~ -maxdepth 3 \( -name "postcss.config.*" -o -name ".postcssrc*" \) \
+  -not -path "*/node_modules/*"   # find and delete any result outside this repo
+rm -rf ~/node_modules             # if a stray install sits in your home dir
+```
 
 ## License
 

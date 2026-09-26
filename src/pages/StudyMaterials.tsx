@@ -7,6 +7,7 @@ import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
 import { saveFile, loadFile, deleteFile, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
+import { kindFromExtension, materialMetaFromUpload } from '../utils/materialKind';
 import { indexDocument, removeFromIndex } from '../utils/searchIndex';
 import { processAnyFile } from '../utils/universalProcessor';
 import {
@@ -376,6 +377,7 @@ const StudyMaterials: React.FC = () => {
       fileUrl: m.id,
       status: 'not_started',
       createdAt: new Date().toISOString(),
+      ...materialMetaFromUpload(m),
     };
     dispatch({ type: 'ADD_SLIDE', payload: newSlide });
     // Index the full per-page text so global search can find keywords deep
@@ -430,6 +432,12 @@ const StudyMaterials: React.FC = () => {
         fileUrl: `local:${newSlideId}`,
         status: 'not_started',
         createdAt: new Date().toISOString(),
+        ...materialMetaFromUpload({
+          materialKind: kindFromExtension(ext),
+          originalName: file.name,
+          sizeBytes: file.size,
+          ocrStatus: 'unknown',
+        }),
       };
 
       // Save the raw File object directly
@@ -456,15 +464,23 @@ const StudyMaterials: React.FC = () => {
     <div className="space-y-6">
       {/* Header */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-6 text-white">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
-            <Upload className="w-6 h-6" />
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center">
+                <Upload className="w-6 h-6" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold">Study Materials</h1>
+                <p className="text-white/80">Upload & manage your lecturer's slides</p>
+              </div>
+            </div>
+            <Link
+              to="/library"
+              className="shrink-0 rounded-lg bg-white/15 px-3 py-2 text-sm font-bold hover:bg-white/25"
+            >
+              Material Library
+            </Link>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold">Study Materials</h1>
-            <p className="text-white/80">Upload & manage your lecturer's slides</p>
-          </div>
-        </div>
       </div>
 
       {/* No courses message */}

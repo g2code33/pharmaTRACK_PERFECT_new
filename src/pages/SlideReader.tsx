@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { listenNative, nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
+import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
+import AIChatPanel from '../components/AIChatPanel';
+import { loadSlideText } from '../utils/storage';
+import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
-  ArrowLeft, ChevronLeft, ChevronRight, Sparkles, Send, Loader2,
-  Lightbulb, Maximize2, Minimize2, Download, X, Globe, MessageSquare as MessageSquareIcon, File,
+  ArrowLeft, ChevronLeft, ChevronRight, Loader2,
+  Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
   ArrowLeftCircle, ArrowRightCircle, RotateCw
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
@@ -53,8 +58,12 @@ const SlideReader: React.FC = () => {
   const [showAIPanel, setShowAIPanel] = useState(true);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [activePanel, setActivePanel] = useState<'ai' | 'browser'>('ai');
-  const [chatInput, setChatInput] = useState('');
-  const [isAILoading, setIsAILoading] = useState(false);
+  /** Page/slide currently on screen — the *only* material sent to the AI. */
+  const [page, setPage] = useState(1);
+  const [pageText, setPageText] = useState('');
+  const [pageCount, setPageCount] = useState(0);
+  /** Full text of the open material, loaded from IndexedDB on demand. */
+  const [fullText, setFullText] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
@@ -96,79 +105,63 @@ const SlideReader: React.FC = () => {
     if (tab) setUrlInput(tab.url);
   }, [activeTabId, browserTabs]);
 
-  // Listen for "open in new tab" requests coming from the Rust side
-  // (e.g. target="_blank" links inside the embedded webview)
+  // Native webview events and commands are optional. In a browser this whole
+  // block becomes a no-op; the surrounding study reader remains usable.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<string>('new-browser-tab', (event) => {
-        const url = event.payload;
-        const newId = uuidv4();
-        setBrowserTabs(tabs => [...tabs, { id: newId, url, title: titleFromUrl(url) }]);
-        setActiveTabId(newId);
-        setShowBrowserPanel(true);
-        setShowAIPanel(false);
-      }).then((u) => { unlisten = u; });
-    });
-    return () => { if (unlisten) unlisten(); };
+    void listenNative<string>('new-browser-tab', (event) => {
+      const url = event.payload;
+      const newId = uuidv4();
+      setBrowserTabs(tabs => [...tabs, { id: newId, url, title: titleFromUrl(url) }]);
+      setActiveTabId(newId);
+      setShowBrowserPanel(true);
+      setShowAIPanel(false);
+    }).then((remove) => { unlisten = remove; });
+    return () => { unlisten?.(); };
   }, []);
 
-  // Listen for live navigation updates from the embedded webview (title/url changes
-  // as the user clicks around inside it), so the tab bar and address bar stay accurate.
+  // Listen for live navigation updates from the embedded webview (title/url
+  // changes as the user clicks around inside it).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
-        const { label, url, title } = event.payload;
-        const tabId = label.replace('browser_tab_', '');
-        setBrowserTabs(tabs => tabs.map(t =>
-          t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
-        ));
-        if (tabId === activeTabId) setUrlInput(url);
-        setWebviewReady(true);
-      }).then((u) => { unlisten = u; });
-    });
-    return () => { if (unlisten) unlisten(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void listenNative<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
+      const { label, url, title } = event.payload;
+      const tabId = label.replace('browser_tab_', '');
+      setBrowserTabs(tabs => tabs.map(t =>
+        t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
+      ));
+      if (tabId === activeTabId) setUrlInput(url);
+      setWebviewReady(true);
+    }).then((remove) => { unlisten = remove; });
+    return () => { unlisten?.(); };
   }, [activeTabId]);
 
   const updateWebview = async () => {
+    if (!detectRuntimeCapabilities().nativeWebview) return;
     if (showBrowserPanel && browserContainerRef.current) {
       const bounds = getBrowserContainerBounds();
       const activeTab = browserTabs.find(t => t.id === activeTabId);
       if (!activeTab || !bounds) {
-        if (!bounds) {
-          console.warn('embed_website skipped: container not laid out yet');
-        }
+        if (!bounds) console.warn('embed_website skipped: container not laid out yet');
         return;
       }
 
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        for (const tab of browserTabs) {
-          if (tab.id !== activeTabId) {
-            invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-          }
+      for (const tab of browserTabs) {
+        if (tab.id !== activeTabId) {
+          void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
         }
-        await invoke('embed_website', {
-          label: `browser_tab_${activeTabId}`,
-          url: activeTab.url,
-          x: bounds.x,
-          y: bounds.y,
-          width: bounds.width,
-          height: bounds.height,
-        });
-      } catch (e) {
-        console.error('embed_website failed:', e);
       }
+      await nativeInvoke('embed_website', {
+        label: `browser_tab_${activeTabId}`,
+        url: activeTab.url,
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      });
     } else {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        for (const tab of browserTabs) {
-          invoke('hide_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-        }
-      } catch (e) {
-        // no-op: hiding tabs is best-effort
+      for (const tab of browserTabs) {
+        void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
       }
     }
   };
@@ -190,7 +183,7 @@ const SlideReader: React.FC = () => {
   // Track the browser container's own size changes (panel drag, flex reflow, etc.)
   useEffect(() => {
     const el = browserContainerRef.current;
-    if (!el || !showBrowserPanel) return;
+    if (!el || !showBrowserPanel || !detectRuntimeCapabilities().nativeWebview) return;
 
     const observer = new ResizeObserver(() => scheduleWebviewBoundsUpdate());
     observer.observe(el);
@@ -198,14 +191,13 @@ const SlideReader: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showBrowserPanel, activeTabId, panelWidth]);
 
-  // Destroy every tab's native webview on unmount so nothing leaks across a long session
+  // Destroy every tab's native webview on unmount so nothing leaks across a long session.
   useEffect(() => {
     return () => {
-      import('@tauri-apps/api/core').then(({ invoke }) => {
-        for (const tab of browserTabs) {
-          invoke('destroy_website', { label: `browser_tab_${tab.id}` }).catch(() => {});
-        }
-      });
+      if (!detectRuntimeCapabilities().nativeWebview) return;
+      for (const tab of browserTabs) {
+        void nativeInvoke('destroy_website', { label: `browser_tab_${tab.id}` });
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -215,9 +207,7 @@ const SlideReader: React.FC = () => {
       t.id === activeTabId ? { ...t, url: finalUrl, title: titleFromUrl(finalUrl) } : t
     ));
     setWebviewReady(false);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl }).catch(console.error);
-    });
+    void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
   };
 
   const handleAddressBarSubmit = () => {
@@ -226,22 +216,16 @@ const SlideReader: React.FC = () => {
   };
 
   const handleBack = () => {
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_back', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
   };
 
   const handleForward = () => {
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_forward', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
   };
 
   const handleReload = () => {
     setWebviewReady(false);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('webview_reload', { label: `browser_tab_${activeTabId}` }).catch(console.error);
-    });
+    void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
   };
 
   const openNewTab = () => {
@@ -255,9 +239,7 @@ const SlideReader: React.FC = () => {
     if (browserTabs.length === 1) return;
     const remaining = browserTabs.filter(t => t.id !== tabId);
     setBrowserTabs(remaining);
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke('destroy_website', { label: `browser_tab_${tabId}` }).catch(() => {});
-    });
+    void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
     if (activeTabId === tabId) setActiveTabId(remaining[0].id);
   };
 
@@ -305,40 +287,100 @@ const SlideReader: React.FC = () => {
     });
   };
 
-  /** Puts the selected passage into the AI panel with context. */
+  /**
+   * Selection → AI. The passage becomes part of the *context*, not a giant
+   * prompt string: the engine sends the selection plus the current page/slide.
+   */
+  const [selection, setSelection] = useState('');
   const handleAskAiAboutSelection = (text: string) => {
     setShowAIPanel(true);
     setShowBrowserPanel(false);
     setActivePanel('ai');
-    const trimmed = text.length > 1200 ? `${text.slice(0, 1200)}…` : text;
-    setChatInput(`Explain this from my notes:\n\n"${trimmed}"`);
+    setSelection(text);
   };
 
-  const chatMessages = state.chatHistory
-    .filter((m) => m.topicId === topicId)
-    .map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: new Date(m.timestamp),
-    }));
+  /** Loads the full extracted text lazily, only once a material is opened. */
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentMaterial?.id) {
+      setFullText(null);
+      return;
+    }
+    loadSlideText(currentMaterial.id)
+      .then((text) => !cancelled && setFullText(text ?? currentMaterial.contentText ?? ''))
+      .catch(() => !cancelled && setFullText(currentMaterial.contentText ?? ''));
+    return () => {
+      cancelled = true;
+    };
+  }, [currentMaterial?.id, currentMaterial?.contentText]);
+
+  // Reset page tracking when switching material.
+  useEffect(() => {
+    setPage(1);
+    setPageText('');
+    setPageCount(0);
+    setSelection('');
+  }, [currentMaterial?.id]);
+
+  // Opening the reader is study. Once per day; does not advance the revision interval.
+  useEffect(() => {
+    if (!topicId) return;
+    dispatch({ type: 'MARK_TOPIC_STUDIED', payload: { topicId } });
+  }, [topicId, dispatch]);
+
+  // Recently opened. Does not touch the file, so a failed render still counts.
+  useEffect(() => {
+    const id = currentMaterial?.id;
+    if (!id) return;
+    dispatch({
+      type: 'UPDATE_SLIDE',
+      payload: { id, updates: { lastOpenedAt: new Date().toISOString() } },
+    });
+  }, [currentMaterial?.id, dispatch]);
+
+  // Last page/slide, written after the viewer has actually reported a count
+  // so the reset-to-1 above does not overwrite a resumed position.
+  useEffect(() => {
+    const id = currentMaterial?.id;
+    if (!id || pageCount < 1) return;
+    const timer = window.setTimeout(() => {
+      dispatch({
+        type: 'UPDATE_SLIDE',
+        payload: {
+          id,
+          updates: {
+            lastOpenedAt: new Date().toISOString(),
+            lastPosition: page,
+            pageCount,
+          },
+        },
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [currentMaterial?.id, page, pageCount, dispatch]);
 
   const [fileUrl, setFileUrl] = useState<string | null>(null);
+  const [openedKind, setOpenedKind] = useState<MaterialKind | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
 
   useEffect(() => {
-    if (!currentMaterial) return;
+    if (!currentMaterial?.id) return;
+    const materialId = currentMaterial.id;
+    const fileType = currentMaterial.fileType;
+    const knownKind = currentMaterial.materialKind;
+    const knownSize = currentMaterial.fileSize;
     setIsLoadingContent(true);
+    setOpenedKind(null);
     let isMounted = true;
 
-    loadFile(currentMaterial.id).then(async (fileData: any) => {
+    loadFile(materialId).then(async (fileData: any) => {
       if (!isMounted) return;
       if (!fileData) {
         setIsLoadingContent(false);
         return;
       }
 
-      let data;
+      let data: Uint8Array;
       if (fileData instanceof Blob) {
         data = new Uint8Array(await fileData.arrayBuffer());
       } else if (fileData instanceof Uint8Array) {
@@ -353,10 +395,26 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-      const blob = new Blob([data], { type: currentMaterial.fileType === 'pdf' ? 'application/pdf' : 'application/octet-stream' });
+      const sniffed = sniffMaterialKind(data);
+      const mime = fileType === 'pdf' || sniffed === 'pdf'
+        ? 'application/pdf'
+        : sniffed === 'pptx'
+          ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+          : 'application/octet-stream';
+      const blob = new Blob([data as unknown as BlobPart], { type: mime });
       const newUrl = URL.createObjectURL(blob);
+      setOpenedKind(sniffed);
       setFileUrl(newUrl);
       setIsLoadingContent(false);
+
+      const updates: Partial<import('../types').Slide> = {};
+      if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
+        updates.materialKind = sniffed;
+      }
+      if (knownSize == null) updates.fileSize = data.byteLength;
+      if (Object.keys(updates).length) {
+        dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
+      }
     }).catch(err => {
       console.error(err);
       if (isMounted) setIsLoadingContent(false);
@@ -369,7 +427,9 @@ const SlideReader: React.FC = () => {
         return null;
       });
     };
-  }, [currentMaterial]);
+    // Metadata updates must not reload the file, or the viewer jumps back to slide 1.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMaterial?.id, currentMaterial?.fileType]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -389,11 +449,17 @@ const SlideReader: React.FC = () => {
 
   const openExternalWeb = async () => {
     try {
-      const { open } = await import('@tauri-apps/plugin-shell');
-      await open('https://chatgpt.com');
-    } catch (e) {
-      console.error('Shell Open Error:', e);
-      window.open('https://chatgpt.com', '_blank');
+      // This native command is authorized against secure-exam state before it
+      // reaches the OS opener. The shell capability is not granted directly to
+      // the webview.
+      if (!detectRuntimeCapabilities().nativeHost) {
+        window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
+        return;
+      }
+      await nativeInvoke('open_external_url', { url: 'https://chatgpt.com' });
+    } catch {
+      // Browser mode and older hosts keep the existing browser fallback.
+      window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -409,36 +475,42 @@ const SlideReader: React.FC = () => {
     }
   };
 
-  const sendToAI = async (prompt: string) => {
-    if (!prompt.trim()) return;
+  /**
+   * Which material the student is reading, and exactly where in it. The engine
+   * turns this into "course → topic → page/slide → question" context; the whole
+   * document and the rest of the semester are never sent.
+   */
+  const isPdf = currentMaterial?.fileType === 'pdf' || openedKind === 'pdf';
+  const aiScope: ContextSelection = {
+    topicId,
+    courseId: topic?.courseId,
+    materialId: currentMaterial?.id,
+    page: isPdf ? page : undefined,
+    slide: isPdf ? undefined : page,
+    selection: selection || undefined,
+    materialText: currentMaterial
+      ? {
+          label: currentMaterial.title,
+          text: fullText ?? currentMaterial.contentText ?? '',
+          page: isPdf ? page : undefined,
+          slide: isPdf ? undefined : page,
+          // Only the page/slide in view goes out, not the whole document.
+          focusText: pageText || undefined,
+        }
+      : undefined,
+  };
 
-    dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'user', content: prompt } });
-    setIsAILoading(true);
-
-    try {
-      if (state.openAIKey && state.openAIKey.startsWith('AIza')) {
-        const apiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${state.openAIKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'User Request: ' + prompt }] }],
-          }),
-        });
-        const data = await apiResponse.json();
-        const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I couldn't process that.";
-        dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: aiText } });
-      } else {
-        setTimeout(() => {
-          dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: 'Please connect your Gemini API key in Settings to use the AI.' } });
-          setIsAILoading(false);
-        }, 1000);
-        return;
-      }
-    } catch (error) {
-      dispatch({ type: 'ADD_CHAT_MESSAGE', payload: { topicId: topicId!, role: 'assistant', content: 'Connection error. Please check your internet or API key.' } });
-    } finally {
-      setIsAILoading(false);
-    }
+  /**
+   * Mirrors the AI transcript into the topic's chat history. That store is
+   * academic data (it is included in semester archives), so it is kept in sync
+   * while the engine owns provider metadata.
+   */
+  const mirrorChatMessage = (message: AIChatMessage) => {
+    if (!topicId) return;
+    dispatch({
+      type: 'ADD_CHAT_MESSAGE',
+      payload: { topicId, role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content },
+    });
   };
 
   const renderUniversalContent = () => {
@@ -454,7 +526,7 @@ const SlideReader: React.FC = () => {
     // Canvas-rendered viewer. The old <iframe> clipped the bottom of every
     // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
     // iframe) and exposed no page count, search or navigation.
-    if (currentMaterial?.fileType === 'pdf') {
+    if (currentMaterial?.fileType === 'pdf' || openedKind === 'pdf') {
       return (
         <PdfViewer
           fileUrl={fileUrl}
@@ -466,6 +538,11 @@ const SlideReader: React.FC = () => {
           jumpToPage={deepLinkPage}
           initialQuery={deepLinkQuery}
           focusHighlightId={focusHighlightId}
+          onPageChange={(current, total, text) => {
+            setPage(current);
+            setPageCount(total);
+            setPageText(text ?? '');
+          }}
         />
       );
     }
@@ -476,8 +553,17 @@ const SlideReader: React.FC = () => {
         <PptxViewer
           fileUrl={fileUrl}
           title={currentMaterial.title}
+          extractedText={currentMaterial.contentText}
+          uploadDate={currentMaterial.createdAt}
+          jumpToPage={deepLinkPage}
+          initialQuery={deepLinkQuery}
           onCreateHighlight={(h) => handleCreateHighlight({ ...h, rects: [] })}
           onAskAi={handleAskAiAboutSelection}
+          onSlideChange={(current, total, text) => {
+            setPage(current);
+            setPageCount(total);
+            setPageText(text ?? '');
+          }}
         />
       );
     }
@@ -555,13 +641,27 @@ const SlideReader: React.FC = () => {
 
           <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
             <button
-              onClick={() => { setShowAIPanel(true); setShowBrowserPanel(false); setActivePanel('ai'); }}
+              onClick={() => { setShowAIPanel((v) => !v); setShowBrowserPanel(false); setActivePanel('ai'); }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'ai' && showAIPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <MessageSquareIcon className="w-3.5 h-3.5" /> AI
+              {pageCount > 0 && (
+                <span className="text-[9px] font-bold text-current/70" data-testid="ai-scope-label">
+                  {isPdf ? 'p' : 'slide'} {page}/{pageCount}
+                </span>
+              )}
             </button>
             <button
-              onClick={() => { setShowBrowserPanel(true); setShowAIPanel(false); setActivePanel('browser'); }}
+              onClick={() => {
+                if (!detectRuntimeCapabilities().nativeWebview) {
+                  void openExternalWeb();
+                  return;
+                }
+                setShowBrowserPanel(true);
+                setShowAIPanel(false);
+                setActivePanel('browser');
+              }}
+              title={detectRuntimeCapabilities().nativeWebview ? 'Embedded browser' : 'Open browser in a new tab'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'browser' && showBrowserPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Globe className="w-3.5 h-3.5" /> Browser
@@ -615,43 +715,34 @@ const SlideReader: React.FC = () => {
         )}
 
         {showAIPanel && (
-          <div className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
-            <div className="p-4 border-b flex items-center justify-between bg-white relative z-20">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-[#0F172A] to-[#1E293B] rounded-xl flex items-center justify-center shadow-lg"><Sparkles className="w-4 h-4 text-[#FFB703]" /></div>
-                <div><h3 className="font-black text-gray-800 uppercase italic text-sm leading-none">PharmaGAME</h3><p className="text-[8px] text-[#2D6A4F] font-black uppercase tracking-widest mt-0.5">Core Active</p></div>
-              </div>
-              <button onClick={() => setShowAIPanel(false)} className="p-2 hover:bg-gray-100 rounded-full transition-all"><X className="w-4 h-4 text-gray-400" /></button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 relative">
-              {chatMessages.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-center px-4">
-                  <div className="w-16 h-16 bg-white rounded-2xl shadow-sm border flex items-center justify-center mb-4"><Lightbulb className="w-8 h-8 text-[#FFB703]" /></div>
-                  <h4 className="font-bold text-gray-800 mb-2">AI Study Assistant</h4>
-                  <p className="text-xs text-gray-500 max-w-[200px]">Ask questions, summarize topics, or generate practice quizzes.</p>
-                </div>
-              ) : chatMessages.map((m) => (
-                <div key={m.id} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'} group animate-in slide-in-from-bottom-2 duration-300`}>
-                  <div className={`relative max-w-[90%] p-3.5 rounded-2xl text-[13px] leading-relaxed shadow-sm ${m.role === 'user' ? 'bg-[#2D6A4F] text-white rounded-tr-sm' : 'bg-white border border-gray-100 text-gray-700 rounded-tl-sm'}`}>
-                    <p className="whitespace-pre-wrap">{m.content}</p>
-                  </div>
-                  <span className="text-[8px] text-gray-300 mt-1 uppercase font-black px-2">{m.role === 'user' ? 'You' : 'PharmaGAME'}</span>
-                </div>
-              ))}
-              {isAILoading && <div className="flex justify-start"><div className="bg-gray-50 px-3 py-2 rounded-xl flex items-center gap-2 animate-pulse"><Loader2 className="w-3 h-3 text-[#2D6A4F] animate-spin" /><span className="text-[9px] font-black text-[#2D6A4F] uppercase tracking-widest">Processing...</span></div></div>}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="p-4 bg-white border-t border-gray-100 z-20">
-              <form onSubmit={(e) => { e.preventDefault(); if (chatInput.trim()) { sendToAI(chatInput); setChatInput(''); } }} className="flex items-center gap-2">
-                <div className="flex-1 relative group">
-                  <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask PharmaGAME... (Press Enter)" className="w-full pl-4 pr-12 py-3 bg-gray-50 border border-gray-200 rounded-xl outline-none text-xs focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/5 transition-all shadow-inner" />
-                  <button type="submit" disabled={isAILoading || !chatInput.trim()} className="absolute right-1.5 top-1/2 -translate-y-1/2 w-8 h-8 bg-[#2D6A4F] text-[#FFB703] rounded-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all disabled:opacity-30 shadow-md">
-                    <Send className="w-4 h-4" />
-                  </button>
-                </div>
-              </form>
-            </div>
+          <div
+            className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
+            style={{ width: `${panelWidth}px` }}
+          >
+            <button
+              onClick={() => setShowAIPanel(false)}
+              className="absolute top-2 right-2 p-1.5 hover:bg-gray-100 rounded-full transition-all z-20"
+              title="Close AI panel"
+            >
+              <X className="w-4 h-4 text-gray-400" />
+            </button>
+            {/* The panel talks to the AI engine, never to a provider: which
+                provider/model answers is configuration, not UI. */}
+            <AIChatPanel
+              scope={aiScope}
+              appState={state as unknown as AppStateLike}
+              title={currentMaterial ? 'PharmaTRACK AI' : 'AI'}
+              compact
+              loadMaterialText={currentMaterial?.id ? (id) => loadSlideText(id) : undefined}
+              quickTasks={
+                // The Phase 11 action sets. A PDF page and a presentation slide
+                // offer the same jobs; only the wording of "explain" differs.
+                isPdf
+                  ? ['explain-page', 'simplify', 'summarize', 'questions-from-material', 'flashcards', 'ask-material', 'key-concepts', 'mcq', 'mechanism']
+                  : ['explain-slide', 'simplify', 'summarize', 'questions-from-material', 'flashcards', 'ask-material', 'key-concepts', 'mcq', 'mechanism']
+              }
+              onMessage={mirrorChatMessage}
+            />
           </div>
         )}
 

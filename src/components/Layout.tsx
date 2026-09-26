@@ -1,15 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Link, useLocation, Outlet, useNavigate } from 'react-router-dom';
+import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { searchAll, type SearchResult } from '../utils/search';
+import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
+import { searchAcademic } from '../utils/academicSearch';
+import { onSearchIndex } from '../utils/searchNotify';
+import type { SearchResult } from '../utils/search';
 import ErrorBoundary from './ErrorBoundary';
-import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
-import { getVersion } from '@tauri-apps/api/app';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, ShieldCheck, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud } from 'lucide-react';
+import {
+  checkNativeUpdate,
+  detectRuntimeCapabilities,
+  getApplicationVersion,
+  restartNativeApplication,
+} from '../platform/runtime';
+import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
+import StorageNoticeBanner from './StorageNoticeBanner';
+
+const APP_VERSION_FALLBACK = '1.1.88';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
+  { path: '/search', icon: Search, label: 'Academic Search' },
+  { path: '/ai', icon: Sparkles, label: 'PharmaTRACK AI' },
   { path: '/materials', icon: Upload, label: '📚 Study Materials', highlight: true },
   { path: '/highlights', icon: Bookmark, label: '⭐ Study Bank' },
   { path: '/courses', icon: BookOpen, label: 'My Courses' },
@@ -17,9 +29,13 @@ const navItems = [
   { path: '/questions', icon: FileQuestion, label: 'Question Bank' },
   { path: '/quiz', icon: Brain, label: 'Quiz Mode' },
   { path: '/planner', icon: Calendar, label: 'Study Planner' },
+  { path: '/learn', icon: GraduationCap, label: 'Study Today' },
+  { path: '/clinical', icon: Stethoscope, label: 'Clinical Learning' },
   { path: '/notes', icon: StickyNote, label: 'My Notes' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/timetable', icon: Calendar, label: 'Offline Timetable' },
+  { path: '/archive', icon: Archive, label: 'Academic Archive' },
+  { path: '/storage', icon: HardDrive, label: 'Storage' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -27,21 +43,41 @@ const Layout: React.FC = () => {
   const { state, logout } = useApp();
   const location = useLocation();
   const navigate = useNavigate();
+
+  const [kioskState, setKioskState] = useState(getSecureKioskState());
+  useEffect(() => subscribeSecureKiosk(setKioskState), []);
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [indexTick, setIndexTick] = useState(0);
   const searchBoxRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [isOffline, setIsOffline] = useState(
+    typeof navigator !== 'undefined' ? navigator.onLine === false : false,
+  );
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
-  const [appVersion, setAppVersion] = useState('1.1.82');
+  const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
+  const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const runtime = detectRuntimeCapabilities();
 
   useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
-  useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(console.error); }, []);
+  useEffect(() => {
+    void getApplicationVersion(APP_VERSION_FALLBACK).then(setAppVersion);
+  }, []);
+  useEffect(() => {
+    const onPwaUpdate = () => setPwaUpdateAvailable(true);
+    window.addEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+    // The registration starts before React mounts. Check for an already waiting
+    // worker as well as listening for future update events.
+    const waiting = getPwaRegistration()?.waiting;
+    if (waiting && navigator.serviceWorker.controller) setPwaUpdateAvailable(true);
+    return () => window.removeEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
+  }, []);
   
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -52,10 +88,12 @@ const Layout: React.FC = () => {
 
   const recentSlides = [...state.slides].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
 
+  useEffect(() => onSearchIndex(() => setIndexTick((n) => n + 1)), []);
+
   useEffect(() => {
-    setSearchResults(searchAll(state, searchQuery));
+    setSearchResults(searchAcademic(state, searchQuery, undefined, 8));
     setActiveIndex(0);
-  }, [searchQuery, state]);
+  }, [searchQuery, state, indexTick]);
 
   // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
   // which raced with the click it was trying to allow.
@@ -125,36 +163,41 @@ const Layout: React.FC = () => {
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
   const checkForUpdates = async (silent = false) => {
+    // A browser/PWA is updated by its service worker, not by Tauri's native
+    // updater. Keeping this branch explicit prevents a missing native bridge
+    // from turning a normal web boot into an exception.
+    if (runtime.platform === 'web') {
+      if (!silent) {
+        alert('The web app updates automatically. Reload when a new version is available.');
+        window.location.reload();
+      }
+      return;
+    }
+
     try {
       setUpdateStatus('checking');
-      const update = await check();
+      const update = await checkNativeUpdate();
 
       if (update) {
         setUpdateStatus('available');
-        let downloaded = 0;
-        let contentLength = 0;
+        let _downloaded = 0;
+        let _contentLength = 0;
 
         if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
           setUpdateStatus('downloading');
-          
-          // Natively download and install in the background
-          await update.downloadAndInstall((event) => {
-            if (event.event === 'Started') contentLength = event.data.contentLength || 0;
-            if (event.event === 'Progress') downloaded += event.data.chunkLength;
-            console.log(`Downloaded ${downloaded} of ${contentLength}`);
+          await update.downloadAndInstall((event: any) => {
+            if (event.event === 'Started') _contentLength = event.data.contentLength || 0;
+            if (event.event === 'Progress') _downloaded += event.data.chunkLength;
           });
-          
+
           setUpdateStatus('done');
           alert('Update installed successfully! The app will now restart.');
-          await relaunch(); // Auto-restarts the app!
+          if (!await restartNativeApplication()) window.location.reload();
         } else {
           setUpdateStatus('idle');
         }
       } else {
-        if (!silent) {
-          const currentVersion = await getVersion();
-          alert('You are already on the latest version (' + currentVersion + ')!');
-        }
+        if (!silent) alert(`You are already on the latest version (${appVersion})!`);
         setUpdateStatus('idle');
       }
     } catch (error: any) {
@@ -178,9 +221,27 @@ const Layout: React.FC = () => {
     return () => clearTimeout(timer);
   }, []);
 
+  if (kioskState.active) {
+    const target = kioskState.attemptId ? `/examination/secure/${kioskState.attemptId}` : '/examinations/kiosk';
+    return <Navigate to={target} replace />;
+  }
+
   return (
-    <div className={`flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className={`app-shell flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
+      {pwaUpdateAvailable && (
+        <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
+          <span>A newer PharmaTRACK web app is ready.</span>
+          <button
+            type="button"
+            onClick={() => { setPwaUpdateAvailable(false); void activatePwaUpdate(); }}
+            className="rounded-full bg-white px-3 py-1 font-black text-emerald-800 hover:bg-emerald-50"
+          >
+            Reload safely
+          </button>
+        </div>
+      )}
+      <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
         <aside className={`fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
           <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
@@ -217,7 +278,7 @@ const Layout: React.FC = () => {
           {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
               this element a stacking context, so the search dropdown inside it
               can never escape — the header itself has to sit above them. */}
-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 flex-shrink-0 relative z-[120]">
+          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
             <div className="flex items-center gap-4 lg:gap-6">
               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
               
@@ -235,7 +296,7 @@ const Layout: React.FC = () => {
                   <input
                     ref={searchInputRef}
                     type="text"
-                    placeholder="Search courses, topics, slides, notes, questions…  (Ctrl+K)"
+                    placeholder="Search notes, slides, questions, archives…  (Ctrl+K)"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
@@ -277,7 +338,7 @@ const Layout: React.FC = () => {
                     ) : searchResults.length === 0 ? (
                       <div className="p-6 text-center">
                         <p className="text-sm font-bold text-gray-600">No matches for “{searchQuery}”</p>
-                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or check Study Materials.</p>
+                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or open Academic Search for filters.</p>
                       </div>
                     ) : (
                       <>
@@ -297,13 +358,28 @@ const Layout: React.FC = () => {
                             <div className="flex justify-between items-start gap-3">
                               <div className="min-w-0 flex-1">
                                 <p className="font-bold text-[#2D6A4F] truncate">{res.title}</p>
+                                {(res.courseCode || res.topicName || res.location || res.scope === 'archive') && (
+                                  <p className="text-[11px] text-gray-400 mt-0.5 truncate">
+                                    {[res.scope === 'archive' ? (res.semesterLabel || 'Archive') : res.courseCode, res.topicName, res.materialTitle && res.materialTitle !== res.title ? res.materialTitle : undefined, res.location].filter(Boolean).join(' · ')}
+                                  </p>
+                                )}
                                 {res.snippet && <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{res.snippet}</p>}
                               </div>
-                              <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.category}</span>
+                              <span className="text-[9px] font-black uppercase tracking-widest bg-gray-100 px-2 py-1 rounded-md text-gray-500 flex-shrink-0">{res.action || res.category}</span>
                             </div>
                           </div>
                         ))}
                       </>
+                    )}
+                    {searchQuery.trim().length >= 2 && (
+                      <div
+                        role="button"
+                        tabIndex={-1}
+                        onMouseDown={(e) => { e.preventDefault(); goToResult(`/search?q=${encodeURIComponent(searchQuery.trim())}`); }}
+                        className="px-4 py-2.5 bg-slate-50 text-center text-xs font-bold text-[#2D6A4F] hover:bg-[#2D6A4F]/10 cursor-pointer border-t"
+                      >
+                        See all results and filters
+                      </div>
                     )}
                   </div>
                 )}
@@ -351,7 +427,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="flex-1 overflow-y-auto bg-[#F8FAFC] p-6 relative">
+          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
             {/* Scoped to the page area so a crashing route leaves the sidebar,
                 search and navigation usable. resetKey clears the error when the
                 user navigates away. */}

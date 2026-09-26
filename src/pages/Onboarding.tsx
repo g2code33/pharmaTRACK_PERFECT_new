@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { Student } from '../types';
 import { GraduationCap, User, Building, BookOpen, Calendar, ArrowRight, Sparkles } from 'lucide-react';
@@ -138,7 +139,7 @@ const Onboarding: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Current Level
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     {levels.map((level) => (
                       <button
                         key={level}
@@ -160,7 +161,7 @@ const Onboarding: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Current Semester
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {semesters.map((sem) => (
                       <button
                         key={sem}
@@ -203,8 +204,14 @@ const Onboarding: React.FC = () => {
           </div>
         </div>
 
+        <div className="mt-5 text-center">
+          <Link to="/login" className="text-sm font-bold text-white underline underline-offset-4 hover:text-emerald-200">
+            Already have a PharmaTRACK account? Sign in
+          </Link>
+        </div>
+
         {/* Features preview */}
-        <div className="mt-8 grid grid-cols-3 gap-4 text-center">
+        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
           <div className="text-white/80">
             <div className="w-10 h-10 bg-white/10 rounded-lg flex items-center justify-center mx-auto mb-2">
               <BookOpen className="w-5 h-5" />

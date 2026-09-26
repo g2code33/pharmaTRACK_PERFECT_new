@@ -1,6 +1,6 @@
 // PharmTrack - Learning Objectives Page
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -21,6 +21,8 @@ import {
 const LearningObjectives: React.FC = () => {
   const [searchParams] = useSearchParams();
   const courseFilter = searchParams.get('course');
+  const objectiveId = searchParams.get('objective');
+  const objectiveRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const { state, dispatch, getLOProgress, addActivity, getTopicsForCourse } = useApp();
 
   const [showModal, setShowModal] = useState(false);
@@ -31,6 +33,18 @@ const LearningObjectives: React.FC = () => {
     topicId: '',
     objectiveText: '',
   });
+
+  useEffect(() => {
+    if (courseFilter) setSelectedCourse(courseFilter);
+  }, [courseFilter]);
+
+  useEffect(() => {
+    if (!objectiveId) return;
+    const timer = window.setTimeout(() => {
+      objectiveRefs.current[objectiveId]?.scrollIntoView({ block: 'center' });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [objectiveId, selectedCourse, state.learningObjectives]);
 
   // Filter LOs
   const filteredLOs = state.learningObjectives.filter((lo) => {
@@ -253,7 +267,9 @@ const LearningObjectives: React.FC = () => {
                     return (
                       <div
                         key={lo.id}
-                        className={`p-4 border-l-4 ${getStatusBg(lo.status)}`}
+                        ref={(el) => { objectiveRefs.current[lo.id] = el; }}
+                        data-objective-id={lo.id}
+                        className={`p-4 border-l-4 ${getStatusBg(lo.status)} ${objectiveId === lo.id ? 'ring-2 ring-[#2D6A4F]/50' : ''}`}
                       >
                         <div className="flex items-start gap-3">
                           <button
