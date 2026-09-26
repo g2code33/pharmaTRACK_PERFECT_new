@@ -16,7 +16,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.86';
+const APP_VERSION_FALLBACK = '1.1.88';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },

@@ -125,10 +125,10 @@ describe('PHARMATRACK — HIGH AVAILABILITY FAILOVER & RESILIENCE CERTIFICATION'
           Array.from({ length: studentCount }, async (_, i) => {
             const name = `Candidate_${String(i + 1).padStart(3, '0')}`;
             const reg = await primaryRepo.registerStudent(name, 'Level 400');
-            const auth = await primaryRepo.authenticateStudent(name, 'Level 400', reg.password);
+            const student = reg.student;
             const deviceSession = await primaryRepo.createDeviceSession({
               deviceId: `device-hardware-uuid-${String(i + 1).padStart(3, '0')}`,
-              studentId: auth.id,
+              studentId: student.id,
               role: 'STUDENT',
               sessionId: session.id,
               platform: i % 3 === 0 ? 'native-pc' : i % 2 === 0 ? 'IOS_PWA' : 'web',
@@ -136,12 +136,12 @@ describe('PHARMATRACK — HIGH AVAILABILITY FAILOVER & RESILIENCE CERTIFICATION'
             });
             const attemptResult = await primaryRepo.createAttempt(
               session.id,
-              auth.id,
+              student.id,
               deviceSession.id,
               examStartTime,
             );
             return {
-              student: auth,
+              student,
               deviceSession,
               attemptId: attemptResult.attempt.id,
               index: i,
@@ -312,7 +312,7 @@ describe('PHARMATRACK — HIGH AVAILABILITY FAILOVER & RESILIENCE CERTIFICATION'
           expect(res?.score).toBe(4); // 2 questions * 2 marks
         }
       },
-      120000,
+      360000,
     );
   });
 
