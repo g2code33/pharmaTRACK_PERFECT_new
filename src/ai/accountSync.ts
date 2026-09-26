@@ -424,6 +424,7 @@ async function restoreSecrets(session: DeviceSession, key: CryptoKey): Promise<n
     loadCredentialMetadata,
     replaceCredentialsFromAccount,
     markCredentialSyncStatus,
+    deleteCredentialsLocal,
   } = await import('./credentials');
   const local = await loadAllCredentials();
   const metadata = await loadCredentialMetadata();
@@ -437,6 +438,12 @@ async function restoreSecrets(session: DeviceSession, key: CryptoKey): Promise<n
   for (const [providerId, credentials] of Object.entries(local)) {
     const remote = remoteByProvider.get(providerId);
     if (!remote) {
+      const localMeta = metadata[providerId];
+      if (localMeta?.serverVersion && localMeta.syncStatus !== 'pending') {
+        await deleteCredentialsLocal(providerId);
+        delete versions[providerId];
+        continue;
+      }
       await writeSecret(providerId, credentials, metadata[providerId]?.localVersion);
       versions[providerId] = active?.secretVersions[providerId] ?? 1;
       continue;

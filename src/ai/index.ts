@@ -9,7 +9,13 @@
  */
 export * from './types';
 export { aiManager, AIManager, onAIStatus } from './manager';
-export { AIEngineError, reportFor, redactSecrets, normalizeError, categoryForStatus } from './errors';
+export {
+  AIEngineError,
+  reportFor,
+  redactSecrets,
+  normalizeError,
+  categoryForStatus,
+} from './errors';
 export {
   PROVIDER_PRESETS,
   presetFor,
@@ -39,17 +45,27 @@ export {
 export {
   clearAllCredentials,
   deleteCredentials,
+  deleteCredentialsLocal,
   loadAllCredentialStatuses,
   loadAllCredentials,
   loadCredentialMetadata,
   loadCredentials,
   looksLikeApiKey,
   maskKey,
+  onCredentialsChanged,
   saveCredentials,
   scrubSecretUrl,
   scrubSecretsDeep,
   stripCredentials,
 } from './credentials';
+export {
+  recordAIAudit,
+  getAIAuditEvents,
+  clearAIAuditEvents,
+  onAIAudit,
+  AI_AUDIT_LOG_KEY,
+} from './audit';
+export type { AIAuditEvent, AIAuditAction } from './audit';
 export {
   appendMessage,
   clearConversations,
@@ -86,15 +102,17 @@ export {
   statsFor,
   syncIndex,
 } from './rag/index';
-export {
-  chunkSource,
-  chunkUnit,
-  extractUnits,
-  fingerprintText,
-  metaFor,
-} from './rag/chunker';
+export { chunkSource, chunkUnit, extractUnits, fingerprintText, metaFor } from './rag/chunker';
 export type { ExtractedUnit } from './rag/chunker';
 export { RAG_INDEX_KEY, RAG_INDEX_VERSION, chunkCitation, sourceHeader } from './rag/types';
-export type { ChunkMeta, IndexableSource, IndexedChunk, MaterialIndexEntry, RagHit, RagIndexShape, RagQuery } from './rag/types';
+export type {
+  ChunkMeta,
+  IndexableSource,
+  IndexedChunk,
+  MaterialIndexEntry,
+  RagHit,
+  RagIndexShape,
+  RagQuery,
+} from './rag/types';
 export { AI_TASKS, buildTaskRequest, taskById, taskPrompt, tasksInGroup } from './tasks';
 export type { AITaskDefinition, AITaskId } from './tasks';
