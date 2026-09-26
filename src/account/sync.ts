@@ -12,7 +12,6 @@
  * an explicit choice.
  */
 import * as idb from 'idb-keyval';
-import { getAuthenticatedUser } from '../auth/authService';
 import { supabase } from '../utils/supabase';
 
 export const ACCOUNT_SYNC_RECORD_TYPES = [
@@ -694,8 +693,9 @@ async function rpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
 function createSupabaseTransport(): AccountSyncTransport {
   return {
     async currentUserId() {
-      const user = await getAuthenticatedUser();
-      return user?.id ?? null;
+      const { data, error } = await supabase.auth.getUser();
+      if (error) return null;
+      return data.user?.id ?? null;
     },
     async pull() {
       const result = await rpc<RemoteAccountRecord[]>('pharmatrack_account_sync_pull', {});
