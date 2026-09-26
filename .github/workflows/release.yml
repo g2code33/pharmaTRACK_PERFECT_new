@@ -38,7 +38,7 @@ jobs:
       # Pass it straight through as content — do NOT base64-decode it here.
       # Tauri does that decoding internally; doing it twice corrupts the key.
       - name: Build Windows App
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
@@ -90,7 +90,7 @@ jobs:
       - run: npm run build
 
       - name: Build Linux App
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
           TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
