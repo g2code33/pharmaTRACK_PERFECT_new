@@ -10,9 +10,11 @@ use std::{fs, path::Path, sync::Mutex};
 use ring::rand::{SecureRandom, SystemRandom};
 use tauri_plugin_shell::ShellExt;
 use tauri::{
-    Position, RunEvent, Size, WindowEvent,
-    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl,
+    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
+    WebviewUrl, WindowEvent,
 };
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+use tauri::RunEvent;
 
 const NATIVE_SECURE_EVENT: &str = "pharmatrack://secure-exam-native-event";
 
@@ -77,6 +79,34 @@ fn emit_native_event(app: &tauri::AppHandle, kind: &str, detail: &str) {
             detail: detail.to_string(),
         },
     );
+}
+
+fn is_pharmaexam_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("pharmaexam"))
+        .unwrap_or(false)
+}
+
+fn filter_pharmaexam_paths<I>(paths: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    paths.into_iter().filter(|path| is_pharmaexam_path(path)).collect()
+}
+
+fn queue_pharmaexam_paths(app: &tauri::AppHandle, paths: Vec<String>) {
+    let paths = filter_pharmaexam_paths(paths);
+    if paths.is_empty() {
+        return;
+    }
+    if let Some(pending) = app.try_state::<PendingPharmaExamFiles>() {
+        if let Ok(mut queue) = pending.0.lock() {
+            queue.extend(paths.iter().cloned());
+        }
+    }
+    let _ = app.emit("pharmaexam-file-opened", paths);
 }
 
 fn ensure_application_controls_available(state: &SecureExamHostState) -> Result<(), String> {
@@ -660,6 +690,10 @@ fn main() {
                 .get_webview_window("main")
                 .expect("main window must exist at startup");
             app.manage(MainWindowHandle(main_window));
+            // Windows and Linux deliver file-association launches as command
+            // line arguments. Mobile/macOS use RunEvent::Opened below.
+            #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
+            queue_pharmaexam_paths(app.handle(), std::env::args().skip(1).collect());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -685,27 +719,14 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
             if let RunEvent::Opened { urls } = event {
-                let paths: Vec<String> = urls
+                let paths = urls
                     .into_iter()
                     .filter_map(|url| url.to_file_path().ok())
-                    .filter(|path| {
-                        path.extension()
-                            .and_then(|value| value.to_str())
-                            .map(|value| value.eq_ignore_ascii_case("pharmaexam"))
-                            .unwrap_or(false)
-                    })
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
-                if paths.is_empty() {
-                    return;
-                }
-                if let Some(pending) = app.try_state::<PendingPharmaExamFiles>() {
-                    if let Ok(mut queue) = pending.0.lock() {
-                        queue.extend(paths.iter().cloned());
-                    }
-                }
-                let _ = app.emit("pharmaexam-file-opened", paths);
+                queue_pharmaexam_paths(app, paths);
             }
         });
 }
