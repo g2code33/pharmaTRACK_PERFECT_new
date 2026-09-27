@@ -59,6 +59,7 @@ import {
   setTopicStatus,
 } from '../utils/learningEngine';
 import { flagAttemptedQuestions } from '../utils/questionBank';
+import { pruneOrphans } from '../utils/referentialIntegrity';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
@@ -220,15 +221,15 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
-    case 'DELETE_COURSE': {
-      const gone = new Set(state.topics.filter((t) => t.courseId === action.payload).map((t) => t.id));
-      return {
+    // Deleting a course removes everything that hangs off it. Leaving the
+    // questions/materials/quizzes behind made them invisible in the UI but kept
+    // them in the snapshot, which later failed the backup integrity check.
+    case 'DELETE_COURSE':
+      return pruneOrphans({
         ...state,
         courses: state.courses.filter((c) => c.id !== action.payload),
-        topics: state.topics.filter((t) => t.courseId !== action.payload),
-        learningRecords: recordsOf(state).filter((r) => !gone.has(r.topicId)),
-      };
-    }
+        learningRecords: recordsOf(state),
+      }).state;
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -241,12 +242,13 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
+    // Same cascade as DELETE_COURSE, one level down.
     case 'DELETE_TOPIC':
-      return {
+      return pruneOrphans({
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
-        learningRecords: recordsOf(state).filter((r) => r.topicId !== action.payload),
-      };
+        learningRecords: recordsOf(state),
+      }).state;
 
     case 'REORDER_TOPICS':
       return {
@@ -268,11 +270,12 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
+    // Highlights anchored to the deleted material go with it.
     case 'DELETE_SLIDE':
-      return {
+      return pruneOrphans({
         ...state,
         slides: state.slides.filter((s) => s.id !== action.payload),
-      };
+      }).state;
 
     case 'REORDER_SLIDES':
       return {
