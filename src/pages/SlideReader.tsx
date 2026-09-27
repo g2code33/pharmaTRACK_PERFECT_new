@@ -4,7 +4,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFile } from '../utils/storage';
-import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -13,7 +13,7 @@ import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Loader2,
   Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
-  ArrowLeftCircle, ArrowRightCircle, RotateCw
+  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
@@ -25,18 +25,23 @@ interface BrowserTab {
   id: string;
   url: string;
   title: string;
+  history?: string[];
+  historyIndex?: number;
 }
 
 // Detects whether typed text is a URL or a search query, and normalizes it.
-// "paracetamol dosing" -> Google search. "bnf.org" or "https://..." -> direct nav.
-function resolveAddressInput(raw: string): string {
+// "paracetamol dosing" -> Search engine. "bnf.org" or "https://..." -> direct nav.
+function resolveAddressInput(raw: string, isNative: boolean): string {
   const trimmed = raw.trim();
   const looksLikeUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(trimmed);
 
   if (looksLikeUrl) {
     return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
   }
-  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+  if (isNative) {
+    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+  }
+  return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
 }
 
 function titleFromUrl(url: string): string {
@@ -68,11 +73,24 @@ const SlideReader: React.FC = () => {
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
 
-  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([
-    { id: 'default', url: 'https://chatgpt.com', title: 'ChatGPT' },
-  ]);
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
+    const isNative = detectRuntimeCapabilities().nativeWebview;
+    const initialUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
+    return [
+      {
+        id: 'default',
+        url: initialUrl,
+        title: isNative ? 'Google' : 'Wikipedia',
+        history: [initialUrl],
+        historyIndex: 0,
+      },
+    ];
+  });
   const [activeTabId, setActiveTabId] = useState('default');
-  const [urlInput, setUrlInput] = useState('https://chatgpt.com');
+  const [urlInput, setUrlInput] = useState(() => {
+    const isNative = detectRuntimeCapabilities().nativeWebview;
+    return isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
+  });
   const [webviewReady, setWebviewReady] = useState(false);
 
   const browserContainerRef = useRef<HTMLDivElement>(null);
@@ -112,10 +130,17 @@ const SlideReader: React.FC = () => {
     void listenNative<string>('new-browser-tab', (event) => {
       const url = event.payload;
       const newId = uuidv4();
-      setBrowserTabs(tabs => [...tabs, { id: newId, url, title: titleFromUrl(url) }]);
+      setBrowserTabs(tabs => [...tabs, {
+        id: newId,
+        url,
+        title: titleFromUrl(url),
+        history: [url],
+        historyIndex: 0,
+      }]);
       setActiveTabId(newId);
       setShowBrowserPanel(true);
       setShowAIPanel(false);
+      setActivePanel('browser');
     }).then((remove) => { unlisten = remove; });
     return () => { unlisten?.(); };
   }, []);
@@ -168,10 +193,17 @@ const SlideReader: React.FC = () => {
 
   useEffect(() => {
     scheduleWebviewBoundsUpdate();
+    let timer: NodeJS.Timeout | null = null;
+    if (showBrowserPanel) {
+      timer = setTimeout(() => {
+        scheduleWebviewBoundsUpdate();
+      }, 50);
+    }
     const handleResize = () => scheduleWebviewBoundsUpdate();
     window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (timer) clearTimeout(timer);
       if (boundsUpdateRafRef.current !== null) {
         cancelAnimationFrame(boundsUpdateRafRef.current);
         boundsUpdateRafRef.current = null;
@@ -203,35 +235,93 @@ const SlideReader: React.FC = () => {
   }, []);
 
   const navigateActiveTab = (finalUrl: string) => {
-    setBrowserTabs(tabs => tabs.map(t =>
-      t.id === activeTabId ? { ...t, url: finalUrl, title: titleFromUrl(finalUrl) } : t
-    ));
+    setBrowserTabs(tabs => tabs.map(t => {
+      if (t.id !== activeTabId) return t;
+      const history = t.history || [t.url];
+      const currentIndex = t.historyIndex ?? (history.length - 1);
+      const newHistory = [...history.slice(0, currentIndex + 1), finalUrl];
+      return {
+        ...t,
+        url: finalUrl,
+        title: titleFromUrl(finalUrl),
+        history: newHistory,
+        historyIndex: newHistory.length - 1,
+      };
+    }));
+    setUrlInput(finalUrl);
     setWebviewReady(false);
-    void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
+    if (detectRuntimeCapabilities().nativeWebview) {
+      void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
+    }
   };
 
   const handleAddressBarSubmit = () => {
     if (!urlInput.trim()) return;
-    navigateActiveTab(resolveAddressInput(urlInput));
+    const isNative = detectRuntimeCapabilities().nativeWebview;
+    navigateActiveTab(resolveAddressInput(urlInput, isNative));
   };
 
   const handleBack = () => {
-    void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
+    if (detectRuntimeCapabilities().nativeWebview) {
+      void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
+      return;
+    }
+    const tab = browserTabs.find(t => t.id === activeTabId);
+    if (!tab || !tab.history || (tab.historyIndex ?? 0) <= 0) return;
+    const newIndex = (tab.historyIndex ?? 0) - 1;
+    const prevUrl = tab.history[newIndex];
+    setBrowserTabs(tabs => tabs.map(t =>
+      t.id === activeTabId ? { ...t, url: prevUrl, title: titleFromUrl(prevUrl), historyIndex: newIndex } : t
+    ));
+    setUrlInput(prevUrl);
+    setWebviewReady(false);
   };
 
   const handleForward = () => {
-    void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
+    if (detectRuntimeCapabilities().nativeWebview) {
+      void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
+      return;
+    }
+    const tab = browserTabs.find(t => t.id === activeTabId);
+    if (!tab || !tab.history || (tab.historyIndex ?? 0) >= tab.history.length - 1) return;
+    const newIndex = (tab.historyIndex ?? 0) + 1;
+    const nextUrl = tab.history[newIndex];
+    setBrowserTabs(tabs => tabs.map(t =>
+      t.id === activeTabId ? { ...t, url: nextUrl, title: titleFromUrl(nextUrl), historyIndex: newIndex } : t
+    ));
+    setUrlInput(nextUrl);
+    setWebviewReady(false);
   };
 
   const handleReload = () => {
     setWebviewReady(false);
-    void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
+    if (detectRuntimeCapabilities().nativeWebview) {
+      void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
+      return;
+    }
+    const tab = browserTabs.find(t => t.id === activeTabId);
+    if (tab) {
+      const currentUrl = tab.url;
+      setBrowserTabs(tabs => tabs.map(t => t.id === activeTabId ? { ...t, url: '' } : t));
+      setTimeout(() => {
+        setBrowserTabs(tabs => tabs.map(t => t.id === activeTabId ? { ...t, url: currentUrl } : t));
+      }, 50);
+    }
   };
 
   const openNewTab = () => {
+    const isNative = detectRuntimeCapabilities().nativeWebview;
+    const defaultUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
     const newId = uuidv4();
-    setBrowserTabs(tabs => [...tabs, { id: newId, url: 'https://www.google.com', title: 'Google' }]);
+    setBrowserTabs(tabs => [...tabs, {
+      id: newId,
+      url: defaultUrl,
+      title: titleFromUrl(defaultUrl),
+      history: [defaultUrl],
+      historyIndex: 0,
+    }]);
     setActiveTabId(newId);
+    setUrlInput(defaultUrl);
     setWebviewReady(false);
   };
 
@@ -239,8 +329,13 @@ const SlideReader: React.FC = () => {
     if (browserTabs.length === 1) return;
     const remaining = browserTabs.filter(t => t.id !== tabId);
     setBrowserTabs(remaining);
-    void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
-    if (activeTabId === tabId) setActiveTabId(remaining[0].id);
+    if (detectRuntimeCapabilities().nativeWebview) {
+      void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
+    }
+    if (activeTabId === tabId) {
+      setActiveTabId(remaining[0].id);
+      setUrlInput(remaining[0].url);
+    }
   };
 
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -435,31 +530,76 @@ const SlideReader: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [state.chatHistory]);
 
+  const handleToggleBrowser = () => {
+    if (showBrowserPanel) {
+      // If browser is open, clicking it again brings AI back!
+      setShowBrowserPanel(false);
+      setShowAIPanel(true);
+      setActivePanel('ai');
+    } else {
+      // Open browser in place of AI in the exact same panel position
+      setShowAIPanel(false);
+      setShowBrowserPanel(true);
+      setActivePanel('browser');
+    }
+  };
+
+  const handleToggleAI = () => {
+    if (showAIPanel) {
+      // If AI is currently open, toggle off
+      setShowAIPanel(false);
+      setShowBrowserPanel(false);
+    } else {
+      // Close browser if open, and bring AI back
+      setShowBrowserPanel(false);
+      setShowAIPanel(true);
+      setActivePanel('ai');
+    }
+  };
+
+  const handleToggleExpandReader = () => {
+    if (showAIPanel || showBrowserPanel) {
+      setShowAIPanel(false);
+      setShowBrowserPanel(false);
+    } else {
+      if (activePanel === 'browser') {
+        setShowBrowserPanel(true);
+        setShowAIPanel(false);
+      } else {
+        setShowAIPanel(true);
+        setShowBrowserPanel(false);
+      }
+    }
+  };
+
   // Global Escape Key Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setIsFullscreen(false);
-        setShowBrowserPanel(false);
+        if (showBrowserPanel) {
+          setShowBrowserPanel(false);
+          setShowAIPanel(true);
+          setActivePanel('ai');
+        } else if (showAIPanel) {
+          setShowAIPanel(false);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [showBrowserPanel, showAIPanel]);
 
-  const openExternalWeb = async () => {
+  const openExternalWeb = async (targetUrl?: string) => {
+    const destination = targetUrl || urlInput || 'https://en.wikipedia.org/wiki/Pharmacology';
     try {
-      // This native command is authorized against secure-exam state before it
-      // reaches the OS opener. The shell capability is not granted directly to
-      // the webview.
       if (!detectRuntimeCapabilities().nativeHost) {
-        window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
+        window.open(destination, '_blank', 'noopener,noreferrer');
         return;
       }
-      await nativeInvoke('open_external_url', { url: 'https://chatgpt.com' });
+      await nativeInvoke('open_external_url', { url: destination });
     } catch {
-      // Browser mode and older hosts keep the existing browser fallback.
-      window.open('https://chatgpt.com', '_blank', 'noopener,noreferrer');
+      window.open(destination, '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -635,14 +775,11 @@ const SlideReader: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={openExternalWeb} className="bg-[#FFB703] text-[#2D6A4F] px-4 py-1.5 rounded-lg font-black flex items-center gap-2 hover:scale-105 transition-all text-[10px] uppercase tracking-widest mr-2 shadow-sm">
-            <Globe className="w-3.5 h-3.5" /> Pop-out Web
-          </button>
-
           <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
             <button
-              onClick={() => { setShowAIPanel((v) => !v); setShowBrowserPanel(false); setActivePanel('ai'); }}
+              onClick={handleToggleAI}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'ai' && showAIPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              title={showAIPanel ? 'Hide AI panel' : 'Open AI panel'}
             >
               <MessageSquareIcon className="w-3.5 h-3.5" /> AI
               {pageCount > 0 && (
@@ -652,16 +789,8 @@ const SlideReader: React.FC = () => {
               )}
             </button>
             <button
-              onClick={() => {
-                if (!detectRuntimeCapabilities().nativeWebview) {
-                  void openExternalWeb();
-                  return;
-                }
-                setShowBrowserPanel(true);
-                setShowAIPanel(false);
-                setActivePanel('browser');
-              }}
-              title={detectRuntimeCapabilities().nativeWebview ? 'Embedded browser' : 'Open browser in a new tab'}
+              onClick={handleToggleBrowser}
+              title={showBrowserPanel ? 'Return to AI' : 'Open browser in side panel'}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ${activePanel === 'browser' && showBrowserPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               <Globe className="w-3.5 h-3.5" /> Browser
@@ -669,8 +798,9 @@ const SlideReader: React.FC = () => {
           </div>
 
           <button
-            onClick={() => { setShowAIPanel(false); setShowBrowserPanel(false); setActivePanel('ai'); }}
+            onClick={handleToggleExpandReader}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-black text-[10px] transition-all ml-1 ${!showAIPanel && !showBrowserPanel ? 'bg-[#2D6A4F] text-[#FFB703] shadow-sm' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+            title={!showAIPanel && !showBrowserPanel ? 'Restore side panel' : 'Expand reader to full width'}
           >
             <Maximize2 className="w-3.5 h-3.5" /> Expand Reader
           </button>
@@ -754,56 +884,115 @@ const SlideReader: React.FC = () => {
               {browserTabs.map(tab => (
                 <div
                   key={tab.id}
-                  className={`flex items-center gap-2 px-3 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold' : 'hover:bg-gray-100 text-gray-600'}`}
-                  onClick={() => setActiveTabId(tab.id)}
+                  className={`flex items-center gap-2 px-3 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'}`}
+                  onClick={() => {
+                    setActiveTabId(tab.id);
+                    setUrlInput(tab.url);
+                  }}
                 >
                   <span className="text-xs truncate flex-1">{tab.title}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
-                    className="p-0.5 hover:bg-gray-200 rounded-sm"
-                  >
-                    <X className="w-3 h-3 text-gray-500" />
-                  </button>
+                  {browserTabs.length > 1 && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+                      className="p-0.5 hover:bg-gray-200 rounded-sm"
+                      title="Close tab"
+                    >
+                      <X className="w-3 h-3 text-gray-500" />
+                    </button>
+                  )}
                 </div>
               ))}
-              <button onClick={openNewTab} className="px-3 hover:bg-gray-300 flex items-center justify-center text-gray-600 font-black text-lg">+</button>
+              <button
+                onClick={openNewTab}
+                className="px-3 hover:bg-gray-300 flex items-center justify-center text-gray-600 font-black text-lg transition-colors"
+                title="New tab"
+              >
+                +
+              </button>
             </div>
 
             {/* Address bar + navigation controls */}
-            <div className="p-2 border-b bg-gray-50 flex items-center gap-2 flex-shrink-0">
-              <button onClick={handleBack} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500" title="Back">
+            <div className="p-2 border-b bg-gray-50 flex items-center gap-1.5 flex-shrink-0">
+              <button onClick={handleBack} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors" title="Back">
                 <ArrowLeftCircle className="w-4 h-4" />
               </button>
-              <button onClick={handleForward} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500" title="Forward">
+              <button onClick={handleForward} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors" title="Forward">
                 <ArrowRightCircle className="w-4 h-4" />
               </button>
-              <button onClick={handleReload} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500" title="Reload">
+              <button onClick={handleReload} className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors" title="Reload">
                 <RotateCw className="w-4 h-4" />
               </button>
 
-              <div className="flex items-center gap-1 flex-1 bg-white border border-gray-200 rounded-lg px-2 py-1.5 shadow-sm">
-                <Globe className="w-3.5 h-3.5 text-gray-400" />
+              <div className="flex items-center gap-1.5 flex-1 bg-white border border-gray-200 rounded-lg px-2 py-1 shadow-sm min-w-0">
+                <Globe className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                 <input
                   type="text"
                   value={urlInput}
                   onChange={(e) => setUrlInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Escape') return setShowBrowserPanel(false);
+                    if (e.key === 'Escape') handleToggleBrowser();
                     if (e.key === 'Enter') handleAddressBarSubmit();
                   }}
-                  className="flex-1 bg-transparent outline-none text-xs"
-                  placeholder="Search Google or type a URL..."
+                  className="flex-1 bg-transparent outline-none text-xs min-w-0"
+                  placeholder="Search or enter URL..."
                 />
               </div>
-              <button onClick={() => setShowBrowserPanel(false)} className="p-1.5 hover:bg-gray-200 rounded-lg">
-                <X className="w-4 h-4 text-gray-500" />
+
+              {/* Pop-out external window button for users who explicitly want one */}
+              <button
+                onClick={() => openExternalWeb(browserTabs.find(t => t.id === activeTabId)?.url)}
+                className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors"
+                title="Open current page in external window"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </button>
+
+              {/* Close Browser / Return to AI button */}
+              <button
+                onClick={handleToggleBrowser}
+                className="p-1.5 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors"
+                title="Close browser and return to AI"
+              >
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Native webview mounts here — the spinner shows until the first
-                navigation event confirms the page has actually started loading */}
+            {/* Quick study references bar */}
+            <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 border-b overflow-x-auto text-[10px] scrollbar-none flex-shrink-0">
+              <span className="text-gray-400 font-bold uppercase text-[9px] shrink-0">Study:</span>
+              <button onClick={() => navigateActiveTab('https://en.m.wikipedia.org/wiki/Pharmacology')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">📚 Wikipedia</button>
+              <button onClick={() => navigateActiveTab('https://pubmed.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔬 PubMed</button>
+              <button onClick={() => navigateActiveTab('https://pubchem.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">💊 PubChem</button>
+              <button onClick={() => navigateActiveTab('https://dailymed.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🧪 DailyMed</button>
+              <button onClick={() => navigateActiveTab('https://duckduckgo.com')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔍 DuckDuckGo</button>
+            </div>
+
+            {/* Native webview mounts here in desktop mode, or iframe in web mode */}
             <div ref={browserContainerRef} className="flex-1 overflow-hidden bg-white relative flex flex-col items-center justify-center">
-              {!webviewReady && <Loader2 className="w-8 h-8 text-gray-300 animate-spin mb-4" />}
+              {detectRuntimeCapabilities().nativeWebview ? (
+                !webviewReady && <Loader2 className="w-8 h-8 text-gray-300 animate-spin mb-4" />
+              ) : (
+                <div className="w-full h-full relative flex flex-col">
+                  {(() => {
+                    const currentTab = browserTabs.find(t => t.id === activeTabId) || browserTabs[0];
+                    return currentTab && currentTab.url ? (
+                      <iframe
+                        key={`${currentTab.id}-${currentTab.url}`}
+                        src={currentTab.url}
+                        title={currentTab.title}
+                        className="w-full flex-1 border-0 bg-white"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                        allow="fullscreen"
+                        onLoad={() => setWebviewReady(true)}
+                      />
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center text-gray-400 text-xs">
+                        No URL loaded
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
           </div>
         )}
