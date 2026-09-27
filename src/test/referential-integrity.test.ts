@@ -73,7 +73,9 @@ const makeState = (overrides: Partial<AppState> = {}): AppState => ({
   chatHistory: [],
   highlights: [],
   savedInsights: [],
+  openAIKey: '',
   timetables: { class: [], quiz: [], exam: [] },
+  timetablePdf: null,
   ...overrides,
 });
 
