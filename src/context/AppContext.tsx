@@ -221,10 +221,6 @@ export const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
     // Deleting a course removes everything that hangs off it. Leaving the
     // questions/materials/quizzes behind made them invisible in the UI but kept
     // them in the snapshot, which later failed the backup integrity check.
@@ -234,17 +230,6 @@ export const appReducer = (state: AppState, action: Action): AppState => {
         courses: state.courses.filter((c) => c.id !== action.payload),
         learningRecords: recordsOf(state),
       }).state;
-<<<<<<< HEAD
-=======
-    case 'DELETE_COURSE': {
-      return pruneOrphans({
-        ...state,
-        courses: state.courses.filter((c) => c.id !== action.payload),
-      }).state;
-    }
->>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
-=======
->>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -262,14 +247,7 @@ export const appReducer = (state: AppState, action: Action): AppState => {
       return pruneOrphans({
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
-<<<<<<< HEAD
-<<<<<<< HEAD
         learningRecords: recordsOf(state),
-=======
->>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
-=======
-        learningRecords: recordsOf(state),
->>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
       }).state;
 
     case 'REORDER_TOPICS':
