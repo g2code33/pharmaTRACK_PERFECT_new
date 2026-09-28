@@ -3,7 +3,7 @@ import { listenNative, nativeInvoke, detectRuntimeCapabilities } from '../platfo
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-import { loadFile } from '../utils/storage';
+import { loadFileBytes } from '../utils/storage';
 import { sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
@@ -13,7 +13,7 @@ import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Loader2,
   Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
-  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink
+  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
@@ -457,6 +457,12 @@ const SlideReader: React.FC = () => {
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [openedKind, setOpenedKind] = useState<MaterialKind | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
+  // Distinct from isLoadingContent: set when loading genuinely finished
+  // without producing a fileUrl, so the reader can show a clear message
+  // and a retry button instead of leaving "Loading Material..." on screen
+  // forever (the exact bug this replaces).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (!currentMaterial?.id) return;
@@ -465,20 +471,20 @@ const SlideReader: React.FC = () => {
     const knownKind = currentMaterial.materialKind;
     const knownSize = currentMaterial.fileSize;
     setIsLoadingContent(true);
+    setLoadError(null);
     setOpenedKind(null);
     let isMounted = true;
 
-    loadFile(materialId).then(async (fileData: any) => {
+    loadFileBytes(materialId).then(async (fileData) => {
       if (!isMounted) return;
       if (!fileData) {
         setIsLoadingContent(false);
+        setLoadError('No file is stored for this material. It may not have finished uploading.');
         return;
       }
 
       let data: Uint8Array;
-      if (fileData instanceof Blob) {
-        data = new Uint8Array(await fileData.arrayBuffer());
-      } else if (fileData instanceof Uint8Array) {
+      if (fileData instanceof Uint8Array) {
         data = fileData;
       } else if (typeof fileData === 'string') {
         const base64Data = fileData.split(',')[1] || fileData;
@@ -512,7 +518,13 @@ const SlideReader: React.FC = () => {
       }
     }).catch(err => {
       console.error(err);
-      if (isMounted) setIsLoadingContent(false);
+      if (!isMounted) return;
+      setIsLoadingContent(false);
+      setLoadError(
+        err instanceof Error && /did not finish within/i.test(err.message)
+          ? "This file is taking far longer than it should to load — the local storage on this device may be stuck. Try Retry below; if it keeps happening, re-upload this file."
+          : 'This file could not be loaded. It may be corrupted — try re-uploading it.',
+      );
     });
 
     return () => {
@@ -524,7 +536,7 @@ const SlideReader: React.FC = () => {
     };
     // Metadata updates must not reload the file, or the viewer jumps back to slide 1.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMaterial?.id, currentMaterial?.fileType]);
+  }, [currentMaterial?.id, currentMaterial?.fileType, loadAttempt]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -654,11 +666,31 @@ const SlideReader: React.FC = () => {
   };
 
   const renderUniversalContent = () => {
-    if (isLoadingContent || !fileUrl) {
+    if (isLoadingContent) {
       return (
         <div className="py-40 text-center flex flex-col items-center justify-center h-full w-full">
           <Loader2 className="w-12 h-12 text-[#FFB703] mx-auto mb-4 animate-spin" />
           <p className="text-xl font-black text-gray-400 uppercase tracking-widest">Loading Material...</p>
+        </div>
+      );
+    }
+
+    // Loading finished but produced no viewable file — show a clear,
+    // actionable message with a retry instead of leaving the spinner above
+    // running forever (the "it has been loading for ages" bug).
+    if (!fileUrl) {
+      return (
+        <div className="py-32 text-center flex flex-col items-center justify-center h-full w-full gap-4 px-6">
+          <AlertTriangle className="w-12 h-12 text-amber-500" />
+          <p className="text-lg font-bold text-gray-700 max-w-md">
+            {loadError || "This file couldn't be loaded."}
+          </p>
+          <button
+            onClick={() => setLoadAttempt((n) => n + 1)}
+            className="px-5 py-2.5 bg-[#2D6A4F] text-white rounded-lg font-bold hover:bg-[#1B4332]"
+          >
+            Retry
+          </button>
         </div>
       );
     }

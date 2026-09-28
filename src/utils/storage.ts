@@ -170,9 +170,67 @@ export const saveState = (state: AppState): void => {
 };
 
 // File Storage using IndexedDB (for large files like PDFs, audio, images)
+
+/**
+ * How long a Blob → bytes conversion is allowed to take before it is
+ * treated as stuck. Generous — a large PDF/PPTX can legitimately take a
+ * moment — but finite; see `blobToBytes` for why an unbounded wait is
+ * never correct here.
+ */
+const BLOB_READ_TIMEOUT_MS = 20000;
+
+/**
+ * Reads a Blob's bytes without ever hanging forever.
+ *
+ * Root cause of "Loading Material..." spinning forever when opening a
+ * PDF/PPTX: WebKit (and therefore WebKitGTK, which Tauri uses on Linux)
+ * cannot reliably round-trip a `Blob`/`File` THROUGH IndexedDB — storing
+ * one can fail with an uninformative transaction error, and reading one
+ * back out can leave `.arrayBuffer()` pending with no success, no error,
+ * nothing to `catch` (see e.g. the WebKit "blobs in IndexedDB are
+ * unreliable" reports; Firefox, Chromium and Node have all shipped their
+ * own variants of "arrayBuffer() on this Blob never resolves"). Once that
+ * happens, `await file.arrayBuffer()` really does hang forever — there is
+ * no event coming — so the only correct fix is to race it against a timeout
+ * and fail loudly instead of waiting out eternity.
+ *
+ * Tries the modern `Blob.arrayBuffer()` first (fast, works everywhere for a
+ * blob that has never touched IndexedDB), then falls back to `FileReader`
+ * for engines where `arrayBuffer()` itself is missing (older Safari; also
+ * absent in some non-browser test environments).
+ */
+const blobToBytes = (blob: Blob, timeoutMs: number = BLOB_READ_TIMEOUT_MS): Promise<Uint8Array> => {
+  const read: Promise<ArrayBuffer> = typeof blob.arrayBuffer === 'function'
+    ? blob.arrayBuffer()
+    : new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+        reader.readAsArrayBuffer(blob);
+      });
+
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Reading this file's bytes did not finish within ${timeoutMs}ms — the file may be corrupted or this device's storage may be stuck.`)),
+      timeoutMs,
+    );
+    read.then(
+      (buf) => { clearTimeout(timer); resolve(new Uint8Array(buf)); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+};
+
 export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<void> => {
   try {
-    await idb.set(`file_${id}`, file);
+    // Never hand a Blob/File to IndexedDB — always store raw bytes instead.
+    // This is the actual fix, applied at the one place every upload path
+    // (drag-drop, file picker, bulk upload, edit-and-replace) funnels
+    // through: it means no file saved from here on can ever hit the
+    // WebKit "Blob through IndexedDB" failure mode on load, because
+    // nothing we ever wrote is a Blob to begin with.
+    const toStore = file instanceof Blob ? await blobToBytes(file) : file;
+    await idb.set(`file_${id}`, toStore);
   } catch (err) {
     console.error(`Error saving file ${id} to IndexedDB:`, err);
   }
@@ -182,10 +240,36 @@ export const loadFile = async (id: string): Promise<Blob | Uint8Array | string |
   try {
     const file = await idb.get(`file_${id}`);
     return file || null;
+
   } catch (err) {
     console.error(`Error loading file ${id} from IndexedDB:`, err);
     return null;
   }
+};
+
+/**
+ * Like `loadFile()`, but guarantees the result is never a raw `Blob`.
+ *
+ * A `Blob` is the one shape `loadFile()` can still return that is unsafe to
+ * hand to `pdf.js`/OCR/MIME-sniffing code as-is: on some WebKitGTK builds,
+ * a `Blob` that was round-tripped through IndexedDB (saved by an older
+ * version of this app, before `saveFile()` started storing raw bytes) can
+ * leave `.arrayBuffer()` pending forever. Every call site that needs actual
+ * bytes should call this instead of doing its own `instanceof Blob` /
+ * `.arrayBuffer()` dance.
+ *
+ * Resolves to `null` when there is genuinely no file (never uploaded, or a
+ * true IndexedDB error — `loadFile()` already logs and swallows those).
+ * REJECTS (does not silently hang or return null) when the file exists but
+ * its bytes could not be read within the timeout — callers should show a
+ * clear "couldn't load, please re-upload" message on that path rather than
+ * leaving a loading spinner running forever.
+ */
+export const loadFileBytes = async (id: string): Promise<Uint8Array | string | null> => {
+  const file = await loadFile(id);
+  if (file == null) return null;
+  if (file instanceof Blob) return blobToBytes(file);
+  return file;
 };
 
 export const deleteFile = async (id: string): Promise<void> => {

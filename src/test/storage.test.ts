@@ -19,7 +19,7 @@ vi.mock('idb-keyval', () => ({
   del: async (k: string) => { idbStore.delete(k); },
 }));
 
-import { saveState, loadState, loadSlideText, deleteSlideText } from '../utils/storage';
+import { saveState, loadState, loadSlideText, deleteSlideText, saveFile, loadFile, loadFileBytes } from '../utils/storage';
 import type { AppState } from '../types';
 
 const LONG = 'Pharmacology lecture content. '.repeat(500); // ~15 KB
@@ -105,5 +105,74 @@ describe('slide text offload', () => {
 
     spy.mockRestore();
     err.mockRestore();
+  });
+});
+
+/**
+ * Regression tests for "Loading Material..." spinning forever when opening
+ * a PDF/PPTX. Root cause: WebKit (and WebKitGTK, used by Tauri on Linux)
+ * cannot reliably round-trip a Blob through IndexedDB, and reading a
+ * previously-stored Blob back out can leave `.arrayBuffer()` pending with
+ * no success, no error and nothing to catch. The fix has two parts:
+ *   1. saveFile() never hands a Blob to IndexedDB — it always stores raw
+ *      bytes, so nothing saved from now on can hit that failure mode.
+ *   2. loadFileBytes() bounds how long it will wait to turn a (legacy)
+ *      stored Blob into bytes, so a stuck read fails loudly instead of
+ *      hanging the caller — and therefore the UI — forever.
+ */
+describe('file storage — Blob-through-IndexedDB safety', () => {
+  it('saveFile converts a Blob/File to raw bytes before it ever reaches IndexedDB', async () => {
+    const file = new Blob(['%PDF-1.4 fake pdf bytes'], { type: 'application/pdf' });
+    await saveFile('doc1', file);
+
+    const stored = idbStore.get('file_doc1');
+    expect(stored).not.toBeInstanceOf(Blob);
+    expect(stored).toBeInstanceOf(Uint8Array);
+  });
+
+  it('loadFile still returns whatever was stored (Uint8Array after the fix)', async () => {
+    await saveFile('doc2', new Blob(['hello bytes']));
+    const loaded = await loadFile('doc2');
+    expect(loaded).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(loaded as Uint8Array)).toBe('hello bytes');
+  });
+
+  it('loadFileBytes transparently converts a legacy stored Blob to bytes', async () => {
+    // Simulates a file saved by an older app version, before saveFile()
+    // started normalizing to bytes.
+    idbStore.set('file_legacy1', new Blob(['legacy blob content']));
+
+    const bytes = await loadFileBytes('legacy1');
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(bytes as Uint8Array)).toBe('legacy blob content');
+  });
+
+  it('loadFileBytes passes Uint8Array and string values through untouched', async () => {
+    idbStore.set('file_bytes1', new Uint8Array([1, 2, 3]));
+    expect(await loadFileBytes('bytes1')).toEqual(new Uint8Array([1, 2, 3]));
+
+    idbStore.set('file_str1', 'data:application/pdf;base64,AAA=');
+    expect(await loadFileBytes('str1')).toBe('data:application/pdf;base64,AAA=');
+  });
+
+  it('loadFileBytes resolves null when there is genuinely no file', async () => {
+    expect(await loadFileBytes('never-uploaded')).toBeNull();
+  });
+
+  it('loadFileBytes rejects with a clear message instead of hanging when a Blob never finishes reading', async () => {
+    const stuck = new Blob(['irrelevant']);
+    // Simulate the WebKit hang: arrayBuffer() never settles, ever.
+    (stuck as unknown as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer = () => new Promise(() => {});
+    idbStore.set('file_stuck1', stuck);
+
+    vi.useFakeTimers();
+    try {
+      const pending = loadFileBytes('stuck1');
+      const assertion = expect(pending).rejects.toThrow(/did not finish within/i);
+      await vi.advanceTimersByTimeAsync(25000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

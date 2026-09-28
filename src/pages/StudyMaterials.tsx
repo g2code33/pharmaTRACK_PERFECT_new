@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { Topic, Slide } from '../types';
-import { saveFile, loadFile, deleteFile, deleteSlideText } from '../utils/storage';
+import { saveFile, loadFile, loadFileBytes, deleteFile, deleteSlideText } from '../utils/storage';
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
 import { kindFromExtension, materialMetaFromUpload } from '../utils/materialKind';
 import { indexDocument, removeFromIndex } from '../utils/searchIndex';
@@ -277,21 +277,23 @@ const StudyMaterials: React.FC = () => {
   };
 
   const convertPdfToText = async (slide: Slide) => {
-    const rawData = await loadFile(slide.id);
-    if (!rawData) return;
-
     setIsConverting(slide.id);
     try {
-      let data;
-      if (rawData instanceof Blob) {
-          data = new Uint8Array(await rawData.arrayBuffer());
-      } else if (typeof rawData === 'string') {
+      // loadFileBytes() never hands back a raw Blob — on some WebKitGTK
+      // builds a Blob retrieved from IndexedDB can leave `.arrayBuffer()`
+      // pending forever, which used to make this button spin with no way
+      // to fail. This throws a clear, bounded error instead.
+      const rawData = await loadFileBytes(slide.id);
+      if (!rawData) { setIsConverting(null); return; }
+
+      let data: Uint8Array;
+      if (typeof rawData === 'string') {
           const base64Data = rawData.split(',')[1] || rawData;
           const binaryString = window.atob(base64Data);
           data = new Uint8Array(binaryString.length);
           for (let i = 0; i < binaryString.length; i++) data[i] = binaryString.charCodeAt(i);
       } else {
-          data = rawData as Uint8Array;
+          data = rawData;
       }
       const loadingTask = pdfjs.getDocument({ data });
       const pdf = await loadingTask.promise;

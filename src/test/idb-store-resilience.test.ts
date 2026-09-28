@@ -32,8 +32,10 @@ class FakeTransaction {
   onerror: (() => void) | null = null;
 }
 
-function makeFakeIndexedDB(opts: { failOpensRemaining: number }) {
+function makeFakeIndexedDB(opts: { failOpensRemaining?: number; hangOpensRemaining?: number }) {
   const data = new Map<string, unknown>();
+  const failOpensRemaining = { n: opts.failOpensRemaining ?? 0 };
+  const hangOpensRemaining = { n: opts.hangOpensRemaining ?? 0 };
 
   class FakeObjectStore {
     put(value: unknown, key: string) {
@@ -70,8 +72,12 @@ function makeFakeIndexedDB(opts: { failOpensRemaining: number }) {
   const fakeIndexedDB = {
     open(_name: string) {
       const req = new FakeRequest<FakeDB>();
-      if (opts.failOpensRemaining > 0) {
-        opts.failOpensRemaining -= 1;
+      if (hangOpensRemaining.n > 0) {
+        // Mirrors a wedged WebKitGTK open() request: neither onsuccess nor
+        // onerror is ever called. Nothing schedules any callback here.
+        hangOpensRemaining.n -= 1;
+      } else if (failOpensRemaining.n > 0) {
+        failOpensRemaining.n -= 1;
         queueMicrotask(() => {
           req.error = new DOMException('cold-start hiccup', 'UnknownError');
           req.onerror?.();
@@ -86,6 +92,7 @@ function makeFakeIndexedDB(opts: { failOpensRemaining: number }) {
 
   return fakeIndexedDB;
 }
+
 
 describe('idbStore self-healing (WebKitGTK cold-start regression)', () => {
   let originalIndexedDB: unknown;
@@ -122,3 +129,59 @@ describe('idbStore self-healing (WebKitGTK cold-start regression)', () => {
     await expect(idb.set('k1', 'hello')).rejects.toBeTruthy();
   });
 });
+
+/**
+ * Regression test for "Loading Material..." spinning forever when opening a
+ * PDF/PPTX: some WebKitGTK builds leave an `indexedDB.open()` request (or a
+ * transaction) permanently pending — neither `onsuccess` nor `onerror` is
+ * ever called — so a plain `await` on it hangs forever with nothing to
+ * catch. `idbStore` must notice the operation never settled, abandon it,
+ * and retry against a fresh connection instead of waiting out eternity.
+ */
+describe('idbStore self-healing (wedged/hung connection regression)', () => {
+  let originalIndexedDB: unknown;
+
+  beforeEach(() => {
+    originalIndexedDB = (globalThis as { indexedDB?: unknown }).indexedDB;
+    vi.resetModules();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    (globalThis as { indexedDB?: unknown }).indexedDB = originalIndexedDB;
+    vi.useRealTimers();
+  });
+
+  it('self-heals when the first open() request hangs forever, instead of hanging the caller', async () => {
+    (globalThis as { indexedDB?: unknown }).indexedDB = makeFakeIndexedDB({ hangOpensRemaining: 1 });
+
+    const idb = await import('../utils/idbStore');
+
+    const pending = idb.set('k1', 'hello');
+    let settled = false;
+    pending.then(() => { settled = true; });
+
+    // Draining microtasks without advancing the clock: still hanging.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // Once the timeout fires, idbStore abandons the wedged request and
+    // retries on a fresh connection, which succeeds.
+    await vi.advanceTimersByTimeAsync(idb.DEFAULT_TIMEOUT_MS + 1000);
+    await expect(pending).resolves.toBeUndefined();
+    await expect(idb.get('k1')).resolves.toBe('hello');
+  });
+
+  it('surfaces a clear timeout error if the connection is wedged even after the retry', async () => {
+    (globalThis as { indexedDB?: unknown }).indexedDB = makeFakeIndexedDB({ hangOpensRemaining: 1000 });
+
+    const idb = await import('../utils/idbStore');
+
+    const pending = idb.set('k1', 'hello');
+    const assertion = expect(pending).rejects.toThrow(/did not respond|stuck/i);
+    await vi.advanceTimersByTimeAsync(idb.DEFAULT_TIMEOUT_MS * 2 + 1000);
+    await assertion;
+  });
+});
+
