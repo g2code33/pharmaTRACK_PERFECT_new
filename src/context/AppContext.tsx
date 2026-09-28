@@ -48,6 +48,7 @@ import {
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
+import { pruneOrphans } from '../utils/referentialIntegrity';
 import {
   applyQuiz,
   markReviewed,
@@ -63,7 +64,7 @@ import { pruneOrphans } from '../utils/referentialIntegrity';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
-type Action =
+export type Action =
   | { type: 'SET_STUDENT'; payload: Student }
   | { type: 'UPDATE_STUDENT'; payload: Partial<Student> }
   | { type: 'ADD_COURSE'; payload: Course }
@@ -119,7 +120,7 @@ type Action =
   | { type: 'SET_LOGGED_IN'; payload: boolean }
   | { type: 'LOAD_STATE'; payload: AppState };
 
-const appReducer = (state: AppState, action: Action): AppState => {
+export const appReducer = (state: AppState, action: Action): AppState => {
   switch (action.type) {
     case 'LOAD_STATE':
       // isLoggedIn is NOT restored from disk. saveState() persists the whole
@@ -221,6 +222,7 @@ const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
+<<<<<<< HEAD
     // Deleting a course removes everything that hangs off it. Leaving the
     // questions/materials/quizzes behind made them invisible in the UI but kept
     // them in the snapshot, which later failed the backup integrity check.
@@ -230,6 +232,14 @@ const appReducer = (state: AppState, action: Action): AppState => {
         courses: state.courses.filter((c) => c.id !== action.payload),
         learningRecords: recordsOf(state),
       }).state;
+=======
+    case 'DELETE_COURSE': {
+      return pruneOrphans({
+        ...state,
+        courses: state.courses.filter((c) => c.id !== action.payload),
+      }).state;
+    }
+>>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -247,7 +257,10 @@ const appReducer = (state: AppState, action: Action): AppState => {
       return pruneOrphans({
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
+<<<<<<< HEAD
         learningRecords: recordsOf(state),
+=======
+>>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
       }).state;
 
     case 'REORDER_TOPICS':
