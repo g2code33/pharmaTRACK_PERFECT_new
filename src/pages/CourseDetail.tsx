@@ -262,14 +262,18 @@ const CourseDetail: React.FC = () => {
     addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, topicId);
   };
 
-  const handleSaveSlide = () => {
+  const handleSaveSlide = async () => {
     if (!slideForm.title.trim()) return;
 
     const slides = getSlidesForTopic(selectedTopicId);
 
     if (editingSlide) {
       if (fileData) {
-        saveFile(editingSlide.id, fileData);
+        const saved = await saveFile(editingSlide.id, fileData);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
       }
       dispatch({
         type: 'UPDATE_SLIDE',
@@ -297,7 +301,11 @@ const CourseDetail: React.FC = () => {
       };
 
       if (fileData) {
-        saveFile(newSlide.id, fileData);
+        const saved = await saveFile(newSlide.id, fileData);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
         newSlide.fileUrl = `local:${newSlide.id}`;
       }
 

@@ -13,7 +13,7 @@ import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Loader2,
   Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
-  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle
+  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle, Pin
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
@@ -27,16 +27,26 @@ interface BrowserTab {
   title: string;
   history?: string[];
   historyIndex?: number;
+  /** User-chosen "keep this tab around" flag — see `togglePinTab` below. */
+  pinned?: boolean;
 }
 
 // Detects whether typed text is a URL or a search query, and normalizes it.
 // "paracetamol dosing" -> Search engine. "bnf.org" or "https://..." -> direct nav.
 //
-// Always resolves searches to DuckDuckGo, never Google: the in-panel browser
-// is a plain <iframe> on every platform (see the panel below), and Google
-// sends `X-Frame-Options`/CSP headers that refuse to be framed at all — it
-// would just show a blank panel. DuckDuckGo (like Wikipedia/PubMed/PubChem/
-// DailyMed, the other quick-reference links in this panel) allows framing.
+// Resolves every search to Google, per the app's requirement. Plain
+// `https://www.google.com/search?q=...` cannot be framed at all — Google
+// sends an `X-Frame-Options: SAMEORIGIN` response header that every browser
+// enforces regardless of what the page's own script does. `igu=1` ("inline
+// google urlresult", originally built by Google itself for embedding a
+// search box on iOS home-screen web-clips and still commonly used for this
+// exact purpose) is the one query parameter that makes Google's own server
+// omit that header for that response, so the results page can actually
+// render inside this panel's <iframe>. It is not officially documented and
+// not contractually guaranteed forever — if Google ever changes this, the
+// panel already shows a clear "may not allow being shown inside another
+// site — try Open in external window" fallback once the iframe fails to
+// load, so a real system browser is always one click away either way.
 function resolveAddressInput(raw: string): string {
   const trimmed = raw.trim();
   const looksLikeUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(trimmed);
@@ -44,7 +54,39 @@ function resolveAddressInput(raw: string): string {
   if (looksLikeUrl) {
     return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
   }
-  return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
+  return `https://www.google.com/search?igu=1&q=${encodeURIComponent(trimmed)}`;
+}
+
+/** Where pinned browser tabs are remembered across visits to the reader. */
+const PINNED_TABS_KEY = 'pharmatrack_pinned_browser_tabs_v1';
+
+interface PinnedTabRecord {
+  url: string;
+  title: string;
+}
+
+function loadPinnedTabs(): PinnedTabRecord[] {
+  try {
+    const raw = localStorage.getItem(PINNED_TABS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is PinnedTabRecord => !!p && typeof p.url === 'string' && typeof p.title === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePinnedTabs(tabs: PinnedTabRecord[]): void {
+  try {
+    localStorage.setItem(PINNED_TABS_KEY, JSON.stringify(tabs));
+  } catch {
+    // Best-effort only. A device where localStorage is entirely unavailable
+    // simply won't remember pins between visits; pinning within the current
+    // session still works fine via component state either way.
+  }
 }
 
 function titleFromUrl(url: string): string {
@@ -82,28 +124,61 @@ const SlideReader: React.FC = () => {
   // ignore the panel's bounds on Linux/GTK and stretch to fill the whole
   // window; an iframe is a normal DOM element and is physically incapable
   // of overflowing its container the way a separate native window could.
-  // `isDesktopApp` here is used only to pick a sensible default homepage
-  // (kept as DuckDuckGo, matching the web build's non-Google default), not
-  // to choose a different rendering path.
+  // `isDesktopApp` is now unused for picking the homepage (both platforms
+  // default to Google, see `resolveAddressInput`) but is kept for the
+  // native-webview capability check other code below still relies on.
   const isDesktopApp = detectRuntimeCapabilities().nativeWebview;
-  const DEFAULT_DESKTOP_URL = 'https://duckduckgo.com';
-  const DEFAULT_WEB_URL = 'https://en.m.wikipedia.org/wiki/Pharmacology';
+  const DEFAULT_DESKTOP_URL = 'https://www.google.com/search?igu=1';
+  const DEFAULT_WEB_URL = 'https://www.google.com/search?igu=1';
 
-  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
-    const initialUrl = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
-    return [
-      {
-        id: 'default',
-        url: initialUrl,
-        title: titleFromUrl(initialUrl),
-        history: [initialUrl],
-        historyIndex: 0,
-      },
-    ];
-  });
-  const [activeTabId, setActiveTabId] = useState('default');
-  const [urlInput, setUrlInput] = useState(() => (isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL));
+  // Computed once (guarded by the ref) instead of inside each `useState`
+  // initializer separately, so the restored pinned tabs and the active tab
+  // id agree on the exact same generated ids — two independent
+  // initializers calling `loadPinnedTabs()`/`uuidv4()` a second time would
+  // produce a mismatched set that could never find its own "active" tab.
+  const initialBrowserStateRef = useRef<{ tabs: BrowserTab[]; activeId: string } | null>(null);
+  if (!initialBrowserStateRef.current) {
+    const homepage = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
+    const restoredPinned: BrowserTab[] = loadPinnedTabs().map((p) => ({
+      id: uuidv4(),
+      url: p.url,
+      title: p.title,
+      history: [p.url],
+      historyIndex: 0,
+      pinned: true,
+    }));
+    const homeTab: BrowserTab = {
+      id: 'default',
+      url: homepage,
+      title: titleFromUrl(homepage),
+      history: [homepage],
+      historyIndex: 0,
+    };
+    const tabs = [...restoredPinned, homeTab];
+    initialBrowserStateRef.current = { tabs, activeId: tabs[0].id };
+  }
+
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => initialBrowserStateRef.current!.tabs);
+  const [activeTabId, setActiveTabId] = useState<string>(() => initialBrowserStateRef.current!.activeId);
+  const [urlInput, setUrlInput] = useState(() => initialBrowserStateRef.current!.tabs[0].url);
   const [webviewReady, setWebviewReady] = useState(false);
+
+  // Single source of truth for persisted pins: whenever any tab's pinned
+  // flag OR url changes (navigating within a pinned tab keeps its saved
+  // entry current), or a pinned tab is closed (it simply drops out of
+  // `browserTabs`, and this recomputes without it), the saved list is kept
+  // in sync automatically — no call site needs to remember to persist.
+  useEffect(() => {
+    savePinnedTabs(browserTabs.filter((t) => t.pinned).map((t) => ({ url: t.url, title: t.title })));
+  }, [browserTabs]);
+
+  const togglePinTab = (tabId: string) => {
+    setBrowserTabs((tabs) => tabs.map((t) => (t.id === tabId ? { ...t, pinned: !t.pinned } : t)));
+  };
+
+  // Pinned tabs always show first, in the order they were opened; unpinned
+  // tabs keep their own relative order after that.
+  const orderedBrowserTabs = [...browserTabs].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
 
   // Keep the address bar in sync with whichever tab is active
   useEffect(() => {
@@ -770,15 +845,23 @@ const SlideReader: React.FC = () => {
 
             {/* Tab bar */}
             <div className="flex bg-gray-200 overflow-x-auto border-b border-gray-300 scrollbar-none h-9 flex-shrink-0">
-              {browserTabs.map(tab => (
+              {orderedBrowserTabs.map(tab => (
                 <div
                   key={tab.id}
-                  className={`flex items-center gap-2 px-3 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'}`}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'} ${tab.pinned ? 'bg-amber-50/60' : ''}`}
                   onClick={() => {
                     setActiveTabId(tab.id);
                     setUrlInput(tab.url);
                   }}
+                  title={tab.pinned ? `${tab.title} (pinned)` : tab.title}
                 >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); togglePinTab(tab.id); }}
+                    className={`p-0.5 rounded-sm shrink-0 transition-colors ${tab.pinned ? 'text-amber-600 hover:text-amber-700' : 'text-gray-400 hover:text-gray-600'}`}
+                    title={tab.pinned ? 'Unpin tab' : 'Pin this tab so it stays here'}
+                  >
+                    <Pin className={`w-3 h-3 ${tab.pinned ? 'fill-current' : ''}`} />
+                  </button>
                   <span className="text-xs truncate flex-1">{tab.title}</span>
                   {browserTabs.length > 1 && (
                     <button
@@ -849,6 +932,7 @@ const SlideReader: React.FC = () => {
             {/* Quick study references bar */}
             <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 border-b overflow-x-auto text-[10px] scrollbar-none flex-shrink-0">
               <span className="text-gray-400 font-bold uppercase text-[9px] shrink-0">Study:</span>
+              <button onClick={() => navigateActiveTab('https://www.google.com/search?igu=1')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔎 Google</button>
               <button onClick={() => navigateActiveTab('https://en.m.wikipedia.org/wiki/Pharmacology')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">📚 Wikipedia</button>
               <button onClick={() => navigateActiveTab('https://pubmed.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔬 PubMed</button>
               <button onClick={() => navigateActiveTab('https://pubchem.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">💊 PubChem</button>

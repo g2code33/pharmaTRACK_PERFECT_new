@@ -221,7 +221,22 @@ const blobToBytes = (blob: Blob, timeoutMs: number = BLOB_READ_TIMEOUT_MS): Prom
   });
 };
 
-export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<void> => {
+/**
+ * Persists a file's bytes to IndexedDB.
+ *
+ * Returns `true` once the write has actually been confirmed to succeed, and
+ * `false` (after logging the real error) if it did not — it never throws.
+ *
+ * That return value matters: every upload flow creates its material/slide
+ * record ONLY after this resolves, so a caller that ignored a failure here
+ * used to go on to create a normal-looking material whose bytes were never
+ * actually saved. The reader would then open it later and report "No file
+ * is stored for this material" — indistinguishable, from the user's side,
+ * from an upload that silently failed with no error at all. Callers must
+ * check this and stop (surfacing a clear error immediately, before the
+ * record is created) rather than proceeding as if the save worked.
+ */
+export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<boolean> => {
   try {
     // Never hand a Blob/File to IndexedDB — always store raw bytes instead.
     // This is the actual fix, applied at the one place every upload path
@@ -231,8 +246,10 @@ export const saveFile = async (id: string, file: Blob | Uint8Array | string): Pr
     // nothing we ever wrote is a Blob to begin with.
     const toStore = file instanceof Blob ? await blobToBytes(file) : file;
     await idb.set(`file_${id}`, toStore);
+    return true;
   } catch (err) {
     console.error(`Error saving file ${id} to IndexedDB:`, err);
+    return false;
   }
 };
 

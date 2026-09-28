@@ -240,7 +240,21 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
       const materialId = uuidv4();
       // Binary lives in IndexedDB; only metadata + text go into app state.
-      await saveFile(materialId, new Uint8Array(buffer));
+      const saved = await saveFile(materialId, new Uint8Array(buffer));
+      if (!saved) {
+        // Do NOT call onComplete here — that would create a material record
+        // that looks fully uploaded but has no bytes behind it, which is
+        // exactly what used to produce "No file is stored for this
+        // material" later in the reader with no clue as to why. Surfacing
+        // the failure right here, before any record exists, means the user
+        // sees it immediately and can retry instead of discovering it much
+        // later on a page that can no longer do anything about it.
+        update(item.id, {
+          status: 'error',
+          error: "Couldn't save this file to storage on this device. Check available disk space and try again.",
+        });
+        return;
+      }
 
       update(item.id, {
         status: 'done',

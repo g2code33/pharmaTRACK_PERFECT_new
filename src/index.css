@@ -216,34 +216,112 @@ body { overflow-x: hidden; }
 /* Global Dark Mode */
 html.dark body { background-color: #0F172A !important; color: #f8fafc !important; }
 html.dark .bg-white { background-color: #1E293B !important; border-color: #334155 !important; color: #f8fafc !important; }
+
 /* Every light surface, not just the neutral ones. Tinted panels (amber-50,
    green-100, red-50 …) used to keep their light background in dark mode while
    inheriting near-white text from a `.bg-white` ancestor — white writing on a
-   white panel. Remapping all of them keeps text readable at any nesting. */
-html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200, html.dark .bg-gray-50, html.dark .bg-gray-100
-html.dark .bg-gray-200, html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200, html.dark .bg-neutral-50
-html.dark .bg-neutral-100, html.dark .bg-neutral-200, html.dark .bg-stone-50, html.dark .bg-stone-100
-html.dark .bg-stone-200, html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200, html.dark .bg-orange-50
-html.dark .bg-orange-100, html.dark .bg-orange-200, html.dark .bg-amber-50, html.dark .bg-amber-100
-html.dark .bg-amber-200, html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200
-html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200, html.dark .bg-green-50, html.dark .bg-green-100
-html.dark .bg-green-200, html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200
-html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200, html.dark .bg-cyan-50, html.dark .bg-cyan-100
-html.dark .bg-cyan-200, html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200, html.dark .bg-blue-50
-html.dark .bg-blue-100, html.dark .bg-blue-200, html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200
-html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200, html.dark .bg-purple-50
-html.dark .bg-purple-100, html.dark .bg-purple-200, html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100
-html.dark .bg-fuchsia-200, html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200, html.dark .bg-rose-50
-html.dark .bg-rose-100, html.dark .bg-rose-200 {
+   white panel. Remapping all of them keeps text readable at any nesting.
+   ---------------------------------------------------------------------------
+   NOTE: this selector list previously spanned multiple lines WITHOUT a
+   trailing comma between lines. CSS treats adjacent selectors separated only
+   by whitespace as a *descendant combinator*, not a list — so the entire
+   rule silently compiled into one impossible "ancestor .dark inside another
+   .dark" selector that could never match anything, and none of these tinted
+   backgrounds were ever actually remapped. Every line below now ends with a
+   comma so this is a genuine selector list again. */
+html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200,
+html.dark .bg-gray-50, html.dark .bg-gray-100, html.dark .bg-gray-200,
+html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200,
+html.dark .bg-neutral-50, html.dark .bg-neutral-100, html.dark .bg-neutral-200,
+html.dark .bg-stone-50, html.dark .bg-stone-100, html.dark .bg-stone-200,
+html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200,
+html.dark .bg-orange-50, html.dark .bg-orange-100, html.dark .bg-orange-200,
+html.dark .bg-amber-50, html.dark .bg-amber-100, html.dark .bg-amber-200,
+html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200,
+html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200,
+html.dark .bg-green-50, html.dark .bg-green-100, html.dark .bg-green-200,
+html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200,
+html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200,
+html.dark .bg-cyan-50, html.dark .bg-cyan-100, html.dark .bg-cyan-200,
+html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200,
+html.dark .bg-blue-50, html.dark .bg-blue-100, html.dark .bg-blue-200,
+html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200,
+html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200,
+html.dark .bg-purple-50, html.dark .bg-purple-100, html.dark .bg-purple-200,
+html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100, html.dark .bg-fuchsia-200,
+html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200,
+html.dark .bg-rose-50, html.dark .bg-rose-100, html.dark .bg-rose-200 {
   background-color: #0F172A !important;
   border-color: #1E293B !important;
   color: #cbd5e1 !important;
 }
+
+/* The rule above only recolors text on the SAME element as the tinted
+   background (e.g. `<span class="bg-red-50 text-red-800">`). When the dark,
+   light-background-oriented text class sits on a different element than the
+   background — a common pattern for badges/alerts, e.g.
+   `<div class="bg-red-50"><span class="text-red-800">...</span></div>` — the
+   child's own `text-red-800` declaration still wins over inherited color, so
+   it must be remapped in its own right too. These are the "-700/-800/-900"
+   tiers of every color family: shades chosen for good contrast on a WHITE
+   background, which is exactly backwards on a dark navy one. Remapped to
+   each family's light "-300" tone so the semantic color (red = danger,
+   green = success, amber = warning, …) is preserved while staying readable. */
+html.dark .text-red-700, html.dark .text-red-800, html.dark .text-red-900 { color: #fca5a5 !important; }
+html.dark .text-orange-700, html.dark .text-orange-800, html.dark .text-orange-900 { color: #fdba74 !important; }
+html.dark .text-amber-700, html.dark .text-amber-800, html.dark .text-amber-900 { color: #fcd34d !important; }
+html.dark .text-yellow-700, html.dark .text-yellow-800, html.dark .text-yellow-900 { color: #fde047 !important; }
+html.dark .text-lime-700, html.dark .text-lime-800, html.dark .text-lime-900 { color: #bef264 !important; }
+html.dark .text-green-700, html.dark .text-green-800, html.dark .text-green-900 { color: #86efac !important; }
+html.dark .text-emerald-700, html.dark .text-emerald-800, html.dark .text-emerald-900 { color: #6ee7b7 !important; }
+html.dark .text-teal-700, html.dark .text-teal-800, html.dark .text-teal-900 { color: #5eead4 !important; }
+html.dark .text-cyan-700, html.dark .text-cyan-800, html.dark .text-cyan-900 { color: #67e8f9 !important; }
+html.dark .text-sky-700, html.dark .text-sky-800, html.dark .text-sky-900 { color: #7dd3fc !important; }
+html.dark .text-blue-700, html.dark .text-blue-800, html.dark .text-blue-900 { color: #93c5fd !important; }
+html.dark .text-indigo-700, html.dark .text-indigo-800, html.dark .text-indigo-900 { color: #a5b4fc !important; }
+html.dark .text-violet-700, html.dark .text-violet-800, html.dark .text-violet-900 { color: #c4b5fd !important; }
+html.dark .text-purple-700, html.dark .text-purple-800, html.dark .text-purple-900 { color: #d8b4fe !important; }
+html.dark .text-fuchsia-700, html.dark .text-fuchsia-800, html.dark .text-fuchsia-900 { color: #f0abfc !important; }
+html.dark .text-pink-700, html.dark .text-pink-800, html.dark .text-pink-900 { color: #f9a8d4 !important; }
+html.dark .text-rose-700, html.dark .text-rose-800, html.dark .text-rose-900 { color: #fda4af !important; }
+
+/* -900/-950 "near-black" neutral text, another light-background-only tier
+   not covered by the -700/-800 remap above. */
+html.dark .text-black, html.dark .text-gray-900, html.dark .text-gray-950,
+html.dark .text-slate-900, html.dark .text-slate-950,
+html.dark .text-zinc-900, html.dark .text-zinc-950,
+html.dark .text-neutral-900, html.dark .text-neutral-950,
+html.dark .text-stone-900, html.dark .text-stone-950 { color: #f8fafc !important; }
+
 html.dark .text-gray-800, html.dark .text-gray-700, html.dark .text-slate-800 { color: #f1f5f9 !important; }
 html.dark .text-gray-500, html.dark .text-gray-600 { color: #94a3b8 !important; }
 html.dark .border-gray-100, html.dark .border-gray-200, html.dark .border-slate-100, html.dark .border-slate-200 { border-color: #334155 !important; }
 html.dark header, html.dark aside { background-color: #0B1120 !important; border-color: #1E293B !important; }
-html.dark input, html.dark select, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
+
+/* Plain <input>/<textarea> boxes respect background-color/color just fine.
+   <select> is the outlier: several platforms this app ships on (WebKitGTK on
+   Linux in particular) render the closed combobox's box chrome — its
+   background fill and border — with the OS/GTK theme's native widget
+   painter, ignoring `background-color` entirely, while still honoring the
+   CSS `color` for the text inside. That mismatch is exactly the bug this
+   fixes: a native (often light/white) box behind text forced light by the
+   rule below, i.e. barely-visible light-on-light writing. Turning off native
+   appearance makes the browser draw the control from our CSS like any other
+   box, on every platform; the custom chevron replaces the native dropdown
+   arrow that `appearance: none` also removes. */
+html.dark input, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
+html.dark select {
+  background-color: #1E293B !important;
+  color: white !important;
+  border-color: #334155 !important;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='2'><path d='M6 8l4 4 4-4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+}
 
 /* ---------------------------------------------------------------------------
    pdf.js text layer

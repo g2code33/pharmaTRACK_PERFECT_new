@@ -211,7 +211,11 @@ const StudyMaterials: React.FC = () => {
       // Prioritize original Blob/File for storage
       const dataToSave = currentFileBlob || fileData;
       if (dataToSave) {
-        await saveFile(editingSlide.id, dataToSave);
+        const saved = await saveFile(editingSlide.id, dataToSave);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
       }
       
       dispatch({
@@ -243,7 +247,11 @@ const StudyMaterials: React.FC = () => {
       };
 
       if (dataToSave) {
-        await saveFile(newId, dataToSave);
+        const saved = await saveFile(newId, dataToSave);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
       }
 
       dispatch({ type: 'ADD_SLIDE', payload: newSlide });
@@ -396,6 +404,7 @@ const StudyMaterials: React.FC = () => {
 
     const slidesList = getSlidesForTopic(selectedTopicId);
     let slideNumber = slidesList.length;
+    const failedNames: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -442,13 +451,30 @@ const StudyMaterials: React.FC = () => {
         }),
       };
 
-      // Save the raw File object directly
-      await saveFile(newSlideId, file);
+      // Save the raw File object directly. Skip creating a slide record for
+      // any file whose bytes did not actually persist — a slide with no
+      // saved file is exactly the "No file is stored for this material"
+      // dead end reported from the reader, and it is much clearer to tell
+      // the user right here which file(s) need to be re-added than to let
+      // a broken entry silently appear in their material list.
+      const saved = await saveFile(newSlideId, file);
+      if (!saved) {
+        failedNames.push(file.name);
+        continue;
+      }
       dispatch({ type: 'ADD_SLIDE', payload: newSlide });
     }
 
     setShowBulkUpload(false);
-    addActivity('slide_completed', `Uploaded ${files.length} slides`, selectedCourse);
+    const savedCount = files.length - failedNames.length;
+    if (savedCount > 0) {
+      addActivity('slide_completed', `Uploaded ${savedCount} slide${savedCount === 1 ? '' : 's'}`, selectedCourse);
+    }
+    if (failedNames.length) {
+      alert(
+        `Couldn't save ${failedNames.length} file(s) to storage on this device — they were not added:\n\n${failedNames.join('\n')}\n\nCheck available disk space and try uploading them again.`,
+      );
+    }
   };
 
   const getStatusIcon = (status: Slide['status']) => {
