@@ -48,6 +48,7 @@ import {
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
+import { pruneOrphans } from '../utils/referentialIntegrity';
 import {
   applyQuiz,
   markReviewed,
@@ -62,7 +63,7 @@ import { flagAttemptedQuestions } from '../utils/questionBank';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
-type Action =
+export type Action =
   | { type: 'SET_STUDENT'; payload: Student }
   | { type: 'UPDATE_STUDENT'; payload: Partial<Student> }
   | { type: 'ADD_COURSE'; payload: Course }
@@ -118,7 +119,7 @@ type Action =
   | { type: 'SET_LOGGED_IN'; payload: boolean }
   | { type: 'LOAD_STATE'; payload: AppState };
 
-const appReducer = (state: AppState, action: Action): AppState => {
+export const appReducer = (state: AppState, action: Action): AppState => {
   switch (action.type) {
     case 'LOAD_STATE':
       // isLoggedIn is NOT restored from disk. saveState() persists the whole
@@ -221,13 +222,10 @@ const appReducer = (state: AppState, action: Action): AppState => {
       };
 
     case 'DELETE_COURSE': {
-      const gone = new Set(state.topics.filter((t) => t.courseId === action.payload).map((t) => t.id));
-      return {
+      return pruneOrphans({
         ...state,
         courses: state.courses.filter((c) => c.id !== action.payload),
-        topics: state.topics.filter((t) => t.courseId !== action.payload),
-        learningRecords: recordsOf(state).filter((r) => !gone.has(r.topicId)),
-      };
+      }).state;
     }
 
     case 'ADD_TOPIC':
@@ -242,11 +240,10 @@ const appReducer = (state: AppState, action: Action): AppState => {
       };
 
     case 'DELETE_TOPIC':
-      return {
+      return pruneOrphans({
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
-        learningRecords: recordsOf(state).filter((r) => r.topicId !== action.payload),
-      };
+      }).state;
 
     case 'REORDER_TOPICS':
       return {
@@ -269,10 +266,10 @@ const appReducer = (state: AppState, action: Action): AppState => {
       };
 
     case 'DELETE_SLIDE':
-      return {
+      return pruneOrphans({
         ...state,
         slides: state.slides.filter((s) => s.id !== action.payload),
-      };
+      }).state;
 
     case 'REORDER_SLIDES':
       return {
