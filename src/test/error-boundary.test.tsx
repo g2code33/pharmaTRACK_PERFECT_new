@@ -90,11 +90,22 @@ describe('wiring', () => {
 
   it('wraps the page area, so the sidebar survives a crash', () => {
     const layout = read('../components/Layout.tsx');
-    expect(layout).toMatch(/<ErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,120}<Outlet \/>/);
+    // The boundary stack around the Outlet, outermost first: the error
+    // boundary keeps a crash inside the page area, and the Suspense boundary
+    // does the same for a lazy page chunk that is still downloading — the
+    // loader must never tear down the sidebar and header.
+    expect(layout).toMatch(
+      /<ErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,800}<Suspense fallback=\{<PageLoading \/>\}>[\s\S]{0,80}<Outlet \/>/,
+    );
   });
 
   it('also wraps the router, covering Login and Onboarding', () => {
     const app = read('../App.tsx');
-    expect(app).toMatch(/<ErrorBoundary>[\s\S]{0,80}<HashRouter>/);
+    // The main router opts into v7_startTransition so navigation renders are
+    // transitions: the current page stays on screen while the next page's
+    // chunk downloads, instead of flashing a near-white fallback.
+    expect(app).toMatch(
+      /<ErrorBoundary>[\s\S]{0,80}<AIProvider>[\s\S]{0,700}<HashRouter future=\{\{ v7_startTransition: true \}\}>/,
+    );
   });
 });

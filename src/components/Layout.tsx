@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
@@ -6,6 +6,7 @@ import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
 import ErrorBoundary from './ErrorBoundary';
+import PageLoading from './PageLoading';
 import {
   checkNativeUpdate,
   detectRuntimeCapabilities,
@@ -432,7 +433,18 @@ const Layout: React.FC = () => {
                 search and navigation usable. resetKey clears the error when the
                 user navigates away. */}
             <ErrorBoundary resetKey={location.pathname}>
-              <Outlet />
+              {/* Suspense boundary for lazy page chunks. It must sit here —
+                  around the Outlet, inside the shell — so downloading a page
+                  swaps only this content area for the loader. The app-level
+                  boundary used to catch these suspensions and tore down the
+                  whole Layout, flashing a near-white screen (sidebar, header
+                  and search all vanishing) whenever a sidebar tab was opened
+                  for the first time. The ErrorBoundary stays outermost so a
+                  chunk that fails to load surfaces the recovery UI rather
+                  than a stuck spinner. */}
+              <Suspense fallback={<PageLoading />}>
+                <Outlet />
+              </Suspense>
             </ErrorBoundary>
           </main>
         </div>

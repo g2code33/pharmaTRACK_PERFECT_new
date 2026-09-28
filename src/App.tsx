@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'r
 import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
+import PageLoading from './components/PageLoading';
 import StorageNoticeBanner from './components/StorageNoticeBanner';
 // First paint: these three are what a student sees before anything else, so
 // they stay in the main chunk.
@@ -107,13 +108,6 @@ const ExamLaunchRouter: React.FC = () => {
   return null;
 };
 
-/** Shown only for the few hundred milliseconds a page chunk takes to arrive. */
-const PageLoading: React.FC = () => (
-  <div className="flex items-center justify-center py-16" data-testid="page-loading">
-    <div className="w-6 h-6 border-2 border-[#2D6A4F]/20 border-t-[#2D6A4F] rounded-full animate-spin" />
-  </div>
-);
-
 const App = () => {
   const { state } = useApp();
 
@@ -137,11 +131,19 @@ const App = () => {
   if (storageBlocked) {
     return (
       <ErrorBoundary>
-        <HashRouter>
+        {/* future.v7_startTransition: keep whatever is on screen mounted while
+            the next page's chunk downloads, instead of flashing the fallback
+            (see the main router below). */}
+        <HashRouter future={{ v7_startTransition: true }}>
           <div className="min-h-screen bg-slate-50">
             <StorageNoticeBanner />
             <main className="p-4 sm:p-8">
-              <StorageManager />
+              {/* StorageManager is itself a lazy chunk. Without a boundary a
+                  suspended render escapes to the ErrorBoundary, which would
+                  show the crash UI instead of the storage recovery tool. */}
+              <Suspense fallback={<PageLoading />}>
+                <StorageManager />
+              </Suspense>
             </main>
           </div>
         </HashRouter>
@@ -154,7 +156,15 @@ const App = () => {
     // and any crash in the router itself.
     <ErrorBoundary>
       <AIProvider>
-        <HashRouter>
+        {/* future.v7_startTransition: navigation renders run as transitions, so
+            React keeps the current page (sidebar included) on screen while the
+            next page's chunk is still downloading. Without it the route update
+            is urgent and immediately suspends into the fallback below — the
+            "white loading" flash users saw when picking a sidebar tab. The
+            fallback now only appears when there is no previous UI to keep
+            (initial load / deep link), and Layout has its own inner boundary
+            for the page area. */}
+        <HashRouter future={{ v7_startTransition: true }}>
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />
             <Routes>
