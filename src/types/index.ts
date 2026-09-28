@@ -488,6 +488,8 @@ export interface SemesterSnapshot {
   chatHistory: ChatMessageStore[];
   highlights: Highlight[];
   savedInsights: SavedInsight[];
+  /** Learning-loop records are semester data and participate in orphan pruning. */
+  learningRecords?: AppState['learningRecords'];
   timetables: AppState['timetables'];
   timetablePdf: string | null;
   capturedAt: string;
