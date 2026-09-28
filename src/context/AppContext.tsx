@@ -48,6 +48,7 @@ import {
 import { loadSearchIndex } from '../utils/searchIndex';
 import { ensureArchiveCatalog } from '../utils/archiveCatalog';
 import { ensureConversationIndex } from '../utils/conversationSearch';
+import { pruneOrphans } from '../utils/referentialIntegrity';
 import {
   applyQuiz,
   markReviewed,
@@ -63,7 +64,7 @@ import { pruneOrphans } from '../utils/referentialIntegrity';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
-type Action =
+export type Action =
   | { type: 'SET_STUDENT'; payload: Student }
   | { type: 'UPDATE_STUDENT'; payload: Partial<Student> }
   | { type: 'ADD_COURSE'; payload: Course }
@@ -119,7 +120,7 @@ type Action =
   | { type: 'SET_LOGGED_IN'; payload: boolean }
   | { type: 'LOAD_STATE'; payload: AppState };
 
-const appReducer = (state: AppState, action: Action): AppState => {
+export const appReducer = (state: AppState, action: Action): AppState => {
   switch (action.type) {
     case 'LOAD_STATE':
       // isLoggedIn is NOT restored from disk. saveState() persists the whole

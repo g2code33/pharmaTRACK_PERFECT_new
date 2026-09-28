@@ -16,7 +16,7 @@
  *      (created before this fix) heal themselves instead of failing forever.
  */
 
-import type { AppState } from '../types';
+import type { AppState, SemesterSnapshot } from '../types';
 
 /** How many rows each collection lost during a prune. */
 export interface OrphanReport {
@@ -31,6 +31,17 @@ export interface OrphanReport {
   highlights: number;
   learningRecords: number;
 }
+
+export type PruneReport = OrphanReport & {
+  courses: number;
+  materials: number;
+  questions: number;
+  quizzes: number;
+  plans: number;
+  dates: number;
+  objectives: number;
+  total: number;
+};
 
 const EMPTY_REPORT: OrphanReport = {
   topics: 0, slides: 0, notes: 0, examQuestions: 0, quizHistory: 0,
@@ -64,6 +75,15 @@ export const describeOrphanReport = (report: OrphanReport): string => {
 
 const list = <T,>(value: T[] | undefined | null): T[] => (Array.isArray(value) ? value : []);
 
+export type ReferentialState = Partial<AppState> | Partial<SemesterSnapshot>;
+
+export interface PruneResult<T> {
+  state: T;
+  removed: OrphanReport;
+  report: PruneReport;
+  [Symbol.iterator](): Iterator<T | OrphanReport>;
+}
+
 /**
  * Drops every row whose parent no longer exists, repeatedly, so a deleted
  * course also takes its topics' materials, notes and highlights with it.
@@ -71,9 +91,9 @@ const list = <T,>(value: T[] | undefined | null): T[] => (Array.isArray(value) ?
  * Pure: the input object is never mutated, and collections that lose nothing
  * keep their original array reference (so React/`===` checks stay cheap).
  */
-export const pruneOrphans = <T extends Partial<AppState>>(
+export const pruneOrphans = <T extends ReferentialState>(
   state: T,
-): { state: T; removed: OrphanReport } => {
+): PruneResult<T> => {
   const removed: OrphanReport = { ...EMPTY_REPORT };
   const next: Record<string, unknown> = { ...state };
 
@@ -108,8 +128,32 @@ export const pruneOrphans = <T extends Partial<AppState>>(
     topicIds.has(h.topicId) && (!h.materialId || slideIds.has(h.materialId)));
   keep('learningRecords', state.learningRecords, (r) => topicIds.has(r.topicId));
 
-  return { state: next as T, removed };
+  const total = Object.values(removed).reduce((a, b) => a + b, 0);
+  const report: PruneReport = {
+    ...removed,
+    courses: 0,
+    materials: removed.slides,
+    questions: removed.examQuestions,
+    quizzes: removed.quizHistory,
+    plans: removed.studyPlans,
+    dates: removed.examDates,
+    objectives: removed.learningObjectives,
+    total,
+  };
+
+  const nextState = next as T;
+  return {
+    state: nextState,
+    removed,
+    report,
+    *[Symbol.iterator]() {
+      yield nextState;
+      yield removed;
+    },
+  };
 };
 
 /** Convenience wrapper for callers that only need the cleaned state. */
-export const withoutOrphans = <T extends Partial<AppState>>(state: T): T => pruneOrphans(state).state;
+export const withoutOrphans = <T extends ReferentialState>(state: T): T => pruneOrphans(state).state;
+
+export const pruneOrphansState = withoutOrphans;

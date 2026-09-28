@@ -275,11 +275,16 @@ export const itemCountOf = (state: AppState | SemesterSnapshot): number => {
 /**
  * The whole semester, minus session flags and secrets. Future AppState fields
  * are copied automatically — there is no collection allowlist to go stale.
- * The result is scrubbed so a pasted API key inside a note cannot ride along.
+ * The result is pruned for referential integrity (cascading course -> topic -> items)
+ * and scrubbed so a pasted API key inside a note cannot ride along.
  */
 export const buildSnapshot = (state: AppState): SemesterSnapshot => {
+  const { state: pruned, report } = pruneOrphans(state);
+  if (report.total > 0) {
+    console.warn(`[SemesterArchive] Pruned ${report.total} orphaned items from snapshot:`, report);
+  }
   const raw: Record<string, unknown> = { capturedAt: new Date().toISOString() };
-  for (const [key, value] of Object.entries(state)) {
+  for (const [key, value] of Object.entries(pruned)) {
     if (NON_SEMESTER_STATE_KEYS.has(key)) continue;
     raw[key] = value;
   }
@@ -410,7 +415,12 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
   try {
     await idb.set(META_PREFIX + id, marker);
   } catch (err) {
-    throw toArchiveError(err, 'Could not start the archive (storage unavailable).');
+    const detail = isQuotaError(err)
+      ? 'storage quota exceeded'
+      : err instanceof Error && err.message
+        ? err.message
+        : 'storage unavailable';
+    throw toArchiveError(err, `Could not start the archive (${detail}).`);
   }
 
   const manifest: ArchiveRecord['manifest'] = [];

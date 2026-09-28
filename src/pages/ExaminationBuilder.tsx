@@ -546,7 +546,7 @@ const ExaminationBuilder: React.FC = () => {
                 <h4 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-2">
                   Result details
                 </h4>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {(
                     [
                       ['showScore', 'Score'],
