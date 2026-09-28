@@ -185,7 +185,12 @@ describe('import flow (safe default: into the archive)', () => {
 
     // The backup is now part of the permanent archive…
     const archiveKeys = [...idbStore.keys()].filter(
-      (k) => k.startsWith('semester_archive') && !k.startsWith('semester_archive_file_') && !k.startsWith('semester_archive_text_'),
+      (k) =>
+        k.startsWith('semester_archive') &&
+        !k.startsWith('semester_archive_file_') &&
+        !k.startsWith('semester_archive_text_') &&
+        !k.startsWith('semester_archive_record_') &&
+        !k.startsWith('semester_archive_snap_'),
     );
     expect(archiveKeys).toHaveLength(1);
     const record = idbStore.get(archiveKeys[0]) as any;

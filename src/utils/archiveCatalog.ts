@@ -20,6 +20,7 @@ const ARCHIVE_PREFIX = 'semester_archive_';
 const FILE_PREFIX = 'semester_archive_file_';
 const TEXT_PREFIX = 'semester_archive_text_';
 const RECORD_PREFIX = 'semester_archive_record_';
+const SNAP_PREFIX = 'semester_archive_snap_';
 
 interface CatalogStamp {
   id: string;
@@ -59,7 +60,8 @@ const isMetaKey = (key: string): boolean =>
   key.startsWith(ARCHIVE_PREFIX) &&
   !key.startsWith(FILE_PREFIX) &&
   !key.startsWith(TEXT_PREFIX) &&
-  !key.startsWith(RECORD_PREFIX);
+  !key.startsWith(RECORD_PREFIX) &&
+  !key.startsWith(SNAP_PREFIX);
 
 const clip = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
 

@@ -1,4 +1,5 @@
 import React, { Suspense, useEffect, useState } from 'react';
+import { lazyRoute, prefetchLikelyRoutes } from './utils/routeLoader';
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
@@ -20,32 +21,32 @@ import ResetPassword from './pages/ResetPassword';
  * a computed `import(`./pages/${name}`)` silently resolves to nothing at build
  * time and the pages never reach the bundle.
  */
-const StudyMaterials = React.lazy(() => import('./pages/StudyMaterials'));
-const Highlights = React.lazy(() => import('./pages/Highlights'));
-const Courses = React.lazy(() => import('./pages/Courses'));
-const LearningObjectives = React.lazy(() => import('./pages/LearningObjectives'));
-const QuestionBank = React.lazy(() => import('./pages/QuestionBank'));
-const Quiz = React.lazy(() => import('./pages/Quiz'));
-const Planner = React.lazy(() => import('./pages/Planner'));
-const Notes = React.lazy(() => import('./pages/Notes'));
-const Analytics = React.lazy(() => import('./pages/Analytics'));
-const Settings = React.lazy(() => import('./pages/Settings'));
-const CourseDetail = React.lazy(() => import('./pages/CourseDetail'));
-const SlideReader = React.lazy(() => import('./pages/SlideReader'));
-const Timetable = React.lazy(() => import('./pages/Timetable'));
-const Profile = React.lazy(() => import('./pages/Profile'));
-const AcademicArchive = React.lazy(() => import('./pages/AcademicArchive'));
-const ArchiveViewer = React.lazy(() => import('./pages/ArchiveViewer'));
-const StorageManager = React.lazy(() => import('./pages/StorageManager'));
-const MaterialLibrary = React.lazy(() => import('./pages/MaterialLibrary'));
-const AcademicSearch = React.lazy(() => import('./pages/Search'));
-const Today = React.lazy(() => import('./pages/Today'));
-const Clinical = React.lazy(() => import('./pages/Clinical'));
-const AiAssistant = React.lazy(() => import('./pages/AiAssistant'));
-const ExaminationBuilder = React.lazy(() => import('./pages/ExaminationBuilder'));
-const KioskEntry = React.lazy(() => import('./pages/KioskEntry'));
-const SecureExamination = React.lazy(() => import('./pages/SecureExamination'));
-const ExaminationAdmin = React.lazy(() => import('./pages/ExaminationAdmin'));
+const StudyMaterials = lazyRoute('/materials', () => import('./pages/StudyMaterials'));
+const Highlights = lazyRoute('/highlights', () => import('./pages/Highlights'));
+const Courses = lazyRoute('/courses', () => import('./pages/Courses'));
+const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'));
+const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'));
+const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'));
+const Planner = lazyRoute('/planner', () => import('./pages/Planner'));
+const Notes = lazyRoute('/notes', () => import('./pages/Notes'));
+const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'));
+const Settings = lazyRoute('/settings', () => import('./pages/Settings'));
+const CourseDetail = lazyRoute('/course', () => import('./pages/CourseDetail'));
+const SlideReader = lazyRoute('/read', () => import('./pages/SlideReader'));
+const Timetable = lazyRoute('/timetable', () => import('./pages/Timetable'));
+const Profile = lazyRoute('/profile', () => import('./pages/Profile'));
+const AcademicArchive = lazyRoute('/archive', () => import('./pages/AcademicArchive'));
+const ArchiveViewer = lazyRoute('/archive-viewer', () => import('./pages/ArchiveViewer'));
+const StorageManager = lazyRoute('/storage', () => import('./pages/StorageManager'));
+const MaterialLibrary = lazyRoute('/library', () => import('./pages/MaterialLibrary'));
+const AcademicSearch = lazyRoute('/search', () => import('./pages/Search'));
+const Today = lazyRoute('/learn', () => import('./pages/Today'));
+const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'));
+const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'));
+const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'));
+const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'));
+const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'));
+const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
 import { AIProvider } from './ai/state';
@@ -116,6 +117,13 @@ const PageLoading: React.FC = () => (
 
 const App = () => {
   const { state } = useApp();
+
+  // Once the first screen is up, quietly warm the handful of pages a student is
+  // most likely to open next, so their first click feels instant. Heavy, rarely
+  // used pages are deliberately left out (see utils/routeLoader).
+  useEffect(() => {
+    prefetchLikelyRoutes();
+  }, []);
 
   // Offline-first: the app is fully usable with no account and no internet.
   // The only thing that gates the UI is whether we know who the student is —

@@ -254,6 +254,7 @@ function archiveIdFromMetaKey(key: string): string | null {
   if (key.startsWith(`${ARCHIVE_KEY_PREFIX}file_`)) return null;
   if (key.startsWith(`${ARCHIVE_KEY_PREFIX}text_`)) return null;
   if (key.startsWith(`${ARCHIVE_KEY_PREFIX}record_`)) return null;
+  if (key.startsWith(`${ARCHIVE_KEY_PREFIX}snap_`)) return null;
   const id = key.slice(ARCHIVE_KEY_PREFIX.length);
   return id || null;
 }
@@ -263,7 +264,8 @@ function keysForArchive(allKeys: string[], archiveId: string): string[] {
     k === ARCHIVE_KEY_PREFIX + archiveId ||
     k.startsWith(`${ARCHIVE_KEY_PREFIX}file_${archiveId}_`) ||
     k.startsWith(`${ARCHIVE_KEY_PREFIX}text_${archiveId}_`) ||
-    k.startsWith(`${ARCHIVE_KEY_PREFIX}record_${archiveId}__`),
+    k.startsWith(`${ARCHIVE_KEY_PREFIX}record_${archiveId}__`) ||
+    k.startsWith(`${ARCHIVE_KEY_PREFIX}snap_${archiveId}_`),
   );
 }
 

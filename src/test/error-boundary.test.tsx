@@ -90,7 +90,10 @@ describe('wiring', () => {
 
   it('wraps the page area, so the sidebar survives a crash', () => {
     const layout = read('../components/Layout.tsx');
-    expect(layout).toMatch(/<ErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,120}<Outlet \/>/);
+    // The persistent shell wraps ONLY the routed content in an error boundary
+    // (keyed by pathname) plus a Suspense fallback, so the sidebar/header stay
+    // mounted while a lazy page loads or crashes.
+    expect(layout).toMatch(/<RouteErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,200}<Outlet \/>/);
   });
 
   it('also wraps the router, covering Login and Onboarding', () => {

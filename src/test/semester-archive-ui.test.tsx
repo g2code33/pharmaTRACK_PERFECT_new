@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { setOnline } from './setup';
+import { loadArchive } from '../utils/semesterArchive';
 
 const idbStore = new Map<string, unknown>();
 
@@ -143,8 +144,17 @@ describe('Complete Semester dialog', () => {
     await waitFor(() => expect(screen.getByTestId('courses').textContent).toBe('0'));
     expect(screen.getByTestId('semester').textContent).toBe('2nd Semester');
 
-    // The archive exists on "disk" (mocked IndexedDB) and is verified.
-    const archiveKeys = [...idbStore.keys()].filter((k) => k.startsWith('semester_archive_') && !k.startsWith('semester_archive_file_') && !k.startsWith('semester_archive_text_'));
+    // The archive exists on "disk" (mocked IndexedDB) and is verified. Only the
+    // main record is counted; the snapshot is stored in separate chunk keys
+    // (layout v2), so file/text/record/snap namespaces are excluded here.
+    const archiveKeys = [...idbStore.keys()].filter(
+      (k) =>
+        k.startsWith('semester_archive_') &&
+        !k.startsWith('semester_archive_file_') &&
+        !k.startsWith('semester_archive_text_') &&
+        !k.startsWith('semester_archive_record_') &&
+        !k.startsWith('semester_archive_snap_'),
+    );
     expect(archiveKeys).toHaveLength(1);
     const record = idbStore.get(archiveKeys[0]) as any;
     expect(record.meta.status).toBe('verified');
@@ -153,9 +163,12 @@ describe('Complete Semester dialog', () => {
     expect(record.meta.semester).toBe('1');
     expect(record.meta.title).toBe('Level 300 — Semester 1');
     expect(record.meta.academicYear).toBe('2025/2026');
-    expect(record.snapshot.courses).toHaveLength(1);
-    expect(record.snapshot.slides).toHaveLength(2);
-    expect(record.snapshot.notes).toHaveLength(1);
+    // The snapshot is read back through the public API (it hydrates the chunked
+    // layout), which is exactly how the app reads archives.
+    const hydrated = await loadArchive(record.meta.id);
+    expect(hydrated!.snapshot.courses).toHaveLength(1);
+    expect(hydrated!.snapshot.slides).toHaveLength(2);
+    expect(hydrated!.snapshot.notes).toHaveLength(1);
     // The binary was copied into the archive.
     expect(idbStore.has(`semester_archive_file_${record.meta.id}_file1`)).toBe(true);
     // The old workspace's records were pruned after the verified archive.
