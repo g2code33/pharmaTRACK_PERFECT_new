@@ -60,7 +60,6 @@ import {
   setTopicStatus,
 } from '../utils/learningEngine';
 import { flagAttemptedQuestions } from '../utils/questionBank';
-import { pruneOrphans } from '../utils/referentialIntegrity';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
