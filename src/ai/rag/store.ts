@@ -9,7 +9,7 @@
  * It is also deliberately excluded from semester archives — see
  * `PROTECTED_IDB_KEYS` in `utils/semesterArchive.ts`.
  */
-import * as idb from 'idb-keyval';
+import * as idb from '../../utils/idbStore';
 import { RAG_INDEX_KEY, RAG_INDEX_VERSION } from './types';
 import type { RagIndexShape } from './types';
 

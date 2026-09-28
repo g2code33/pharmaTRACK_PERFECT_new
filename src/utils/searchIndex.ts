@@ -1,4 +1,4 @@
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 
 /**
  * Full-text index for uploaded documents.

@@ -34,7 +34,7 @@ import { clearAISettings } from '../ai/settings';
 import { supabase } from '../utils/supabase';
 import { flushAccountSync, queueAccountRecord } from '../account/sync';
 import { withCloudAccess } from '../utils/requireAuth';
-import { clear } from 'idb-keyval';
+import { clear } from '../utils/idbStore';
 import CompleteSemesterModal from '../components/CompleteSemesterModal';
 
 const Settings: React.FC = () => {

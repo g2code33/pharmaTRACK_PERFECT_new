@@ -5,7 +5,7 @@
  * conversation is new or has changed, and kept in a compact index. Ordinary
  * search never calls a provider and never reloads every conversation.
  */
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 import { listConversations, loadConversation } from '../ai/conversations';
 import { scoreQueryField, snippetAround, type SearchResult } from './search';
 import { bumpSearchIndex } from './searchNotify';

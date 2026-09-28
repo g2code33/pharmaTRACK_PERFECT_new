@@ -8,7 +8,7 @@
  * unlocked, accountSync additionally stores an account-recoverable ciphertext
  * envelope in Supabase; the server never receives plaintext credentials.
  */
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import type { ProviderId } from './types';
 import { loadEncryptedJson, saveEncryptedJson } from '../examination/secureStorage';
 import { recordAIAudit } from './audit';

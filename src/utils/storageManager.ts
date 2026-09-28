@@ -14,7 +14,7 @@
  *   3  a legacy API key leaves the semester file only after IndexedDB holds
  *      the same key. A different saved key is never overwritten.
  */
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 import type { AppState } from '../types';
 import {
   allowWorkspacePersist,

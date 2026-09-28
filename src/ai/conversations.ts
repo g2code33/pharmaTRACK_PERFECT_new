@@ -8,7 +8,7 @@
  * should hold, and it is deliberately independent of AppState so AI usage never
  * bloats the state blob that gets backed up on every keystroke.
  */
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import { v4 as uuidv4 } from 'uuid';
 import type { AIChatFallbackInfo, AIChatMessage, AIConversation, AIContextSource } from './types';
 

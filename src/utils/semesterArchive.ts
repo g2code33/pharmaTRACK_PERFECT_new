@@ -19,7 +19,7 @@
  *
  * Everything here is local-first: no Supabase, no network, works offline.
  */
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 import JSZip from 'jszip';
 import { v4 as uuidv4 } from 'uuid';
 import type {
@@ -342,7 +342,14 @@ export const probeIndexedDb = async (): Promise<StorageProbeResult> => {
     // If the engine gave us nothing useful, storage.estimate() may reveal a
     // genuinely full disk so the user gets the right advice.
     const { quota, usage } = await estimateStorage();
-    if (failure.code === 'unknown' && quota != null && usage != null && usage >= quota * 0.98) {
+    // A quota of 0 is not "0 bytes available" — WebKitGTK (Tauri Linux) can
+    // report `{ quota: 0, usage: 0 }` from navigator.storage.estimate() when
+    // the estimate itself isn't actually backed, rather than throwing or
+    // omitting it. Without the `quota > 0` guard, that reads as "using 100%
+    // of a 0-byte quota" and mislabels every non-quota failure (a stale
+    // connection, a locked database, …) as "device is out of storage" —
+    // which sends the user chasing the wrong fix.
+    if (failure.code === 'unknown' && quota != null && quota > 0 && usage != null && usage >= quota * 0.98) {
       failure = { code: 'quota', detail: 'storage-quota-exceeded' };
     }
     return { ok: false, code: failure.code, message: startArchiveErrorMessage(failure), quota, usage };

@@ -11,7 +11,7 @@
  * Critical security guarantee: raw secrets, tokens, and authorization headers
  * are never recorded. Details are deeply sanitized and scrubbed before storage.
  */
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import type { ProviderId } from './types';
 import { scrubSecretsDeep } from './credentials';
 

@@ -1,4 +1,4 @@
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import { randomBytes } from './crypto';
 import { asCryptoBuffer } from './cryptoBuffer';
 

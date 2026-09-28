@@ -1,4 +1,4 @@
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import { loadEncryptedJson, saveEncryptedJson } from './secureStorage';
 import {
   EXAMINATION_SCHEMA_VERSION,

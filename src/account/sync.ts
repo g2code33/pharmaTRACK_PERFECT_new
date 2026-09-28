@@ -11,7 +11,7 @@
  * newer account record. Conflicts retain both values until the caller makes
  * an explicit choice.
  */
-import * as idb from 'idb-keyval';
+import * as idb from '../utils/idbStore';
 import { supabase } from '../utils/supabase';
 
 export const ACCOUNT_SYNC_RECORD_TYPES = [

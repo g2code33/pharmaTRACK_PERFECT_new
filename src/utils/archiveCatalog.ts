@@ -7,7 +7,7 @@
  * page-text index are kept — never the uploaded binaries. Later searches
  * run against the catalog already in memory.
  */
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 import type { AppState, Slide } from '../types';
 import type { ArchiveRecord } from './semesterArchive';
 import { loadArchive } from './semesterArchive';
