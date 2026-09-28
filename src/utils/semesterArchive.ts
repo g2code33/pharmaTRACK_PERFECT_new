@@ -33,7 +33,7 @@ import type {
 } from '../types';
 import { initialState, saveState } from './storage';
 import { scrubSecretsDeep } from '../ai/credentials';
-import { pruneOrphans } from './referentialIntegrity';
+import { describeOrphanReport, isCleanReport, pruneOrphans } from './referentialIntegrity';
 import { getSearchIndexRaw, setSearchIndexRaw, clearSearchIndex, type IndexShape } from './searchIndex';
 import type {
   PharmaTrackBackupManifest,
@@ -288,7 +288,14 @@ export const buildSnapshot = (state: AppState): SemesterSnapshot => {
     if (NON_SEMESTER_STATE_KEYS.has(key)) continue;
     raw[key] = value;
   }
-  return scrubSecretsDeep(raw) as SemesterSnapshot;
+  // Rows whose parent was deleted are already invisible in the app; carrying
+  // them into the snapshot would only make the package fail its own
+  // relationship check at export/import time.
+  const { state: clean, removed } = pruneOrphans(raw as unknown as AppState);
+  if (!isCleanReport(removed)) {
+    console.warn(`Snapshot dropped orphaned rows: ${describeOrphanReport(removed)}`);
+  }
+  return scrubSecretsDeep(clean) as SemesterSnapshot;
 };
 
 /** Fields the app has always had. Anything else on the object is semester data too. */
@@ -381,8 +388,10 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
 
   const snapshot = buildSnapshot(state);
   const index = await getSearchIndexRaw();
-  const refs = collectFileRefs(snapshot as unknown as AppState);
-  const itemCount = itemCountOf(snapshot as unknown as AppState);
+  const refs = collectFileRefs(state);
+  // Counts describe what the archive actually holds (the pruned snapshot),
+  // otherwise verification would compare them against a different shape.
+  const itemCount = itemCountOf(snapshot);
 
   const baseMeta: SemesterArchiveMeta = {
     id,
@@ -894,17 +903,15 @@ const collectBackupSource = async (
   if (source.kind === 'archive') {
     const rec = await loadArchive(source.archiveId);
     if (!rec) throw new ArchiveError('Archive not found.');
-    // Self-heal: prune any orphaned records that were captured into the archive
-    // before referential cascades were enforced, so exporting legacy archives succeeds.
-    // The underlying stored archive in IndexedDB is never mutated.
-    const { state: cleanSnapshot, report } = pruneOrphans(rec.snapshot);
-    if (report.total > 0) {
-      console.warn(
-        `[SemesterArchive] Self-healed ${report.total} orphaned items during export of archive "${rec.meta.title}":`,
-        report,
-      );
+    // Archives written before deletes cascaded can still hold orphaned rows
+    // (a question whose course was deleted). They are dead data, so the
+    // package is built without them instead of refusing to export at all.
+    // The stored archive itself is never modified here.
+    const cleaned = pruneOrphans(rec.snapshot as unknown as AppState);
+    if (!isCleanReport(cleaned.removed)) {
+      console.warn(`Backup skipped orphaned rows from archive ${rec.meta.id}: ${describeOrphanReport(cleaned.removed)}`);
     }
-    snapshot = cleanSnapshot;
+    snapshot = cleaned.state as unknown as SemesterSnapshot;
     index = rec.index;
     meta = {
       archiveId: rec.meta.id,

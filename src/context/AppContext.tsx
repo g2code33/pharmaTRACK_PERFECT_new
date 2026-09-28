@@ -60,6 +60,7 @@ import {
   setTopicStatus,
 } from '../utils/learningEngine';
 import { flagAttemptedQuestions } from '../utils/questionBank';
+import { pruneOrphans } from '../utils/referentialIntegrity';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
 
@@ -221,12 +222,15 @@ export const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
-    case 'DELETE_COURSE': {
+    // Deleting a course removes everything that hangs off it. Leaving the
+    // questions/materials/quizzes behind made them invisible in the UI but kept
+    // them in the snapshot, which later failed the backup integrity check.
+    case 'DELETE_COURSE':
       return pruneOrphans({
         ...state,
         courses: state.courses.filter((c) => c.id !== action.payload),
+        learningRecords: recordsOf(state),
       }).state;
-    }
 
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.payload] };
@@ -239,10 +243,12 @@ export const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
+    // Same cascade as DELETE_COURSE, one level down.
     case 'DELETE_TOPIC':
       return pruneOrphans({
         ...state,
         topics: state.topics.filter((t) => t.id !== action.payload),
+        learningRecords: recordsOf(state),
       }).state;
 
     case 'REORDER_TOPICS':
@@ -265,6 +271,7 @@ export const appReducer = (state: AppState, action: Action): AppState => {
         ),
       };
 
+    // Highlights anchored to the deleted material go with it.
     case 'DELETE_SLIDE':
       return pruneOrphans({
         ...state,
