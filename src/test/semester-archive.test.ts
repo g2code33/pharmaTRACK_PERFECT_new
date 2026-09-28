@@ -44,6 +44,9 @@ import {
   applyWorkspaceSource,
   restoreArchive,
   hasWorkspaceContent,
+  probeIndexedDb,
+  describeStorageFailure,
+  archiveSnapshotChunkKey,
 } from '../utils/semesterArchive';
 import { getSearchIndexRaw, setSearchIndexRaw } from '../utils/searchIndex';
 import type { AppState } from '../types';
@@ -693,5 +696,265 @@ describe('restore (always protected)', () => {
     // Incoming binaries materialised in the live namespace.
     expect(idbStore.has('file_file1')).toBe(true);
     expect(JSON.parse(localStorage.getItem('pharmatrack_state')!).courses).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WebKit-safe archive startup (regression suite for the
+// "Could not start the archive (storage unavailable)" failure).
+// ---------------------------------------------------------------------------
+
+/** Runs `fn` while the FIRST write matching `match` throws `error`. */
+const withFailingWriteOnce = async (
+  match: (k: string) => boolean,
+  error: unknown,
+  fn: () => Promise<void>,
+) => {
+  const realSet = idbStore.set.bind(idbStore);
+  let thrown = false;
+  idbStore.set = (k: string, v: unknown) => {
+    if (!thrown && match(k)) {
+      thrown = true;
+      throw error;
+    }
+    return realSet(k, v);
+  };
+  try {
+    await fn();
+  } finally {
+    idbStore.set = realSet;
+  }
+};
+
+const mainArchiveKey = (k: string) => /^semester_archive_archive_/.test(k);
+
+describe('WebKit-safe archive startup', () => {
+  it('archives a large snapshot + large search index without bundling them into the initial marker', async () => {
+    const state = makeState();
+    // Make the snapshot genuinely large: many notes with long text.
+    state.notes = Array.from({ length: 400 }, (_, i) => ({
+      id: `nbig${i}`,
+      topicId: 't1',
+      noteText: `Detailed pharmacology note ${i}. ${'x'.repeat(2000)}`,
+      isAiGenerated: false,
+      createdAt: '2024-01-06',
+    })) as AppState['notes'];
+    seedIdb(state);
+    // A large per-page search index.
+    const bigIndex: Record<string, any> = {};
+    for (let i = 0; i < 20; i++) {
+      bigIndex[`m${i}`] = {
+        materialId: `m${i}`,
+        topicId: 't1',
+        title: `Doc ${i}`,
+        pages: Array.from({ length: 30 }, (_, p) => ({ page: p + 1, text: 'y'.repeat(3000) })),
+      };
+    }
+    await setSearchIndexRaw(bigIndex);
+
+    // Capture every write to the MAIN archive key so we can inspect the marker.
+    const mainWrites: { key: string; value: any }[] = [];
+    const realSet = idbStore.set.bind(idbStore);
+    idbStore.set = (k: string, v: unknown) => {
+      if (mainArchiveKey(k)) mainWrites.push({ key: k, value: v });
+      return realSet(k, v);
+    };
+
+    let meta;
+    try {
+      meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' });
+    } finally {
+      idbStore.set = realSet;
+    }
+
+    expect(meta.status).toBe('verified');
+
+    // First main write is the lightweight marker: no snapshot, no index.
+    const marker = mainWrites[0].value;
+    expect(marker.partial).toBe(true);
+    expect(marker.snapshot).toBeUndefined();
+    expect(marker.index).toBeUndefined();
+
+    // The final main record also carries neither inline snapshot nor inline
+    // index — the snapshot is chunked, the index is the copied record.
+    const finalRecord = mainWrites[mainWrites.length - 1].value;
+    expect(finalRecord.snapshot).toBeUndefined();
+    expect(finalRecord.index).toBeUndefined();
+    expect(typeof finalRecord.snapshotChunks).toBe('number');
+    expect(finalRecord.snapshotChunks).toBeGreaterThan(1); // proved it actually split
+
+    // Snapshot chunk keys exist and rehydrate correctly.
+    expect(idbStore.has(archiveSnapshotChunkKey(meta.id, 0))).toBe(true);
+    const rec = await loadArchive(meta.id);
+    expect(rec!.snapshot.notes).toHaveLength(400);
+    expect(Object.keys(rec!.index ?? {})).toHaveLength(20);
+  });
+
+  it('turns a null/undefined initial IndexedDB rejection into an actionable error (not "storage unavailable")', async () => {
+    const state = makeState();
+    seedIdb(state);
+
+    // The very first main (marker) write rejects with null — the unhelpful
+    // shape WebKitGTK can produce.
+    await withFailingWriteOnce(mainArchiveKey, null, async () => {
+      const err = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' }).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).toMatch(/could not start the archive/i);
+      expect(err.message).toMatch(/close other copies|try again|temporarily locked/i);
+      expect(err.message).not.toMatch(/storage unavailable/i);
+    });
+    // Nothing was left behind and the live workspace is intact.
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_archive'))).toEqual([]);
+    expect(idbStore.has('file_file1')).toBe(true);
+  });
+
+  it('reports a full disk on QuotaExceededError', async () => {
+    const state = makeState();
+    seedIdb(state);
+    await withFailingWriteOnce(
+      mainArchiveKey,
+      new DOMException('quota', 'QuotaExceededError'),
+      async () => {
+        const err = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' }).catch((e) => e);
+        expect(err.message).toMatch(/storage space|storage is full|out of storage/i);
+      },
+    );
+  });
+
+  it('identifies non-cloneable data on DataCloneError without exposing content', async () => {
+    const state = makeState();
+    seedIdb(state);
+    await withFailingArchiveCopy('_file2', new DOMException('nope', 'DataCloneError'), async () => {
+      const err = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' }).catch((e) => e);
+      expect(err.message).toMatch(/format|cannot store/i);
+      // No academic content or secrets leak into the message.
+      expect(err.message).not.toContain('Digoxin');
+      expect(err.message).not.toContain('sk-test-key');
+    });
+  });
+
+  it('classifies engine errors of every shape (Error, DOMException, Event, string, null, undefined)', () => {
+    expect(describeStorageFailure(new DOMException('x', 'QuotaExceededError')).code).toBe('quota');
+    expect(describeStorageFailure(new DOMException('x', 'SecurityError')).code).toBe('security');
+    expect(describeStorageFailure(new DOMException('x', 'DataCloneError')).code).toBe('clone');
+    expect(describeStorageFailure(new DOMException('x', 'UnknownError')).code).toBe('blocked');
+    expect(describeStorageFailure(new DOMException('x', 'InvalidStateError')).code).toBe('blocked');
+    // An Event carrying the real error on target.error.
+    expect(describeStorageFailure({ target: { error: { name: 'QuotaExceededError' } } }).code).toBe('quota');
+    expect(describeStorageFailure('database is closing').code).toBe('blocked');
+    expect(describeStorageFailure(null).code).toBe('unknown');
+    expect(describeStorageFailure(undefined).code).toBe('unknown');
+  });
+
+  it('preflight probe succeeds normally and reports the failure code when writes reject', async () => {
+    const ok = await probeIndexedDb();
+    expect(ok.ok).toBe(true);
+
+    await withFailingWriteOnce((k) => k.startsWith('pharmatrack_probe_'), new DOMException('q', 'QuotaExceededError'), async () => {
+      const bad = await probeIndexedDb();
+      expect(bad.ok).toBe(false);
+      expect(bad.code).toBe('quota');
+      expect(bad.message).toMatch(/storage space|out of storage/i);
+    });
+    // The probe never leaves its scratch key behind.
+    expect([...idbStore.keys()].some((k) => k.startsWith('pharmatrack_probe_'))).toBe(false);
+  });
+
+  it('ignores interrupted lightweight markers in listings and rejects them on verify', async () => {
+    // Simulate an attempt that died right after the marker was written.
+    const id = 'archive_300_1_2025_2026_deadbeef';
+    idbStore.set(`semester_archive_${id}`, {
+      partial: true,
+      meta: {
+        id, level: '300', semester: '1', title: 'Level 300 — Semester 1',
+        academicYear: '2025/2026', completedAt: '2026-01-01T00:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z', status: 'creating', version: 1,
+        itemCount: 0, fileCount: 0, totalBytes: 0,
+      },
+    });
+
+    // It never appears as a completed archive, and cannot be loaded as one.
+    expect(await listArchives()).toHaveLength(0);
+    expect(await loadArchive(id)).toBeNull();
+    // Verifying it fails safely and marks it failed so recovery can clean it.
+    await expect(verifySemesterArchive(id)).rejects.toThrow(/incomplete|verification failed/i);
+    const after = idbStore.get(`semester_archive_${id}`) as any;
+    expect(after.meta.status).toBe('failed');
+  });
+
+  it('a failure while writing the snapshot chunks leaves the live semester unchanged and removes partial records', async () => {
+    const state = makeState();
+    seedIdb(state);
+    const before = new Map(idbStore);
+    const stateBefore = localStorage.getItem('pharmatrack_state');
+
+    await withFailingWriteOnce((k) => k.startsWith('semester_archive_snap_'), new DOMException('boom', 'UnknownError'), async () => {
+      await expect(createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' }))
+        .rejects.toThrow(/archive could not be completed|busy|another window/i);
+    });
+
+    for (const [k, v] of before) expect(idbStore.get(k), `record ${k} changed`).toBe(v);
+    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_archive'))).toEqual([]);
+    expect(localStorage.getItem('pharmatrack_state')).toBe(stateBefore);
+  });
+
+  it('retries successfully after a transient IndexedDB failure', async () => {
+    const state = makeState();
+    seedIdb(state);
+
+    await withFailingWriteOnce(mainArchiveKey, new DOMException('temporary', 'UnknownError'), async () => {
+      await expect(createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' })).rejects.toThrow();
+    });
+    // A fresh attempt (the "Retry" action) now succeeds.
+    const meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' });
+    expect(meta.status).toBe('verified');
+    expect((await listArchives()).length).toBe(1);
+  });
+
+  it('still loads, verifies and exports a legacy version-1 (inline) archive', async () => {
+    const state = makeState();
+    seedIdb(state);
+    await setSearchIndexRaw({ s1: { materialId: 's1', topicId: 't1', title: 'Digoxin', pages: [{ page: 1, text: 'deep text' }] } });
+    const meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester', academicYear: '2026/2027' });
+
+    // Rewrite the record in the OLD inline layout and drop the v2 chunk keys,
+    // exactly as a build before this change would have stored it.
+    const rec = await loadArchive(meta.id);
+    idbStore.set(`semester_archive_${meta.id}`, {
+      meta: rec!.meta,
+      snapshot: rec!.snapshot,
+      index: rec!.index,
+      manifest: rec!.manifest,
+    });
+    for (const k of [...idbStore.keys()]) {
+      if (k.startsWith(`semester_archive_snap_${meta.id}_`)) idbStore.delete(k);
+    }
+
+    const reloaded = await loadArchive(meta.id);
+    expect(reloaded!.snapshot.courses).toHaveLength(2);
+    expect(reloaded!.index?.s1.pages[0].text).toBe('deep text');
+    expect((await verifySemesterArchive(meta.id)).status).toBe('verified');
+
+    const blob = await exportBackup({ kind: 'archive', archiveId: meta.id });
+    const parsed = await parseBackup(await blobToBuffer(blob));
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('archives real Blob / Uint8Array files and offloaded search text', async () => {
+    const state = makeState();
+    seedIdb(state); // file1 = Blob PDF, file2 = Uint8Array PNG, slidetext_s1 = long text
+    await setSearchIndexRaw({ s1: { materialId: 's1', topicId: 't1', title: 'Digoxin', pages: [{ page: 1, text: 'offloaded page text' }] } });
+
+    const meta = await createSemesterArchive(state, { level: 'Level 300', semester: '1st Semester' });
+    expect(meta.status).toBe('verified');
+
+    const pdf = await loadArchivedFile(meta.id, 'file1');
+    expect(pdf).toBeInstanceOf(Blob);
+    const png = await loadArchivedFile(meta.id, 'file2');
+    expect(png).toBeInstanceOf(Blob); // stored verbatim (Uint8Array wrapped as blob at seed time)
+    expect(await loadArchivedSlideText(meta.id, 's1')).toBe(LONG_TEXT);
+
+    const rec = await loadArchive(meta.id);
+    expect(rec!.index?.s1.pages[0].text).toBe('offloaded page text');
   });
 });

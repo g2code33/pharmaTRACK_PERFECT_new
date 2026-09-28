@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import RouteErrorBoundary from './RouteErrorBoundary';
+import RouteLoading from './RouteLoading';
+import { prefetchRoute } from '../utils/routeLoader';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
-import ErrorBoundary from './ErrorBoundary';
 import {
   checkNativeUpdate,
   detectRuntimeCapabilities,
@@ -16,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.89';
+const APP_VERSION_FALLBACK = '1.1.90';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -253,7 +255,7 @@ const Layout: React.FC = () => {
             {navItems.map((item: any) => {
               const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
               return (
-                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-all duration-200 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-[#2D6A4F]/20' : item.highlight ? 'bg-purple-600/10 text-purple-400 hover:bg-purple-600/20' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}>
+                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => prefetchRoute(item.path)} onFocus={() => prefetchRoute(item.path)} onTouchStart={() => prefetchRoute(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-all duration-200 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-[#2D6A4F]/20' : item.highlight ? 'bg-purple-600/10 text-purple-400 hover:bg-purple-600/20' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}>
                   <item.icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-[#FFB703]' : ''}`} />
                   {!sidebarCollapsed && <span className="text-sm font-bold tracking-tight">{item.label}</span>}
                 </Link>
@@ -428,12 +430,17 @@ const Layout: React.FC = () => {
             </div>
           </header>
           <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
-            {/* Scoped to the page area so a crashing route leaves the sidebar,
-                search and navigation usable. resetKey clears the error when the
-                user navigates away. */}
-            <ErrorBoundary resetKey={location.pathname}>
-              <Outlet />
-            </ErrorBoundary>
+            {/* Scoped to the page area so a crashing route — or a lazy chunk
+                that fails to load — leaves the sidebar, header, search and
+                navigation fully usable. The Suspense fallback replaces ONLY
+                this content area, never the whole app shell, so switching
+                sidebar tabs never produces a full-window white flash.
+                resetKey clears the error when the user navigates away. */}
+            <RouteErrorBoundary resetKey={location.pathname}>
+              <Suspense fallback={<RouteLoading />}>
+                <Outlet />
+              </Suspense>
+            </RouteErrorBoundary>
           </main>
         </div>
       </div>

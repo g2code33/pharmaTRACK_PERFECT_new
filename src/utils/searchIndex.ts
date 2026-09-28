@@ -18,7 +18,12 @@ import * as idb from 'idb-keyval';
  * capping how much of any single document is indexed.
  */
 
-const INDEX_KEY = 'pharmatrack_search_index';
+/**
+ * IndexedDB key for the persisted full-text index. Exported so the semester
+ * archive can locate its captured copy when rehydrating an archive record.
+ */
+export const SEARCH_INDEX_KEY = 'pharmatrack_search_index';
+const INDEX_KEY = SEARCH_INDEX_KEY;
 
 /** Roughly 300 pages of dense text; beyond this the tail is dropped. */
 const MAX_CHARS_PER_DOC = 600_000;

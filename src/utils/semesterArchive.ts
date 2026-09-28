@@ -34,7 +34,7 @@ import type {
 import { initialState, saveState } from './storage';
 import { scrubSecretsDeep } from '../ai/credentials';
 import { describeOrphanReport, isCleanReport, pruneOrphans } from './referentialIntegrity';
-import { getSearchIndexRaw, setSearchIndexRaw, clearSearchIndex, type IndexShape } from './searchIndex';
+import { getSearchIndexRaw, setSearchIndexRaw, clearSearchIndex, SEARCH_INDEX_KEY, type IndexShape } from './searchIndex';
 import type {
   PharmaTrackBackupManifest,
   BackupSummary,
@@ -63,11 +63,25 @@ const META_PREFIX = ARCHIVE_KEY_PREFIX;
 const META_FILE_PREFIX = 'semester_archive_file_';
 const META_TEXT_PREFIX = 'semester_archive_text_';
 const META_RECORD_PREFIX = 'semester_archive_record_';
+/**
+ * Snapshot chunk namespace (layout v2). The snapshot is serialised to JSON and
+ * split into string chunks, each stored under its own key, so it is NEVER
+ * written as one oversized IndexedDB value (WebKitGTK rejects very large
+ * structured-clone writes — the root cause of the "storage unavailable" failure
+ * this file used to hit when the whole snapshot was bundled into the marker).
+ */
+const META_SNAP_PREFIX = 'semester_archive_snap_';
 
 export const archiveFileKey = (archiveId: string, fileId: string) => `${META_FILE_PREFIX}${archiveId}_${fileId}`;
 export const archiveTextKey = (archiveId: string, slideId: string) => `${META_TEXT_PREFIX}${archiveId}_${slideId}`;
 /** Other semester-owned IndexedDB records (AI conversations, future stores). */
 export const archiveRecordKey = (archiveId: string, sourceKey: string) => `${META_RECORD_PREFIX}${archiveId}__${sourceKey}`;
+/** One chunk of the JSON-serialised snapshot for `archiveId` (layout v2). */
+export const archiveSnapshotChunkKey = (archiveId: string, index: number) => `${META_SNAP_PREFIX}${archiveId}_${index}`;
+
+/** Max characters per snapshot chunk. Small enough to stay well under any
+ * practical single-value limit in WebKitGTK, Chromium, and Gecko. */
+const SNAPSHOT_CHUNK_CHARS = 256 * 1024;
 
 /**
  * IndexedDB keys that are app infrastructure, not semester academic data.
@@ -115,18 +129,22 @@ const isArchiveMetaKey = (key: string): boolean =>
   key.startsWith(META_PREFIX) &&
   !key.startsWith(META_FILE_PREFIX) &&
   !key.startsWith(META_TEXT_PREFIX) &&
-  !key.startsWith(META_RECORD_PREFIX);
+  !key.startsWith(META_RECORD_PREFIX) &&
+  !key.startsWith(META_SNAP_PREFIX);
 
 const keysBelongingToArchive = (keys: string[], archiveId: string): string[] =>
   keys.filter((k) =>
     k === META_PREFIX + archiveId ||
     k.startsWith(META_FILE_PREFIX + archiveId) ||
     k.startsWith(META_TEXT_PREFIX + archiveId) ||
-    k.startsWith(META_RECORD_PREFIX + archiveId),
+    k.startsWith(META_RECORD_PREFIX + archiveId) ||
+    k.startsWith(META_SNAP_PREFIX + archiveId),
   );
 
 /** Session flags and secrets — not academic data, so a snapshot never carries them. */
 const NON_SEMESTER_STATE_KEYS = new Set(['isLoggedIn', 'openAIKey']);
+
+type ArchiveManifest = { sourceKey: string; archiveKey: string; kind: 'file' | 'slidetext' | 'record'; size: number }[];
 
 export interface ArchiveRecord {
   meta: SemesterArchiveMeta;
@@ -134,8 +152,40 @@ export interface ArchiveRecord {
   /** The full-text search index at capture time (null when empty). */
   index: IndexShape | null;
   /** Copied records: source key, archive key, kind, byte size. */
-  manifest: { sourceKey: string; archiveKey: string; kind: 'file' | 'slidetext' | 'record'; size: number }[];
+  manifest: ArchiveManifest;
 }
+
+/**
+ * Lightweight "creating" marker (layout v2). Written FIRST — before any large
+ * value — so an interrupted archive attempt can be detected and cleaned up
+ * without ever bundling the snapshot/search index into a single record. It is
+ * never a valid completed archive: it has no snapshot, so listArchives() and
+ * the search catalog ignore it and verification rejects it.
+ */
+interface ArchiveMarkerRecord {
+  meta: SemesterArchiveMeta;
+  partial: true;
+}
+
+/**
+ * Final main record (layout v2). Holds only small metadata: the snapshot lives
+ * in `snapshotChunks` separate string keys, and the search index is the copied
+ * `pharmatrack_search_index` record already listed in `manifest` — so neither
+ * large value is duplicated here.
+ */
+interface ArchiveMainRecordV2 {
+  meta: SemesterArchiveMeta;
+  manifest: ArchiveManifest;
+  /** Number of snapshot chunk keys (archiveSnapshotChunkKey). */
+  snapshotChunks: number;
+}
+
+/** Anything that can sit at the main archive key across historical layouts. */
+type StoredArchive =
+  | ArchiveRecord // legacy v1: inline snapshot + index
+  | ArchiveMainRecordV2
+  | ArchiveMarkerRecord
+  | { meta?: SemesterArchiveMeta } & Record<string, unknown>;
 
 export class ArchiveError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
@@ -146,8 +196,158 @@ export class ArchiveError extends Error {
 
 /** True when the underlying failure was an IndexedDB/localStorage quota error. */
 export const isQuotaError = (err: unknown): boolean =>
-  err instanceof DOMException &&
-  (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED');
+  (err instanceof DOMException &&
+    (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED')) ||
+  (typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'QuotaExceededError');
+
+// ---------------------------------------------------------------------------
+// Storage failure classification & preflight probe
+//
+// WebKitGTK (the Tauri Linux webview) is the environment that fails here, and
+// its IndexedDB errors are unusually unhelpful: a rejected request can carry a
+// null/undefined error, a bare Event, or a DOMException whose name is the only
+// useful signal. Every archive error path runs through describeStorageFailure
+// so the user always sees an actionable message — never a raw, empty error and
+// never their academic content.
+// ---------------------------------------------------------------------------
+
+export type StorageFailureCode = 'quota' | 'security' | 'blocked' | 'clone' | 'unknown';
+
+export interface StorageFailure {
+  code: StorageFailureCode;
+  /** Short, content-free technical hint (safe to log/show). */
+  detail: string;
+}
+
+const errorName = (err: unknown): string => {
+  if (err instanceof DOMException) return err.name;
+  if (err && typeof err === 'object' && typeof (err as { name?: unknown }).name === 'string') {
+    return (err as { name: string }).name;
+  }
+  // A rejected IndexedDB request can surface as an Event whose target holds the
+  // real error; dig one level in when possible.
+  const target = err && typeof err === 'object' ? (err as { target?: unknown }).target : undefined;
+  if (target && typeof target === 'object') {
+    const nested = (target as { error?: { name?: unknown } }).error;
+    if (nested && typeof nested.name === 'string') return nested.name;
+  }
+  return '';
+};
+
+const errorMessageText = (err: unknown): string => {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  return '';
+};
+
+/** Classifies any thrown value (Error, DOMException, Event, string, null, …). */
+export const describeStorageFailure = (err: unknown): StorageFailure => {
+  const name = errorName(err);
+  const message = errorMessageText(err);
+
+  if (isQuotaError(err) || name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+    return { code: 'quota', detail: 'storage-quota-exceeded' };
+  }
+  if (name === 'SecurityError' || /security|denied|not allowed|permission/i.test(message)) {
+    return { code: 'security', detail: 'storage-permission-denied' };
+  }
+  if (name === 'DataCloneError' || /could not be cloned|datacloneerror/i.test(message)) {
+    return { code: 'clone', detail: 'value-not-cloneable' };
+  }
+  if (
+    name === 'InvalidStateError' ||
+    name === 'AbortError' ||
+    name === 'TransactionInactiveError' ||
+    name === 'VersionError' ||
+    name === 'UnknownError'
+  ) {
+    // UnknownError is WebKit's catch-all for a database in a bad/closed state.
+    return { code: 'blocked', detail: 'database-unavailable' };
+  }
+  if (/quota|exceeded|disk|full|no space/i.test(message)) {
+    return { code: 'quota', detail: 'storage-quota-exceeded' };
+  }
+  if (/blocked|version ?change|closing|closed|database|connection is closing/i.test(message)) {
+    return { code: 'blocked', detail: 'database-unavailable' };
+  }
+  return { code: 'unknown', detail: 'indexeddb-write-rejected' };
+};
+
+/** Actionable, content-free message for a failure while STARTING an archive. */
+const startArchiveErrorMessage = (failure: StorageFailure): string => {
+  switch (failure.code) {
+    case 'quota':
+      return 'Could not start the archive because this device is out of storage space. Your current semester is untouched — free up space (or export a backup to your device), then try again.';
+    case 'security':
+      return 'Could not start the archive because the app was denied access to local storage. Allow storage/site data for PharmaTRACK, then try again. Your current semester is untouched.';
+    case 'clone':
+      return 'Could not start the archive because some saved data on this device is in a format the local database cannot store. Your current semester is untouched. Please report this so it can be fixed.';
+    case 'blocked':
+      return 'Could not start the archive because the local database is busy or open in another window. Close any other copies of PharmaTRACK, then try again. Your current semester is untouched.';
+    default:
+      return 'Could not start the archive because the local database rejected the request. This can happen when the app is open in another window or storage is temporarily locked. Close other copies of PharmaTRACK, then try again. Your current semester is untouched.';
+  }
+};
+
+/** navigator.storage.estimate(), when supported — never throws. */
+const estimateStorage = async (): Promise<{ quota: number | null; usage: number | null }> => {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.storage?.estimate) {
+      return { quota: null, usage: null };
+    }
+    const result = await navigator.storage.estimate();
+    return {
+      quota: typeof result.quota === 'number' ? result.quota : null,
+      usage: typeof result.usage === 'number' ? result.usage : null,
+    };
+  } catch {
+    return { quota: null, usage: null };
+  }
+};
+
+export interface StorageProbeResult {
+  ok: boolean;
+  code?: StorageFailureCode;
+  /** Actionable user-facing message when !ok. */
+  message?: string;
+  quota?: number | null;
+  usage?: number | null;
+}
+
+/**
+ * Preflight: proves IndexedDB can actually accept (and read back) a small
+ * write+read+delete before the archive commits to a long copy. Distinguishes
+ * quota exhaustion via navigator.storage.estimate() when available, but does
+ * not require it.
+ */
+export const probeIndexedDb = async (): Promise<StorageProbeResult> => {
+  const probeKey = `pharmatrack_probe_${uuidv4().slice(0, 8)}`;
+  try {
+    await idb.set(probeKey, { t: Date.now(), b: new Uint8Array([1, 2, 3, 4]) });
+    const read = await idb.get<{ t?: number }>(probeKey);
+    await idb.del(probeKey).catch(() => undefined);
+    if (!read || typeof read !== 'object' || typeof read.t !== 'number') {
+      return { ok: false, code: 'unknown', message: startArchiveErrorMessage({ code: 'unknown', detail: 'probe-readback-failed' }) };
+    }
+    return { ok: true };
+  } catch (err) {
+    try {
+      await idb.del(probeKey);
+    } catch {
+      /* ignore */
+    }
+    let failure = describeStorageFailure(err);
+    // If the engine gave us nothing useful, storage.estimate() may reveal a
+    // genuinely full disk so the user gets the right advice.
+    const { quota, usage } = await estimateStorage();
+    if (failure.code === 'unknown' && quota != null && usage != null && usage >= quota * 0.98) {
+      failure = { code: 'quota', detail: 'storage-quota-exceeded' };
+    }
+    return { ok: false, code: failure.code, message: startArchiveErrorMessage(failure), quota, usage };
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Progress reporting
@@ -387,7 +587,10 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
   onProgress?.({ phase: 'snapshot', message: 'Capturing semester data…' });
 
   const snapshot = buildSnapshot(state);
-  const index = await getSearchIndexRaw();
+  // The search index is captured as an ordinary copied record below (it is a
+  // semester-owned IndexedDB key). It is NOT written inline into the marker or
+  // the main record, so it is never duplicated and never bundled into a single
+  // oversized value.
   const refs = collectFileRefs(state);
   // Counts describe what the archive actually holds (the pruned snapshot),
   // otherwise verification would compare them against a different shape.
@@ -409,28 +612,34 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
     counts: collectionCounts(snapshot as unknown as AppState),
   };
 
-  // Persist a `creating` marker first so the archive is visible (and can be
-  // cleaned up) even if the process dies mid-copy.
-  const marker: ArchiveRecord = { meta: baseMeta, snapshot, index, manifest: [] };
+  // Preflight: prove IndexedDB can accept a write before we start copying, and
+  // turn a rejected/empty WebKit error into an actionable message rather than a
+  // generic "storage unavailable".
+  onProgress?.({ phase: 'protect', message: 'Checking device storage…' });
+  const probe = await probeIndexedDb();
+  if (!probe.ok) {
+    throw new ArchiveError(probe.message || startArchiveErrorMessage({ code: 'unknown', detail: 'probe-failed' }));
+  }
+
+  // Persist a LIGHTWEIGHT `creating` marker first (metadata only). It records
+  // that an archive was started — so an interrupted attempt can be cleaned up —
+  // without writing the snapshot or search index. This is the fix for the
+  // WebKit failure at the initial marker write.
+  const marker: ArchiveMarkerRecord = { meta: baseMeta, partial: true };
   try {
     await idb.set(META_PREFIX + id, marker);
   } catch (err) {
-    const detail = isQuotaError(err)
-      ? 'storage quota exceeded'
-      : err instanceof Error && err.message
-        ? err.message
-        : 'storage unavailable';
-    throw toArchiveError(err, `Could not start the archive (${detail}).`);
+    throw toArchiveError(err, startArchiveErrorMessage(describeStorageFailure(err)));
   }
 
-  const manifest: ArchiveRecord['manifest'] = [];
+  const manifest: ArchiveManifest = [];
   let totalBytes = 0;
   const copiedSources = new Set<string>();
 
   const remember = async (
     sourceKey: string,
     targetKey: string,
-    kind: ArchiveRecord['manifest'][number]['kind'],
+    kind: ArchiveManifest[number]['kind'],
     value: unknown,
   ): Promise<void> => {
     // Binaries are copied as-is. Structured records are scrubbed so a pasted
@@ -474,7 +683,12 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
     onProgress?.({ phase: 'verify', message: 'Verifying archive…' });
     const meta: SemesterArchiveMeta = { ...baseMeta, fileCount: manifest.length, totalBytes };
     meta.checksum = checksumOf(canonicalForArchive(meta, manifest));
-    const record: ArchiveRecord = { meta, snapshot, index, manifest };
+
+    // Write the snapshot as string chunks (never one oversized value), THEN a
+    // small main record that references them. Only after this does the marker
+    // become a real archive record.
+    const snapshotChunks = await writeSnapshotChunks(id, snapshot);
+    const record: ArchiveMainRecordV2 = { meta, manifest, snapshotChunks };
     await idb.set(META_PREFIX + id, record);
 
     const verified = await verifySemesterArchive(id);
@@ -489,24 +703,132 @@ export const createSemesterArchive = async (state: AppState, opts: CreateArchive
   }
 };
 
-const archiveErrorMessage = (err: unknown): string =>
-  isQuotaError(err)
-    ? 'Device storage is full, so the archive could not be completed. Your current semester is untouched — free up space (or export a backup to your device) and try again.'
-    : `The archive could not be completed: ${err instanceof Error ? err.message : String(err)}. Your current semester is untouched.`;
+const archiveErrorMessage = (err: unknown): string => {
+  const failure = describeStorageFailure(err);
+  switch (failure.code) {
+    case 'quota':
+      return 'Device storage is full, so the archive could not be completed. Your current semester is untouched — free up space (or export a backup to your device) and try again.';
+    case 'security':
+      return 'The archive could not be completed because the app was denied access to local storage. Your current semester is untouched.';
+    case 'clone':
+      return 'The archive could not be completed because some saved data is in a format the local database cannot store. Your current semester is untouched. Please report this so it can be fixed.';
+    case 'blocked':
+      return 'The archive could not be completed because the local database is busy or open in another window. Close other copies of PharmaTRACK and try again. Your current semester is untouched.';
+    default:
+      return `The archive could not be completed: ${err instanceof Error ? err.message : String(err)}. Your current semester is untouched.`;
+  }
+};
 
 const toArchiveError = (err: unknown, message: string): ArchiveError => new ArchiveError(message, err);
+
+// ---------------------------------------------------------------------------
+// Snapshot chunk storage & archive hydration (layout v1 inline + v2 chunked)
+// ---------------------------------------------------------------------------
+
+/** Serialises the snapshot and stores it as string chunks. Returns the count. */
+const writeSnapshotChunks = async (archiveId: string, snapshot: SemesterSnapshot): Promise<number> => {
+  const serialized = JSON.stringify(snapshot);
+  const total = Math.max(1, Math.ceil(serialized.length / SNAPSHOT_CHUNK_CHARS));
+  for (let i = 0; i < total; i++) {
+    const part = serialized.slice(i * SNAPSHOT_CHUNK_CHARS, (i + 1) * SNAPSHOT_CHUNK_CHARS);
+    await idb.set(archiveSnapshotChunkKey(archiveId, i), part);
+  }
+  return total;
+};
+
+/** Reassembles a chunked snapshot. Throws ArchiveError if any chunk is missing. */
+const readSnapshotChunks = async (archiveId: string, count: number): Promise<SemesterSnapshot> => {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new ArchiveError('Archive snapshot is incomplete (no snapshot chunks were written).');
+  }
+  const parts: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const part = await idb.get<string>(archiveSnapshotChunkKey(archiveId, i));
+    if (typeof part !== 'string') {
+      throw new ArchiveError(`Archive snapshot is incomplete (missing chunk ${i + 1} of ${count}).`);
+    }
+    parts.push(part);
+  }
+  try {
+    return JSON.parse(parts.join('')) as SemesterSnapshot;
+  } catch (err) {
+    throw new ArchiveError('Archive snapshot could not be parsed — the archive is corrupted.', err);
+  }
+};
+
+/** The captured search index, read from its copied record (layout v2). */
+const readArchivedIndex = async (manifest: ArchiveManifest): Promise<IndexShape | null> => {
+  const entry = manifest.find((m) => m.kind === 'record' && m.sourceKey === SEARCH_INDEX_KEY);
+  if (!entry) return null;
+  try {
+    const value = await idb.get(entry.archiveKey);
+    return value && typeof value === 'object' ? (value as IndexShape) : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Reads the main archive key and returns a fully-hydrated ArchiveRecord (with
+ * snapshot + index inlined) regardless of storage layout, or null when the key
+ * is an interrupted lightweight marker / absent. Throws ArchiveError only when
+ * a real (non-marker) record is present but its snapshot cannot be reassembled.
+ *
+ *  - v1 (legacy): the snapshot and index are stored inline in the main record.
+ *  - v2: the snapshot lives in chunk keys and the index in its copied record.
+ */
+const hydrateArchive = async (archiveId: string): Promise<ArchiveRecord | null> => {
+  const stored = (await idb.get<StoredArchive>(META_PREFIX + archiveId)) ?? null;
+  if (!stored || typeof stored !== 'object' || !('meta' in stored) || !stored.meta) return null;
+
+  const meta = stored.meta as SemesterArchiveMeta;
+  const manifest = Array.isArray((stored as ArchiveRecord).manifest)
+    ? ((stored as ArchiveRecord).manifest as ArchiveManifest)
+    : [];
+
+  // v1 legacy: inline snapshot.
+  const inlineSnapshot = (stored as ArchiveRecord).snapshot;
+  if (inlineSnapshot && typeof inlineSnapshot === 'object') {
+    const inlineIndex = (stored as ArchiveRecord).index;
+    return { meta, snapshot: inlineSnapshot, index: inlineIndex ?? null, manifest };
+  }
+
+  // v2: chunked snapshot.
+  const chunkCount = (stored as ArchiveMainRecordV2).snapshotChunks;
+  if (typeof chunkCount === 'number') {
+    const snapshot = await readSnapshotChunks(archiveId, chunkCount);
+    const index = await readArchivedIndex(manifest);
+    return { meta, snapshot, index, manifest };
+  }
+
+  // Lightweight marker / interrupted attempt: not a valid archive.
+  return null;
+};
+
+/** Rewrites ONLY the meta on the stored main record, preserving its layout. */
+const updateStoredMeta = async (archiveId: string, meta: SemesterArchiveMeta): Promise<void> => {
+  try {
+    const stored = await idb.get<Record<string, unknown>>(META_PREFIX + archiveId);
+    if (!stored || typeof stored !== 'object') return;
+    await idb.set(META_PREFIX + archiveId, { ...stored, meta });
+  } catch (err) {
+    console.error(`Could not update archive meta for ${archiveId}:`, err);
+  }
+};
 
 /** Marks the archive failed (best-effort) and removes its partial records. */
 const failArchive = async (id: string, err: unknown): Promise<void> => {
   try {
-    const record = await idb.get<ArchiveRecord>(META_PREFIX + id);
-    if (record) {
-      record.meta = {
-        ...record.meta,
-        status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      };
-      await idb.set(META_PREFIX + id, record);
+    const record = await idb.get<StoredArchive>(META_PREFIX + id);
+    if (record && typeof record === 'object' && record.meta) {
+      await idb.set(META_PREFIX + id, {
+        ...record,
+        meta: {
+          ...record.meta,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
     }
     // Best-effort cleanup of the partial copy so retries don't pile up.
     const keys = await idb.keys<string>();
@@ -528,13 +850,31 @@ const failArchive = async (id: string, err: unknown): Promise<void> => {
  * problem and throws on failure.
  */
 export const verifySemesterArchive = async (archiveId: string): Promise<SemesterArchiveMeta> => {
-  const record = await idb.get<ArchiveRecord>(META_PREFIX + archiveId);
-  if (!record) throw new ArchiveError('Archive record not found.');
+  const stored = (await idb.get<StoredArchive>(META_PREFIX + archiveId)) ?? null;
+  if (!stored || typeof stored !== 'object' || !('meta' in stored) || !stored.meta) {
+    throw new ArchiveError('Archive record not found.');
+  }
+  const storedMeta = stored.meta as SemesterArchiveMeta;
+
+  // An interrupted lightweight marker (or a record whose snapshot cannot be
+  // reassembled) is never a valid archive: mark it failed and reject.
+  let record: ArchiveRecord | null;
+  try {
+    record = await hydrateArchive(archiveId);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    await updateStoredMeta(archiveId, { ...storedMeta, status: 'failed', error: reason });
+    throw err instanceof ArchiveError ? err : new ArchiveError(`Archive verification failed: ${reason}`);
+  }
+  if (!record || !record.snapshot) {
+    const reason = 'the archive is incomplete (it was interrupted before it finished).';
+    await updateStoredMeta(archiveId, { ...storedMeta, status: 'failed', error: reason });
+    throw new ArchiveError(`Archive verification failed: ${reason}`);
+  }
 
   const { meta, snapshot } = record;
   const fail = async (reason: string): Promise<SemesterArchiveMeta> => {
-    const failed: SemesterArchiveMeta = { ...meta, status: 'failed', error: reason };
-    try { await idb.set(META_PREFIX + archiveId, { ...record, meta: failed }); } catch { /* best-effort */ }
+    await updateStoredMeta(archiveId, { ...meta, status: 'failed', error: reason });
     throw new ArchiveError(`Archive verification failed: ${reason}`);
   };
 
@@ -586,10 +926,10 @@ export const verifySemesterArchive = async (archiveId: string): Promise<Semester
       return fail('Highlight references a missing material.');
     }
 
-    // 7. Mark verified (idempotent).
+    // 7. Mark verified (idempotent) — meta only, preserving the storage layout.
     if (meta.status !== 'verified') {
       const verified: SemesterArchiveMeta = { ...meta, status: 'verified', error: undefined };
-      await idb.set(META_PREFIX + archiveId, { ...record, meta: verified });
+      await updateStoredMeta(archiveId, verified);
       return verified;
     }
     return meta;
@@ -606,17 +946,23 @@ export const verifySemesterArchive = async (archiveId: string): Promise<Semester
 export const listArchives = async (): Promise<SemesterArchiveMeta[]> => {
   const allKeys = await idb.keys<string>();
   const metaKeys = allKeys.filter(isArchiveMetaKey);
-  const records = await Promise.all(metaKeys.map((k) => idb.get<ArchiveRecord>(k)));
+  const records = await Promise.all(metaKeys.map((k) => idb.get<StoredArchive>(k)));
   return records
-    .map((r) => r?.meta)
+    .map((r) => (r && typeof r === 'object' ? (r.meta as SemesterArchiveMeta | undefined) : undefined))
     .filter((m): m is SemesterArchiveMeta => !!m)
+    // Interrupted lightweight "creating" markers must never appear as completed
+    // archives; the Storage Manager surfaces and cleans them separately.
+    .filter((m) => m.status !== 'creating')
     .sort((a, b) => b.completedAt.localeCompare(a.completedAt));
 };
 
 export const loadArchive = async (archiveId: string): Promise<ArchiveRecord | null> => {
   try {
-    return (await idb.get<ArchiveRecord>(META_PREFIX + archiveId)) ?? null;
+    return await hydrateArchive(archiveId);
   } catch (err) {
+    // A present-but-corrupted record (e.g. a missing snapshot chunk) is treated
+    // as unloadable; callers already handle null. verifySemesterArchive is the
+    // path that records the failure on the record itself.
     console.error(`Error loading archive ${archiveId}:`, err);
     return null;
   }
