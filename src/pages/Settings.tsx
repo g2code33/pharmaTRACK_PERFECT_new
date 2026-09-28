@@ -446,7 +446,7 @@ const Settings: React.FC = () => {
             one answered.
           </p>
         </div>
-        <div className="p-5 bg-white">
+        <div className="p-5 bg-white text-gray-900">
           <AISettingsPanel />
         </div>
       </div>

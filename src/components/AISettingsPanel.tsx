@@ -63,11 +63,11 @@ import {
 } from '../ai/accountSync';
 
 const inputCls =
-  'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm';
+  'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm text-gray-900 bg-white placeholder-gray-400';
 const btnPrimary =
   'flex items-center gap-2 px-3 py-2 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] text-sm font-medium disabled:opacity-50';
 const btnGhost =
-  'flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-50';
+  'flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-50 text-gray-700';
 
 /* ------------------------------------------------------------------ */
 
@@ -1207,7 +1207,7 @@ const ProfileRow: React.FC<{
               onClick={() => ai.removeProfile(profile.id)}
               title="Delete profile"
             >
-              <Trash2 className="w-4 h-4" />
+              <Trash2 className="w-4 h-4 text-gray-500" />
             </button>
           )}
         </div>
