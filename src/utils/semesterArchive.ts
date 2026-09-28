@@ -1133,6 +1133,75 @@ export const completeSemester = async (
   return { archive, fresh };
 };
 
+export interface ForceAdvanceOptions {
+  /** Academic position the NEW workspace starts at. */
+  nextLevel: string;
+  nextSemester: string;
+}
+
+export interface ForceAdvanceResult {
+  fresh: AppState;
+  /** False when the best-effort release of the old semester's IndexedDB
+   *  records failed. The move itself still succeeded either way. */
+  cleaned: boolean;
+}
+
+/**
+ * Escape hatch for devices where IndexedDB writes never succeed at all —
+ * not just a transient hiccup, but every attempt, including the storage
+ * preflight probe. On those devices `completeSemester()` can never reach
+ * "verified" because its whole job is copying bytes INTO IndexedDB, so no
+ * amount of retrying helps. This skips that copy step entirely and moves
+ * straight to a fresh workspace.
+ *
+ * This is deliberately NOT a substitute for a local archive: the caller is
+ * responsible for having exported the current semester with `exportBackup()`
+ * first (export only READS already-stored data, which is why it keeps
+ * working on a device where writes are broken). That exported `.pharmatrack`
+ * file is the only backup of the semester being left behind — it can be
+ * turned into a normal, browsable archive entry later via "Import Semester
+ * Backup" on the Academic Archive page, on a device/session where IndexedDB
+ * writes work.
+ *
+ * Guarantees:
+ *  - the fresh workspace is written to localStorage ONLY (saveState never
+ *    touches IndexedDB for an empty workspace), so this step cannot fail
+ *    the way the archive copy does;
+ *  - releasing the old semester's now-unreferenced IndexedDB records
+ *    (uploaded files, OCR text, the search index) is best-effort and never
+ *    undoes the move — a failure there just leaves orphaned bytes behind,
+ *    not lost data, since the export already holds a copy.
+ */
+export const forceAdvanceSemester = async (
+  state: AppState,
+  options: ForceAdvanceOptions,
+): Promise<ForceAdvanceResult> => {
+  if (!state.student) throw new ArchiveError('No student profile found — complete onboarding first.');
+
+  const fresh = buildFreshWorkspace(state, { level: options.nextLevel, semester: options.nextSemester });
+  saveState(fresh);
+
+  let cleaned = false;
+  try {
+    // `fresh` has no files/slides, so this releases every record the old
+    // semester owned in IndexedDB (uploads, offloaded text, everything).
+    await pruneWorkspaceFiles(fresh);
+    cleaned = true;
+  } catch (err) {
+    console.error(
+      'Force-move cleanup of the old semester\u2019s files failed (safe to ignore — the move itself already succeeded; only disk space cleanup was skipped):',
+      err,
+    );
+  }
+  try {
+    await clearSearchIndex();
+  } catch (err) {
+    console.error('Search index reset after a forced move failed (safe to ignore):', err);
+  }
+
+  return { fresh, cleaned };
+};
+
 // ---------------------------------------------------------------------------
 // Portable backup — the `pharmatrack-semester-backup` format (v1)
 //

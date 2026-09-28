@@ -13,12 +13,18 @@
  */
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { format } from 'date-fns';
 import { useApp } from '../context/AppContext';
 import {
   completeSemester,
   computeNextProgression,
   defaultAcademicYear,
   collectFileRefs,
+  forceAdvanceSemester,
+  exportBackup,
+  downloadBlob,
+  semesterBackupFileName,
+  parseBackup,
   type ArchiveProgress,
 } from '../utils/semesterArchive';
 import { loadFile, loadSlideText } from '../utils/storage';
@@ -36,6 +42,10 @@ import {
   FileQuestion,
   Brain,
   HardDrive,
+  Download,
+  ShieldAlert,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 const LEVELS = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
@@ -64,6 +74,22 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
   const [doneArchive, setDoneArchive] = useState<SemesterArchiveMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // "Force move" — the escape hatch shown only after a real failure, for
+  // devices where IndexedDB writes never succeed at all (so retrying the
+  // normal archive can never help). See forceAdvanceSemester() docs.
+  const [forceOpen, setForceOpen] = useState(false);
+  const [forceExported, setForceExported] = useState(false);
+  const [forceExporting, setForceExporting] = useState(false);
+  const [forceExportError, setForceExportError] = useState<string | null>(null);
+  const [forceConfirmed, setForceConfirmed] = useState(false);
+  const [forcing, setForcing] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
+  const [forcedDone, setForcedDone] = useState(false);
+  // Captured BEFORE the workspace is replaced — `state.student` flips to the
+  // new position the instant LOAD_STATE dispatches, so the "moved on" screen
+  // would otherwise (wrongly) show the new position as the one left behind.
+  const [forcedFrom, setForcedFrom] = useState<{ level: string; semester: string } | null>(null);
+
   // Reset whenever the dialog is (re)opened.
   useEffect(() => {
     if (open) {
@@ -72,6 +98,15 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
       setProgress(null);
       setDoneArchive(null);
       setError(null);
+      setForceOpen(false);
+      setForceExported(false);
+      setForceExporting(false);
+      setForceExportError(null);
+      setForceConfirmed(false);
+      setForcing(false);
+      setForceError(null);
+      setForcedDone(false);
+      setForcedFrom(null);
     }
   }, [open]);
 
@@ -140,6 +175,48 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase('error');
+    }
+  };
+
+  // Runs the same export used on the Academic Archive page, right from this
+  // dialog, so the force-move path never asks the student to go find it
+  // themselves mid-panic.
+  const runForceExport = async () => {
+    setForceExporting(true);
+    setForceExportError(null);
+    try {
+      const level = state.student?.level || '100';
+      const semester = state.student?.semester || '1';
+      const blob = await exportBackup({ kind: 'live', state });
+      // Same honesty check the Academic Archive page runs: never hand over
+      // a file we have not proven re-parses.
+      const check = await parseBackup(await blob.arrayBuffer());
+      if (!check.ok) throw new Error(`The generated backup failed its own integrity check: ${check.reason}`);
+      downloadBlob(blob, semesterBackupFileName(level, semester, undefined, format(new Date(), 'yyyy-MM-dd')));
+      setForceExported(true);
+    } catch (err) {
+      setForceExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setForceExporting(false);
+    }
+  };
+
+  const runForceMove = async () => {
+    setForcing(true);
+    setForceError(null);
+    try {
+      setForcedFrom({
+        level: state.student?.level || 'This level',
+        semester: state.student?.semester || 'this semester',
+      });
+      const { fresh } = await forceAdvanceSemester(state, { nextLevel, nextSemester });
+      dispatch({ type: 'LOAD_STATE', payload: fresh });
+      setForcedDone(true);
+      setPhase('success');
+    } catch (err) {
+      setForceError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setForcing(false);
     }
   };
 
@@ -334,10 +411,129 @@ const CompleteSemesterModal: React.FC<{ open: boolean; onClose: () => void }> = 
                 Retry
               </button>
             </div>
+
+            {/* Escape hatch — only offered after a real failure, never on the
+                first try. For devices where IndexedDB writes never succeed,
+                no amount of retrying the archive can help. */}
+            <div className="border-t pt-4">
+              <button
+                onClick={() => setForceOpen((v) => !v)}
+                className="w-full flex items-center justify-between text-left text-sm font-bold text-amber-700 hover:text-amber-800"
+              >
+                <span className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-4 h-4" /> Still stuck? Move on without a local archive
+                </span>
+                {forceOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </button>
+
+              {forceOpen && (
+                <div className="mt-3 bg-amber-50 border-2 border-amber-200 rounded-xl p-4 space-y-3">
+                  <p className="text-xs text-amber-900">
+                    This skips the local archive entirely and starts <strong>{nextLevel} — {nextSemester}</strong>{' '}
+                    right away. <strong>{state.student?.level || 'This level'} — {state.student?.semester || 'this semester'}</strong> will
+                    not be browsable in Academic Archive afterwards unless you import a backup file into it
+                    yourself later. Use this only if the archive keeps failing and you need to move on now.
+                  </p>
+
+                  <div className="bg-white border border-amber-200 rounded-lg p-3 space-y-2">
+                    <p className="text-xs font-bold text-gray-700">
+                      Step 1 — export a backup of this semester to your device
+                    </p>
+                    <button
+                      onClick={() => void runForceExport()}
+                      disabled={forceExporting}
+                      className={`w-full py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 ${
+                        forceExported
+                          ? 'bg-green-100 text-green-800 border border-green-300'
+                          : 'bg-white border border-amber-300 text-amber-800 hover:bg-amber-100'
+                      }`}
+                    >
+                      {forceExporting ? (
+                        <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Exporting…</>
+                      ) : forceExported ? (
+                        <><CheckCircle2 className="w-3.5 h-3.5" /> Backup downloaded — export again anytime</>
+                      ) : (
+                        <><Download className="w-3.5 h-3.5" /> Export {state.student?.level} — {state.student?.semester} now</>
+                      )}
+                    </button>
+                    {forceExportError && (
+                      <p className="text-xs text-red-600">Export failed: {forceExportError}</p>
+                    )}
+                    <p className="text-[11px] text-gray-500">
+                      Save the downloaded <code>.pharmatrack</code> file somewhere safe. Later, on any device
+                      where the archive works, use <strong>Academic Archive → Import Semester Backup</strong> to
+                      add it there with full previews.
+                    </p>
+                  </div>
+
+                  <label className="flex items-start gap-2 text-xs text-amber-900 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={forceConfirmed}
+                      onChange={(e) => setForceConfirmed(e.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      I understand this semester will <strong>not</strong> be locally archived, and I have already
+                      exported (or don't need) a backup of it.
+                    </span>
+                  </label>
+
+                  {forceError && (
+                    <p className="text-xs text-red-600 font-medium">{forceError}</p>
+                  )}
+
+                  <button
+                    onClick={() => void runForceMove()}
+                    disabled={!forceConfirmed || forcing}
+                    className="w-full py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {forcing ? (
+                      <><Loader2 className="w-4 h-4 animate-spin" /> Moving…</>
+                    ) : (
+                      <>Force Move to {nextLevel} — {nextSemester}</>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {phase === 'success' && doneArchive && (
+        {phase === 'success' && forcedDone && (
+          <div className="p-6 space-y-4 text-center">
+            <div className="w-16 h-16 mx-auto rounded-full bg-amber-100 flex items-center justify-center">
+              <ShieldAlert className="w-9 h-9 text-amber-600" />
+            </div>
+            <h2 className="text-xl font-bold text-gray-800">Moved on — without a local archive</h2>
+            <p className="text-sm text-gray-600">
+              Your new <strong>{nextLevel} — {nextSemester}</strong> workspace is ready.{' '}
+              <strong>{forcedFrom?.level} — {forcedFrom?.semester}</strong> was not saved to Academic
+              Archive on this device.
+            </p>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 text-left">
+              If you exported a backup, go to <strong>Academic Archive → Import Semester Backup</strong> whenever
+              this device's storage is working again, and choose "keep in archive" — it will appear there with
+              full previews, exactly like a normal completed semester.
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => { onClose(); navigate('/archive'); }}
+                className="flex-1 py-2.5 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] font-bold"
+              >
+                Go to Academic Archive
+              </button>
+              <button
+                onClick={() => { onClose(); navigate('/'); }}
+                className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
+              >
+                Go to Dashboard
+              </button>
+            </div>
+          </div>
+        )}
+
+        {phase === 'success' && !forcedDone && doneArchive && (
           <div className="p-6 space-y-4 text-center">
             <div className="w-16 h-16 mx-auto rounded-full bg-green-100 flex items-center justify-center">
               <GraduationCap className="w-9 h-9 text-[#2D6A4F]" />

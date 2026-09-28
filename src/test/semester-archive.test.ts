@@ -34,6 +34,7 @@ import {
   loadArchivedSlideText,
   deleteArchive,
   completeSemester,
+  forceAdvanceSemester,
   computeNextProgression,
   parseLevel,
   parseSemester,
@@ -956,5 +957,68 @@ describe('WebKit-safe archive startup', () => {
 
     const rec = await loadArchive(meta.id);
     expect(rec!.index?.s1.pages[0].text).toBe('offloaded page text');
+  });
+});
+
+describe('forceAdvanceSemester — escape hatch when IndexedDB writes never succeed', () => {
+  it('moves to a fresh semester purely via localStorage even when every IndexedDB write throws', async () => {
+    const state = makeState();
+    seedIdb(state);
+    const before = new Map(idbStore);
+
+    // Simulate a device where IndexedDB writes AND deletes are persistently
+    // broken — not just for one key, but for everything (the scenario
+    // completeSemester can never recover from, no matter how many times
+    // it's retried).
+    const realSet = idbStore.set.bind(idbStore);
+    const realDelete = idbStore.delete.bind(idbStore);
+    idbStore.set = () => { throw new DOMException('rejected', 'UnknownError'); };
+    idbStore.delete = () => { throw new DOMException('rejected', 'UnknownError'); };
+
+    let result: Awaited<ReturnType<typeof forceAdvanceSemester>>;
+    try {
+      result = await forceAdvanceSemester(state, { nextLevel: 'Level 300', nextSemester: '2nd Semester' });
+    } finally {
+      idbStore.set = realSet;
+      idbStore.delete = realDelete;
+    }
+
+    // The move itself must succeed despite every IndexedDB write failing.
+    expect(result.fresh.student?.level).toBe('Level 300');
+    expect(result.fresh.student?.semester).toBe('2nd Semester');
+    expect(result.fresh.student?.name).toBe('Ama'); // identity preserved
+    expect(result.fresh.courses).toEqual([]);
+    expect(hasWorkspaceContent(result.fresh)).toBe(false);
+    // Best-effort IndexedDB cleanup could not run — reported honestly, not thrown.
+    expect(result.cleaned).toBe(false);
+
+    // The new workspace really was persisted (localStorage-only write).
+    const saved = JSON.parse(localStorage.getItem('pharmatrack_state')!);
+    expect(saved.student.level).toBe('Level 300');
+    expect(saved.student.semester).toBe('2nd Semester');
+
+    // No archive was created — this deliberately skips that step.
+    expect(await listArchives()).toEqual([]);
+    // The old semester's IndexedDB records are untouched (cleanup failed, not lost).
+    for (const [k, v] of before) {
+      expect(idbStore.get(k)).toBe(v);
+    }
+  });
+
+  it('also releases the old semester\'s IndexedDB records when writes are healthy', async () => {
+    const state = makeState();
+    seedIdb(state);
+
+    const result = await forceAdvanceSemester(state, { nextLevel: 'Level 300', nextSemester: '2nd Semester' });
+
+    expect(result.cleaned).toBe(true);
+    expect(idbStore.has('file_file1')).toBe(false);
+    expect(idbStore.has('slidetext_s1')).toBe(false);
+  });
+
+  it('refuses to run without a student profile', async () => {
+    const state = makeState({ student: null });
+    await expect(forceAdvanceSemester(state, { nextLevel: 'Level 300', nextSemester: '2nd Semester' }))
+      .rejects.toThrow(/onboarding/i);
   });
 });
