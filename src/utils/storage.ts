@@ -1,6 +1,6 @@
 import { AppState, Course, Topic, Slide, LearningObjective, ExamQuestion, QuizHistory, StudyPlan, Note, ExamDate, Activity } from '../types';
 import { DEFAULT_LEARNING_SETTINGS } from './learningEngine';
-import * as idb from 'idb-keyval';
+import * as idb from './idbStore';
 import {
   allowWorkspacePersist,
   blockWorkspacePersist,
