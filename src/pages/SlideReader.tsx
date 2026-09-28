@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { listenNative, nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
+import { nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -31,15 +31,18 @@ interface BrowserTab {
 
 // Detects whether typed text is a URL or a search query, and normalizes it.
 // "paracetamol dosing" -> Search engine. "bnf.org" or "https://..." -> direct nav.
-function resolveAddressInput(raw: string, isNative: boolean): string {
+//
+// Always resolves searches to DuckDuckGo, never Google: the in-panel browser
+// is a plain <iframe> on every platform (see the panel below), and Google
+// sends `X-Frame-Options`/CSP headers that refuse to be framed at all — it
+// would just show a blank panel. DuckDuckGo (like Wikipedia/PubMed/PubChem/
+// DailyMed, the other quick-reference links in this panel) allows framing.
+function resolveAddressInput(raw: string): string {
   const trimmed = raw.trim();
   const looksLikeUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(trimmed);
 
   if (looksLikeUrl) {
     return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
-  }
-  if (isNative) {
-    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
   }
   return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
 }
@@ -73,166 +76,40 @@ const SlideReader: React.FC = () => {
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
 
+  // The in-panel mini-browser is a plain <iframe> on every platform (see the
+  // panel render below) — desktop no longer mounts a native child webview
+  // for it. That native path (Tauri/wry's `embed_website`) is what used to
+  // ignore the panel's bounds on Linux/GTK and stretch to fill the whole
+  // window; an iframe is a normal DOM element and is physically incapable
+  // of overflowing its container the way a separate native window could.
+  // `isDesktopApp` here is used only to pick a sensible default homepage
+  // (kept as DuckDuckGo, matching the web build's non-Google default), not
+  // to choose a different rendering path.
+  const isDesktopApp = detectRuntimeCapabilities().nativeWebview;
+  const DEFAULT_DESKTOP_URL = 'https://duckduckgo.com';
+  const DEFAULT_WEB_URL = 'https://en.m.wikipedia.org/wiki/Pharmacology';
+
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    const initialUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
+    const initialUrl = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
     return [
       {
         id: 'default',
         url: initialUrl,
-        title: isNative ? 'Google' : 'Wikipedia',
+        title: titleFromUrl(initialUrl),
         history: [initialUrl],
         historyIndex: 0,
       },
     ];
   });
   const [activeTabId, setActiveTabId] = useState('default');
-  const [urlInput, setUrlInput] = useState(() => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    return isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
-  });
+  const [urlInput, setUrlInput] = useState(() => (isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL));
   const [webviewReady, setWebviewReady] = useState(false);
-
-  const browserContainerRef = useRef<HTMLDivElement>(null);
-  const boundsUpdateRafRef = useRef<number | null>(null);
-
-  const getBrowserContainerBounds = () => {
-    const el = browserContainerRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    return {
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    };
-  };
-
-  const scheduleWebviewBoundsUpdate = () => {
-    if (boundsUpdateRafRef.current !== null) return;
-    boundsUpdateRafRef.current = requestAnimationFrame(() => {
-      boundsUpdateRafRef.current = null;
-      void updateWebview();
-    });
-  };
 
   // Keep the address bar in sync with whichever tab is active
   useEffect(() => {
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (tab) setUrlInput(tab.url);
   }, [activeTabId, browserTabs]);
-
-  // Native webview events and commands are optional. In a browser this whole
-  // block becomes a no-op; the surrounding study reader remains usable.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenNative<string>('new-browser-tab', (event) => {
-      const url = event.payload;
-      const newId = uuidv4();
-      setBrowserTabs(tabs => [...tabs, {
-        id: newId,
-        url,
-        title: titleFromUrl(url),
-        history: [url],
-        historyIndex: 0,
-      }]);
-      setActiveTabId(newId);
-      setShowBrowserPanel(true);
-      setShowAIPanel(false);
-      setActivePanel('browser');
-    }).then((remove) => { unlisten = remove; });
-    return () => { unlisten?.(); };
-  }, []);
-
-  // Listen for live navigation updates from the embedded webview (title/url
-  // changes as the user clicks around inside it).
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenNative<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
-      const { label, url, title } = event.payload;
-      const tabId = label.replace('browser_tab_', '');
-      setBrowserTabs(tabs => tabs.map(t =>
-        t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
-      ));
-      if (tabId === activeTabId) setUrlInput(url);
-      setWebviewReady(true);
-    }).then((remove) => { unlisten = remove; });
-    return () => { unlisten?.(); };
-  }, [activeTabId]);
-
-  const updateWebview = async () => {
-    if (!detectRuntimeCapabilities().nativeWebview) return;
-    if (showBrowserPanel && browserContainerRef.current) {
-      const bounds = getBrowserContainerBounds();
-      const activeTab = browserTabs.find(t => t.id === activeTabId);
-      if (!activeTab || !bounds) {
-        if (!bounds) console.warn('embed_website skipped: container not laid out yet');
-        return;
-      }
-
-      for (const tab of browserTabs) {
-        if (tab.id !== activeTabId) {
-          void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
-        }
-      }
-      await nativeInvoke('embed_website', {
-        label: `browser_tab_${activeTabId}`,
-        url: activeTab.url,
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      });
-    } else {
-      for (const tab of browserTabs) {
-        void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
-      }
-    }
-  };
-
-  useEffect(() => {
-    scheduleWebviewBoundsUpdate();
-    let timer: NodeJS.Timeout | null = null;
-    if (showBrowserPanel) {
-      timer = setTimeout(() => {
-        scheduleWebviewBoundsUpdate();
-      }, 50);
-    }
-    const handleResize = () => scheduleWebviewBoundsUpdate();
-    window.addEventListener('resize', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      if (timer) clearTimeout(timer);
-      if (boundsUpdateRafRef.current !== null) {
-        cancelAnimationFrame(boundsUpdateRafRef.current);
-        boundsUpdateRafRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBrowserPanel, panelWidth, activeTabId, isFullscreen, browserTabs.length, showAIPanel]);
-
-  // Track the browser container's own size changes (panel drag, flex reflow, etc.)
-  useEffect(() => {
-    const el = browserContainerRef.current;
-    if (!el || !showBrowserPanel || !detectRuntimeCapabilities().nativeWebview) return;
-
-    const observer = new ResizeObserver(() => scheduleWebviewBoundsUpdate());
-    observer.observe(el);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBrowserPanel, activeTabId, panelWidth]);
-
-  // Destroy every tab's native webview on unmount so nothing leaks across a long session.
-  useEffect(() => {
-    return () => {
-      if (!detectRuntimeCapabilities().nativeWebview) return;
-      for (const tab of browserTabs) {
-        void nativeInvoke('destroy_website', { label: `browser_tab_${tab.id}` });
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const navigateActiveTab = (finalUrl: string) => {
     setBrowserTabs(tabs => tabs.map(t => {
@@ -250,22 +127,14 @@ const SlideReader: React.FC = () => {
     }));
     setUrlInput(finalUrl);
     setWebviewReady(false);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
-    }
   };
 
   const handleAddressBarSubmit = () => {
     if (!urlInput.trim()) return;
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    navigateActiveTab(resolveAddressInput(urlInput, isNative));
+    navigateActiveTab(resolveAddressInput(urlInput));
   };
 
   const handleBack = () => {
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (!tab || !tab.history || (tab.historyIndex ?? 0) <= 0) return;
     const newIndex = (tab.historyIndex ?? 0) - 1;
@@ -278,10 +147,6 @@ const SlideReader: React.FC = () => {
   };
 
   const handleForward = () => {
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (!tab || !tab.history || (tab.historyIndex ?? 0) >= tab.history.length - 1) return;
     const newIndex = (tab.historyIndex ?? 0) + 1;
@@ -295,10 +160,6 @@ const SlideReader: React.FC = () => {
 
   const handleReload = () => {
     setWebviewReady(false);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (tab) {
       const currentUrl = tab.url;
@@ -310,8 +171,7 @@ const SlideReader: React.FC = () => {
   };
 
   const openNewTab = () => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    const defaultUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
+    const defaultUrl = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
     const newId = uuidv4();
     setBrowserTabs(tabs => [...tabs, {
       id: newId,
@@ -329,11 +189,9 @@ const SlideReader: React.FC = () => {
     if (browserTabs.length === 1) return;
     const remaining = browserTabs.filter(t => t.id !== tabId);
     setBrowserTabs(remaining);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
-    }
     if (activeTabId === tabId) {
       setActiveTabId(remaining[0].id);
+
       setUrlInput(remaining[0].url);
     }
   };
@@ -768,7 +626,6 @@ const SlideReader: React.FC = () => {
       const newWidth = window.innerWidth - e.clientX;
       if (newWidth > 200 && newWidth < window.innerWidth * 0.7) {
         setPanelWidth(newWidth);
-        scheduleWebviewBoundsUpdate();
       }
     };
     const handleMouseUp = () => {
@@ -999,32 +856,46 @@ const SlideReader: React.FC = () => {
               <button onClick={() => navigateActiveTab('https://duckduckgo.com')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔍 DuckDuckGo</button>
             </div>
 
-            {/* Native webview mounts here in desktop mode, or iframe in web mode */}
-            <div ref={browserContainerRef} className="flex-1 overflow-hidden bg-white relative flex flex-col items-center justify-center">
-              {detectRuntimeCapabilities().nativeWebview ? (
-                !webviewReady && <Loader2 className="w-8 h-8 text-gray-300 animate-spin mb-4" />
-              ) : (
-                <div className="w-full h-full relative flex flex-col">
-                  {(() => {
-                    const currentTab = browserTabs.find(t => t.id === activeTabId) || browserTabs[0];
-                    return currentTab && currentTab.url ? (
-                      <iframe
-                        key={`${currentTab.id}-${currentTab.url}`}
-                        src={currentTab.url}
-                        title={currentTab.title}
-                        className="w-full flex-1 border-0 bg-white"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                        allow="fullscreen"
-                        onLoad={() => setWebviewReady(true)}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center text-gray-400 text-xs">
-                        No URL loaded
+            {/* The in-panel mini-browser: a plain <iframe>, on every platform.
+                Desktop used to mount a native child webview here via Tauri's
+                `embed_website` command, but on Linux that native webview is
+                packed into a GTK container that ignores the bounds it's
+                given, so it stretched to fill the whole window instead of
+                staying in this panel. An <iframe> is a normal DOM element —
+                it sizes with ordinary CSS and cannot escape its container. */}
+            <div className="flex-1 overflow-hidden bg-white relative flex flex-col items-center justify-center">
+              {(() => {
+                const currentTab = browserTabs.find(t => t.id === activeTabId) || browserTabs[0];
+                if (!currentTab || !currentTab.url) {
+                  return (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 text-xs">
+                      No URL loaded
+                    </div>
+                  );
+                }
+                return (
+                  <div className="w-full h-full relative flex flex-col">
+                    {!webviewReady && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white z-10 px-6 text-center">
+                        <Loader2 className="w-8 h-8 text-gray-300 animate-spin" />
+                        <p className="text-[11px] text-gray-400 max-w-[220px]">
+                          If this page never appears, it may not allow being shown inside another site — try
+                          "Open current page in external window" above instead.
+                        </p>
                       </div>
-                    );
-                  })()}
-                </div>
-              )}
+                    )}
+                    <iframe
+                      key={`${currentTab.id}-${currentTab.url}`}
+                      src={currentTab.url}
+                      title={currentTab.title}
+                      className="w-full flex-1 border-0 bg-white"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                      allow="fullscreen"
+                      onLoad={() => setWebviewReady(true)}
+                    />
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
