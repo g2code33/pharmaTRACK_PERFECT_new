@@ -1,0 +1,86 @@
+From 85a5936500ae9bb4e8757ee5ca2a3e7dca882125 Mon Sep 17 00:00:00 2001
+From: g2code33 <g2code33@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:11:10 +0000
+Subject: [PATCH] Fix light-mode text/icon contrast in the Settings AI Engine
+ panel
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Settings page wraps the whole AI Engine section (id="ai") in a card
+whose outer container sets text-white for its own dark banner content
+(bg-[#0F172A] header). The inner content area that hosts <AISettingsPanel />
+only overrides the background back to white (bg-white) but never reset the
+inherited text color, so every unstyled text node and icon inside
+AISettingsPanel (profile names already had explicit colors, but the
+'Use' / delete-profile action buttons and any bare icon relying on
+currentColor) silently inherited white-on-white and became invisible in
+light mode. This is exactly what showed up in the AI profiles card: blank
+icon buttons and an apparently blank input box.
+
+Fixes:
+1. src/pages/Settings.tsx — the AI Engine panel's inner wrapper
+   (`<div className="p-5 bg-white">`) now also sets `text-gray-900`, so
+   everything nested inside AISettingsPanel gets a correct default dark
+   text color in light mode instead of inheriting the ancestor's white.
+   (Dark mode was already fine: the existing `html.dark .bg-white`
+   override rule from the dark-mode patch forces a light foreground color
+   on this exact div, which is why the bug only showed in light mode.)
+2. src/components/AISettingsPanel.tsx — hardened the shared `inputCls`
+   and `btnGhost` style constants (used by every ghost/icon-only button
+   and every text input across the whole AI settings panel, including the
+   profile 'Use' button, the delete-profile trash icon, the provider
+   'Add provider' / 'Rebuild index' / 'Unlock' buttons, and the danger-zone
+   'Remove all AI keys' button) to set an explicit `text-gray-700` /
+   `text-gray-900` foreground instead of relying on inherited color, so
+   this component renders correctly regardless of what color context it's
+   mounted inside in the future.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ src/components/AISettingsPanel.tsx | 6 +++---
+ src/pages/Settings.tsx             | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/components/AISettingsPanel.tsx b/src/components/AISettingsPanel.tsx
+index 2333dcc..631430c 100644
+--- a/src/components/AISettingsPanel.tsx
++++ b/src/components/AISettingsPanel.tsx
+@@ -63,11 +63,11 @@ import {
+ } from '../ai/accountSync';
+ 
+ const inputCls =
+-  'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm';
++  'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm text-gray-900 bg-white placeholder-gray-400';
+ const btnPrimary =
+   'flex items-center gap-2 px-3 py-2 bg-[#2D6A4F] text-white rounded-lg hover:bg-[#1B4332] text-sm font-medium disabled:opacity-50';
+ const btnGhost =
+-  'flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-50';
++  'flex items-center gap-2 px-3 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium disabled:opacity-50 text-gray-700';
+ 
+ /* ------------------------------------------------------------------ */
+ 
+@@ -1207,7 +1207,7 @@ const ProfileRow: React.FC<{
+               onClick={() => ai.removeProfile(profile.id)}
+               title="Delete profile"
+             >
+-              <Trash2 className="w-4 h-4" />
++              <Trash2 className="w-4 h-4 text-gray-500" />
+             </button>
+           )}
+         </div>
+diff --git a/src/pages/Settings.tsx b/src/pages/Settings.tsx
+index 5a67534..3898e05 100644
+--- a/src/pages/Settings.tsx
++++ b/src/pages/Settings.tsx
+@@ -446,7 +446,7 @@ const Settings: React.FC = () => {
+             one answered.
+           </p>
+         </div>
+-        <div className="p-5 bg-white">
++        <div className="p-5 bg-white text-gray-900">
+           <AISettingsPanel />
+         </div>
+       </div>
+-- 
+2.39.5
