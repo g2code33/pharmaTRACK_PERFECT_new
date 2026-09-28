@@ -1,4 +1,7 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
 /**
  * Referential integrity for semester data.
  *
@@ -17,7 +20,7 @@
  *      (created before this fix) heal themselves instead of failing forever.
  */
 
-import type { AppState } from '../types';
+import type { AppState, SemesterSnapshot } from '../types';
 
 /** How many rows each collection lost during a prune. */
 export interface OrphanReport {
@@ -32,6 +35,17 @@ export interface OrphanReport {
   highlights: number;
   learningRecords: number;
 }
+
+export type PruneReport = OrphanReport & {
+  courses: number;
+  materials: number;
+  questions: number;
+  quizzes: number;
+  plans: number;
+  dates: number;
+  objectives: number;
+  total: number;
+};
 
 const EMPTY_REPORT: OrphanReport = {
   topics: 0, slides: 0, notes: 0, examQuestions: 0, quizHistory: 0,
@@ -65,6 +79,15 @@ export const describeOrphanReport = (report: OrphanReport): string => {
 
 const list = <T,>(value: T[] | undefined | null): T[] => (Array.isArray(value) ? value : []);
 
+export type ReferentialState = Partial<AppState> | Partial<SemesterSnapshot>;
+
+export interface PruneResult<T> {
+  state: T;
+  removed: OrphanReport;
+  report: PruneReport;
+  [Symbol.iterator](): Iterator<T | OrphanReport>;
+}
+
 /**
  * Drops every row whose parent no longer exists, repeatedly, so a deleted
  * course also takes its topics' materials, notes and highlights with it.
@@ -72,9 +95,9 @@ const list = <T,>(value: T[] | undefined | null): T[] => (Array.isArray(value) ?
  * Pure: the input object is never mutated, and collections that lose nothing
  * keep their original array reference (so React/`===` checks stay cheap).
  */
-export const pruneOrphans = <T extends Partial<AppState>>(
+export const pruneOrphans = <T extends ReferentialState>(
   state: T,
-): { state: T; removed: OrphanReport } => {
+): PruneResult<T> => {
   const removed: OrphanReport = { ...EMPTY_REPORT };
   const next: Record<string, unknown> = { ...state };
 
@@ -109,6 +132,7 @@ export const pruneOrphans = <T extends Partial<AppState>>(
     topicIds.has(h.topicId) && (!h.materialId || slideIds.has(h.materialId)));
   keep('learningRecords', state.learningRecords, (r) => topicIds.has(r.topicId));
 
+<<<<<<< HEAD
   return { state: next as T, removed };
 };
 
@@ -259,52 +283,41 @@ export function pruneOrphans<T extends ReferentialState>(state: T): PruneResult<
     droppedRecords +
     droppedObjectives;
 
+=======
+  const total = Object.values(removed).reduce((a, b) => a + b, 0);
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
   const report: PruneReport = {
+    ...removed,
     courses: 0,
-    topics: droppedTopics,
-    slides: droppedSlides,
-    materials: droppedSlides,
-    notes: droppedNotes,
-    questions: droppedQuestions,
-    examQuestions: droppedQuestions,
-    quizzes: droppedQuizzes,
-    quizHistory: droppedQuizzes,
-    plans: droppedPlans,
-    studyPlans: droppedPlans,
-    dates: droppedDates,
-    examDates: droppedDates,
-    highlights: droppedHighlights,
-    learningRecords: droppedRecords,
-    learningObjectives: droppedObjectives,
-    objectives: droppedObjectives,
-    total: totalDropped,
+    materials: removed.slides,
+    questions: removed.examQuestions,
+    quizzes: removed.quizHistory,
+    plans: removed.studyPlans,
+    dates: removed.examDates,
+    objectives: removed.learningObjectives,
+    total,
   };
 
-  const nextState: T = {
-    ...state,
-    ...(state.topics !== undefined ? { topics } : {}),
-    ...(state.slides !== undefined ? { slides } : {}),
-    ...(state.notes !== undefined ? { notes } : {}),
-    ...(state.examQuestions !== undefined ? { examQuestions } : {}),
-    ...(state.quizHistory !== undefined ? { quizHistory } : {}),
-    ...(state.studyPlans !== undefined ? { studyPlans } : {}),
-    ...(state.examDates !== undefined ? { examDates } : {}),
-    ...(state.highlights !== undefined ? { highlights } : {}),
-    ...(state.learningRecords !== undefined ? { learningRecords } : {}),
-    ...(state.learningObjectives !== undefined ? { learningObjectives } : {}),
-  };
-
+  const nextState = next as T;
   return {
     state: nextState,
+    removed,
     report,
     *[Symbol.iterator]() {
       yield nextState;
-      yield report;
+      yield removed;
     },
   };
-}
+};
 
+<<<<<<< HEAD
 export function pruneOrphansState<T extends ReferentialState>(state: T): T {
   return pruneOrphans(state).state;
 }
 >>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
+=======
+/** Convenience wrapper for callers that only need the cleaned state. */
+export const withoutOrphans = <T extends ReferentialState>(state: T): T => pruneOrphans(state).state;
+
+export const pruneOrphansState = withoutOrphans;
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe

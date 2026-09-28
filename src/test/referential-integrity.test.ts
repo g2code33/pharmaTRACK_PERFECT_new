@@ -1,4 +1,7 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
 /**
  * Regression tests for: "Export failed — The generated backup failed its own
  * integrity check: Corrupt backup: Question references a missing course or
@@ -10,9 +13,12 @@
  * that every export runs against its own package.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+<<<<<<< HEAD
 =======
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 >>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
 
 const idbStore = new Map<string, unknown>();
 
@@ -26,11 +32,15 @@ vi.mock('idb-keyval', () => ({
 }));
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 import { pruneOrphans, describeOrphanReport, isCleanReport } from '../utils/referentialIntegrity';
 =======
 import { pruneOrphans } from '../utils/referentialIntegrity';
 import { appReducer } from '../context/AppContext';
 >>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
+=======
+import { pruneOrphans, describeOrphanReport, isCleanReport } from '../utils/referentialIntegrity';
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
 import {
   buildSnapshot,
   createSemesterArchive,
@@ -38,6 +48,9 @@ import {
   exportBackup,
   parseBackup,
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
   loadArchive,
 } from '../utils/semesterArchive';
 import type { AppState, ExamQuestion } from '../types';
@@ -50,6 +63,7 @@ const question = (id: string, courseId: string, topicId: string): ExamQuestion =
   difficulty: 'medium',
   probability: 'high',
   modelAnswer: 'Answer',
+<<<<<<< HEAD
 =======
   itemCountOf,
   ARCHIVE_KEY_PREFIX,
@@ -182,11 +196,16 @@ const sampleQuestion1: ExamQuestion = {
   modelAnswer: 'A hormone and neurotransmitter',
   correctOption: 0,
 >>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
   tags: [],
   isPracticed: false,
   needsReview: false,
   isSaved: false,
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
   createdAt: '2024-01-01',
 });
 
@@ -324,6 +343,7 @@ describe('snapshot + export never ship orphans', () => {
     const blob = await exportBackup({ kind: 'live', state: orphanedState() });
     const parsed = await parseBackup(await blobToBuffer(blob));
     expect(parsed.ok).toBe(true);
+<<<<<<< HEAD
 =======
   createdAt: now,
 };
@@ -725,5 +745,7 @@ describe('Referential Integrity & Cascading Pruning', () => {
     const originalInDb = (await (await import('idb-keyval')).get<ArchiveRecord>(`${ARCHIVE_KEY_PREFIX}${archiveId}`))!;
     expect(originalInDb.snapshot.examQuestions.find((q) => q.id === 'legacy-orphan-q')).toBeDefined();
 >>>>>>> 6fce4951938648dcb8aecfdf31349c75899937e8
+=======
+>>>>>>> e50e3ed8136a08a77a9d402f75c7d99518a56bfe
   });
 });
