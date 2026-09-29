@@ -24,6 +24,7 @@
  * at startup.
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
+import { scheduleBackgroundWork } from './idleScheduler';
 
 /** sessionStorage flag so a stale-chunk reload happens at most once per tab. */
 const RELOAD_FLAG = 'pharmatrack:chunk-reload';
@@ -212,35 +213,14 @@ export function prefetchRoutes(paths: string[]): void {
   for (const path of paths) prefetchRoute(path);
 }
 
-const userInputPending = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
-  const scheduling = (navigator as Navigator & {
-    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
-  }).scheduling;
-  try {
-    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
-  } catch {
-    return false;
-  }
-};
-
 const scheduleIdle = (cb: () => void): void => {
-  if (typeof window === 'undefined') return;
-  const ric = (window as unknown as {
-    requestIdleCallback?: (
-      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
-      opts?: { timeout?: number },
-    ) => number;
-  }).requestIdleCallback;
-  const runWhenTrulyIdle = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
-    if (userInputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
-      window.setTimeout(() => scheduleIdle(cb), 550);
-      return;
-    }
-    cb();
-  };
-  if (typeof ric === 'function') ric(runWhenTrulyIdle, { timeout: 4500 });
-  else window.setTimeout(() => runWhenTrulyIdle(), 750);
+  scheduleBackgroundWork(cb, {
+    timeout: 4500,
+    retryDelay: 650,
+    quietWindowMs: 1800,
+    minTimeRemaining: 14,
+    runWhenTimedOut: false,
+  });
 };
 
 /**
@@ -272,7 +252,7 @@ export function prefetchLikelyRoutes(
     const next = queue.shift();
     if (!next) return;
     prefetchRoute(next);
-    if (queue.length) window.setTimeout(() => scheduleIdle(warmNext), 650);
+    if (queue.length) window.setTimeout(() => scheduleIdle(warmNext), 950);
   };
-  window.setTimeout(() => scheduleIdle(warmNext), 1800);
+  window.setTimeout(() => scheduleIdle(warmNext), 3200);
 }

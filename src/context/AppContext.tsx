@@ -62,6 +62,7 @@ import {
 import { flagAttemptedQuestions } from '../utils/questionBank';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
+import { scheduleBackgroundWork } from '../utils/idleScheduler';
 
 export type Action =
   | { type: 'SET_STUDENT'; payload: Student }
@@ -560,52 +561,22 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const inputPending = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
-  const scheduling = (navigator as Navigator & {
-    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
-  }).scheduling;
-  try {
-    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
-  } catch {
-    return false;
-  }
-};
-
-const scheduleNonUrgent = (callback: () => void, timeout = 5000, fallbackDelay = 0): (() => void) => {
-  if (typeof window === 'undefined') return () => undefined;
-  let timeoutId: number | undefined;
-  let idleId: number | undefined;
-  let cancelled = false;
-  const ric = (window as unknown as {
-    requestIdleCallback?: (
-      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
-      opts?: { timeout?: number },
-    ) => number;
-    cancelIdleCallback?: (id: number) => void;
-  }).requestIdleCallback;
-  const run = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
-    if (cancelled) return;
-    if (inputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
-      timeoutId = window.setTimeout(() => {
-        idleId = ric ? ric(run, { timeout }) : undefined;
-        if (!ric) run();
-      }, 650);
-      return;
-    }
-    callback();
-  };
-  idleId = ric ? ric(run, { timeout }) : undefined;
-  if (!ric) timeoutId = window.setTimeout(run, fallbackDelay);
-  return () => {
-    cancelled = true;
-    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-    if (idleId !== undefined) {
-      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
-      cic?.(idleId);
-    }
-  };
-};
+const scheduleNonUrgent = (
+  callback: () => void,
+  timeout = 5000,
+  fallbackDelay = 0,
+  runWhenTimedOut = true,
+  quietWindowMs = 500,
+): (() => void) => (
+  scheduleBackgroundWork(callback, {
+    delay: fallbackDelay,
+    timeout,
+    retryDelay: 650,
+    quietWindowMs,
+    minTimeRemaining: 14,
+    runWhenTimedOut,
+  })
+);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, rawDispatch] = useReducer(appReducer, initialState);
@@ -671,28 +642,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     if (typeof indexedDB === 'undefined') return undefined;
     const cleanups: Array<() => void> = [];
-    cleanups.push(scheduleNonUrgent(() => { void loadSearchIndex(); }, 4500, 2500));
-    cleanups.push(scheduleNonUrgent(() => { void ensureArchiveCatalog(); }, 6500, 4000));
-    cleanups.push(scheduleNonUrgent(() => { void ensureConversationIndex(); }, 7500, 5500));
+    cleanups.push(scheduleNonUrgent(() => { void loadSearchIndex(); }, 4500, 2500, false, 2200));
+    cleanups.push(scheduleNonUrgent(() => { void ensureArchiveCatalog(); }, 6500, 4000, false, 2200));
+    cleanups.push(scheduleNonUrgent(() => { void ensureConversationIndex(); }, 7500, 5500, false, 2200));
     return () => cleanups.forEach((cleanup) => cleanup());
   }, []);
 
   // Local-first material readiness: once the semester state is available, warm
   // uploaded file bytes in the background, newest/recently-opened first. This
   // keeps documents ready for the reader without blocking startup or tab clicks.
+  // Very large lecture files are already local-first and will open on demand;
+  // warming many of them at startup is exactly the kind of background disk/IPC
+  // work that can make the whole app feel frozen on slower WebViews.
   useEffect(() => {
     if (!state.slides.length) return;
-    const ids = [...state.slides]
-      .sort((a, b) => {
-        const aTime = new Date(a.lastOpenedAt || a.createdAt || 0).getTime();
-        const bTime = new Date(b.lastOpenedAt || b.createdAt || 0).getTime();
-        return bTime - aTime;
-      })
-      .map((slide) => slide.id);
-    const warmKey = ids.slice(0, 12).join('|');
-    if (warmKey === warmedSlideFilesRef.current) return;
+    const maxWarmFileBytes = 48 * 1024 * 1024;
+    const maxWarmTotalBytes = 128 * 1024 * 1024;
+    const maxWarmSlides = 8;
+    let estimatedBytes = 0;
+    const ids: string[] = [];
+    for (const slide of [...state.slides].sort((a, b) => {
+      const aTime = new Date(a.lastOpenedAt || a.createdAt || 0).getTime();
+      const bTime = new Date(b.lastOpenedAt || b.createdAt || 0).getTime();
+      return bTime - aTime;
+    })) {
+      const fileSize = Math.max(0, Number(slide.fileSize) || 0);
+      if (fileSize > maxWarmFileBytes) continue;
+      if (fileSize && estimatedBytes + fileSize > maxWarmTotalBytes) continue;
+      ids.push(slide.id);
+      estimatedBytes += fileSize;
+      if (ids.length >= maxWarmSlides) break;
+    }
+    const warmKey = ids.join('|');
+    if (!warmKey || warmKey === warmedSlideFilesRef.current) return;
     warmedSlideFilesRef.current = warmKey;
-    prewarmFileBytes(ids, 12);
+    prewarmFileBytes(ids, maxWarmSlides);
   }, [state.slides]);
 
   // Readable data is applied synchronously so a click in the same turn is not

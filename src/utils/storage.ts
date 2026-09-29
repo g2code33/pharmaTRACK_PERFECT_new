@@ -2,6 +2,7 @@ import { AppState } from '../types';
 import { DEFAULT_LEARNING_SETTINGS } from './learningEngine';
 import * as idb from './idbStore';
 import { isTauriRuntime } from '../platform/runtime';
+import { scheduleBackgroundWork } from './idleScheduler';
 import {
   allowWorkspacePersist,
   blockWorkspacePersist,
@@ -10,6 +11,10 @@ import {
 } from './persistGuard';
 
 const STORAGE_KEY = 'pharmatrack_state';
+const WORKSPACE_VALIDATION_CACHE_MS = 30_000;
+let lastKnownWorkspaceRaw: string | null | undefined;
+let lastWorkspaceValidationAt = 0;
+const offloadedTextSignatures = new Map<string, string>();
 
 export {
   allowWorkspacePersist,
@@ -28,10 +33,17 @@ export function readWorkspaceRaw(): { raw: string | null; status: WorkspaceRawSt
   } catch {
     return { raw: null, status: 'unavailable' };
   }
-  if (raw == null) return { raw: null, status: 'missing' };
+  if (raw == null) {
+    lastKnownWorkspaceRaw = null;
+    lastWorkspaceValidationAt = Date.now();
+    offloadedTextSignatures.clear();
+    return { raw: null, status: 'missing' };
+  }
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { raw, status: 'malformed' };
+    lastKnownWorkspaceRaw = raw;
+    lastWorkspaceValidationAt = Date.now();
     return { raw, status: 'ok' };
   } catch {
     return { raw, status: 'malformed' };
@@ -113,6 +125,7 @@ export const loadSlideText = async (slideId: string): Promise<string | null> => 
 };
 
 export const deleteSlideText = async (slideId: string): Promise<void> => {
+  offloadedTextSignatures.delete(slideId);
   try {
     await idb.del(fullTextKey(slideId));
   } catch (err) {
@@ -120,19 +133,51 @@ export const deleteSlideText = async (slideId: string): Promise<void> => {
   }
 };
 
+const textSignature = (text: string): string => (
+  `${text.length}:${text.charCodeAt(0) || 0}:${text.charCodeAt(Math.floor(text.length / 2)) || 0}:${text.charCodeAt(text.length - 1) || 0}`
+);
+
+const ensureWorkspaceCanBeWritten = (): boolean => {
+  if (isWorkspacePersistBlocked()) return false;
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    const reason = 'localStorage could not be read, so PharmaTRACK will not overwrite whatever is still stored.';
+    blockWorkspacePersist(reason);
+    console.error(`Refusing to save over stored data: ${reason}`);
+    return false;
+  }
+
+  const validationFresh = Date.now() - lastWorkspaceValidationAt < WORKSPACE_VALIDATION_CACHE_MS;
+  if (validationFresh && raw === lastKnownWorkspaceRaw) return true;
+  if (raw == null) {
+    lastKnownWorkspaceRaw = null;
+    lastWorkspaceValidationAt = Date.now();
+    offloadedTextSignatures.clear();
+    return true;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Stored state is not an object.');
+    lastKnownWorkspaceRaw = raw;
+    lastWorkspaceValidationAt = Date.now();
+    return true;
+  } catch {
+    const reason = 'Saved semester data could not be read, so it will not be overwritten.';
+    blockWorkspacePersist(reason);
+    console.error(`Refusing to save over stored data: ${reason}`);
+    return false;
+  }
+};
+
 export const saveState = (state: AppState): void => {
   // Never replace a file we could not parse. A migration that needs to write
   // does so only after a verified safety copy, and it does not come through here.
-  const existing = readWorkspaceRaw();
-  if (existing.status === 'malformed' || existing.status === 'unavailable') {
-    const reason = existing.status === 'unavailable'
-      ? 'localStorage could not be read, so PharmaTRACK will not overwrite whatever is still stored.'
-      : 'Saved semester data could not be read, so it will not be overwritten.';
-    blockWorkspacePersist(reason);
-    console.error(`Refusing to save over stored data: ${reason}`);
-    return;
-  }
-  if (isWorkspacePersistBlocked()) allowWorkspacePersist();
+  // The validation result is cached briefly so frequent autosaves do not parse
+  // the whole workspace before serialising it again.
+  if (!ensureWorkspaceCanBeWritten()) return;
+  allowWorkspacePersist();
 
   try {
     let offloaded = 0;
@@ -143,11 +188,17 @@ export const saveState = (state: AppState): void => {
 
       // Write the full text to IndexedDB in the background. If it fails the
       // truncated copy is still saved, so search keeps working and the only
-      // loss is the tail of the text — never the slide itself.
+      // loss is the tail of the text — never the slide itself. The signature
+      // check prevents rewriting the same long text on every autosave.
       offloaded += 1;
-      idb.set(fullTextKey(slide.id), text).catch((err) =>
-        console.error(`Error offloading slide text ${slide.id}:`, err),
-      );
+      const signature = textSignature(text);
+      if (offloadedTextSignatures.get(slide.id) !== signature) {
+        offloadedTextSignatures.set(slide.id, signature);
+        idb.set(fullTextKey(slide.id), text).catch((err) => {
+          offloadedTextSignatures.delete(slide.id);
+          console.error(`Error offloading slide text ${slide.id}:`, err);
+        });
+      }
 
       return { ...slide, contentText: text.slice(0, CONTENT_TEXT_SEARCH_LIMIT) };
     });
@@ -156,6 +207,8 @@ export const saveState = (state: AppState): void => {
       offloaded > 0 ? { ...state, slides } : state,
     );
     localStorage.setItem(STORAGE_KEY, serializedState);
+    lastKnownWorkspaceRaw = serializedState;
+    lastWorkspaceValidationAt = Date.now();
   } catch (err) {
     // A quota error here used to be invisible: saving just stopped and the
     // user kept working, losing everything on close. Make it loud.
@@ -236,39 +289,15 @@ export const forgetCachedFile = (id: string): void => {
   pendingFileLoads.delete(id);
 };
 
-const userInputPending = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
-  const scheduling = (navigator as Navigator & {
-    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
-  }).scheduling;
-  try {
-    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
-  } catch {
-    return false;
-  }
-};
-
-const scheduleFileWarmup = (callback: () => void, delay = 0): number | null => {
-  if (typeof window === 'undefined') return null;
-  if (delay > 0) return window.setTimeout(() => { scheduleFileWarmup(callback); }, delay);
-
-  const ric = (window as unknown as {
-    requestIdleCallback?: (
-      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
-      opts?: { timeout?: number },
-    ) => number;
-  }).requestIdleCallback;
-
-  const runWhenQuiet = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
-    if (userInputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
-      scheduleFileWarmup(callback, 700);
-      return;
-    }
-    callback();
-  };
-
-  if (typeof ric === 'function') return ric(runWhenQuiet, { timeout: 6000 });
-  return window.setTimeout(() => runWhenQuiet(), 900);
+const scheduleFileWarmup = (callback: () => void, delay = 0): void => {
+  scheduleBackgroundWork(callback, {
+    delay,
+    timeout: 6000,
+    retryDelay: 800,
+    quietWindowMs: 2000,
+    minTimeRemaining: 16,
+    runWhenTimedOut: false,
+  });
 };
 
 /**

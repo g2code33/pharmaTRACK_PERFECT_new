@@ -12,10 +12,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const idbStore = new Map<string, unknown>();
+const idbSetCalls = new Map<string, number>();
 
 vi.mock('idb-keyval', () => ({
   get: async (k: string) => idbStore.get(k),
-  set: async (k: string, v: unknown) => { idbStore.set(k, v); },
+  set: async (k: string, v: unknown) => {
+    idbSetCalls.set(k, (idbSetCalls.get(k) ?? 0) + 1);
+    idbStore.set(k, v);
+  },
   del: async (k: string) => { idbStore.delete(k); },
 }));
 
@@ -36,6 +40,7 @@ const makeState = (contentText: string): AppState => ({
 
 beforeEach(() => {
   idbStore.clear();
+  idbSetCalls.clear();
   localStorage.clear();
 });
 
@@ -64,6 +69,15 @@ describe('slide text offload', () => {
     const saved = JSON.parse(localStorage.getItem('pharmatrack_state')!);
     expect(saved.slides[0].contentText.length).toBe(2000);
     expect(saved.slides[0].contentText).toContain('Pharmacology');
+  });
+
+  it('does not rewrite identical long slide text on every autosave', async () => {
+    saveState(makeState(LONG));
+    saveState(makeState(LONG));
+    saveState(makeState(LONG));
+    await Promise.resolve();
+
+    expect(idbSetCalls.get('slidetext_slide-1')).toBe(1);
   });
 
   it('leaves short text untouched', () => {
