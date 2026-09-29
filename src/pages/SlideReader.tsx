@@ -4,7 +4,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFileBytes, saveFile } from '../utils/storage';
-import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { looksLikePresentationText, shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -590,6 +590,12 @@ const SlideReader: React.FC = () => {
    * document and the rest of the semester are never sent.
    */
   const isPdf = currentMaterial?.fileType === 'pdf' || openedKind === 'pdf';
+  const isConvertedPresentationPdf = Boolean(
+    isPdf && currentMaterial && (
+      /\.(pptx|pptm|ppt)$/i.test(currentMaterial.originalName ?? '') ||
+      looksLikePresentationText(currentMaterial.contentText)
+    ),
+  );
   const aiScope: ContextSelection = {
     topicId,
     courseId: topic?.courseId,
@@ -666,6 +672,7 @@ const SlideReader: React.FC = () => {
           onAskAi={handleAskAiAboutSelection}
           jumpToPage={deepLinkPage}
           initialQuery={deepLinkQuery}
+          initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}
           focusHighlightId={focusHighlightId}
           onPageChange={(current, total, text) => {
             setPage(current);
@@ -745,7 +752,7 @@ const SlideReader: React.FC = () => {
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-[calc(100dvh-8.5rem)] min-h-[32rem] sm:h-[calc(100dvh-9.5rem)]'}`}>
+    <div className={`flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>

@@ -214,6 +214,16 @@ describe('whole-document uploads', () => {
 });
 
 describe('stable layout', () => {
+  it('lets the reader fill the available app page instead of using a second viewport subtraction', () => {
+    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'");
+  });
+
+  it('opens converted PowerPoint PDFs with page-fit zoom so the whole landscape slide is visible', () => {
+    expect(viewer).toContain('initialZoom?: ZoomPreset');
+    expect(reader).toContain("initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}");
+    expect(reader).toContain('looksLikePresentationText(currentMaterial.contentText)');
+  });
+
   it('keeps a permanent scrollbar gutter so pages cannot shift sideways', () => {
     // An appearing/disappearing scrollbar changed the track width, which moved
     // every centred page horizontally.

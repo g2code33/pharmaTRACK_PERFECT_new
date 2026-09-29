@@ -56,6 +56,8 @@ interface PdfViewerProps {
   focusHighlightId?: string;
   /** Pre-fill the find bar, e.g. from a global-search "In document" hit. */
   initialQuery?: string;
+  /** Lecture slides are landscape; opening them at page-fit avoids the half-slide view. */
+  initialZoom?: ZoomPreset;
 }
 
 interface SearchHit {
@@ -89,14 +91,14 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const PdfViewer: React.FC<PdfViewerProps> = ({
   fileUrl, title, onPageChange, onTextExtracted,
   highlights = [], onCreateHighlight, onDeleteHighlight, onAskAi, jumpToPage,
-  focusHighlightId, initialQuery,
+  focusHighlightId, initialQuery, initialZoom = 'width',
 }) => {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
   const [scale, setScale] = useState(1.2);
-  const [zoomPreset, setZoomPreset] = useState<ZoomPreset>('width');
+  const [zoomPreset, setZoomPreset] = useState<ZoomPreset>(initialZoom);
   const [rotation, setRotation] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -147,6 +149,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    setZoomPreset(initialZoom);
+  }, [fileUrl, initialZoom]);
 
   /** Search state read from inside async render callbacks. */
   const searchRef = useRef({ query: '', matchCase: false, wholeWords: false, all: true });
