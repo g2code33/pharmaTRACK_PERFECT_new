@@ -5,7 +5,13 @@
 
 mod lan_server;
 
-use std::{fs, path::Path, sync::Mutex};
+use std::{
+    fs,
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use ring::rand::{SecureRandom, SystemRandom};
 use tauri_plugin_shell::ShellExt;
@@ -633,6 +639,131 @@ fn read_pharmaexam_file(
     fs::read(candidate).map_err(|error| format!("Unable to read examination package: {error}"))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeMaterialFileInfo {
+    size: u64,
+}
+
+const MATERIAL_FILE_CHUNK_LIMIT: usize = 2 * 1024 * 1024;
+
+fn validate_material_file_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err("Invalid material file id.".to_string());
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("Invalid material file id.".to_string());
+    }
+    Ok(())
+}
+
+fn material_files_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to find the app data directory: {error}"))?
+        .join("material-files"))
+}
+
+fn material_file_path(app: &tauri::AppHandle, id: &str, temp: bool) -> Result<PathBuf, String> {
+    validate_material_file_id(id)?;
+    let suffix = if temp { ".part" } else { ".bin" };
+    Ok(material_files_dir(app)?.join(format!("file_{id}{suffix}")))
+}
+
+#[tauri::command]
+fn save_material_file_start(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dir = material_files_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|error| format!("Unable to prepare material storage: {error}"))?;
+    let path = material_file_path(&app, &id, true)?;
+    fs::File::create(path).map_err(|error| format!("Unable to begin saving material: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_material_file_chunk(app: tauri::AppHandle, id: String, bytes: Vec<u8>) -> Result<(), String> {
+    if bytes.len() > MATERIAL_FILE_CHUNK_LIMIT {
+        return Err("Material file chunk is too large.".to_string());
+    }
+    let path = material_file_path(&app, &id, true)?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Unable to continue saving material: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("Unable to write material bytes: {error}"))
+}
+
+#[tauri::command]
+fn save_material_file_finish(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let temp_path = material_file_path(&app, &id, true)?;
+    let final_path = material_file_path(&app, &id, false)?;
+    if final_path.exists() {
+        fs::remove_file(&final_path)
+            .map_err(|error| format!("Unable to replace existing material: {error}"))?;
+    }
+    fs::rename(temp_path, final_path).map_err(|error| format!("Unable to finalize material: {error}"))
+}
+
+#[tauri::command]
+fn save_material_file_abort(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let temp_path = material_file_path(&app, &id, true)?;
+    match fs::remove_file(temp_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Unable to discard partial material: {error}")),
+    }
+}
+
+#[tauri::command]
+fn material_file_info(app: tauri::AppHandle, id: String) -> Result<Option<NativeMaterialFileInfo>, String> {
+    let path = material_file_path(&app, &id, false)?;
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(NativeMaterialFileInfo { size: metadata.len() })),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Unable to inspect saved material: {error}")),
+    }
+}
+
+#[tauri::command]
+fn load_material_file_chunk(
+    app: tauri::AppHandle,
+    id: String,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, String> {
+    let read_len = usize::try_from(length.min(MATERIAL_FILE_CHUNK_LIMIT as u64))
+        .map_err(|_| "Material file chunk length is invalid.".to_string())?;
+    let path = material_file_path(&app, &id, false)?;
+    let mut file = fs::File::open(path).map_err(|error| format!("Unable to open saved material: {error}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("Unable to seek saved material: {error}"))?;
+    let mut buffer = vec![0_u8; read_len];
+    let read = file
+        .read(&mut buffer)
+        .map_err(|error| format!("Unable to read saved material: {error}"))?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+#[tauri::command]
+fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let final_path = material_file_path(&app, &id, false)?;
+    let temp_path = material_file_path(&app, &id, true)?;
+    for path in [final_path, temp_path] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Unable to delete saved material: {error}")),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn apply_linux_webkit_runtime_workarounds() {
     // Ubuntu/Debian users can hit a blank or never-painted Tauri window when
@@ -751,6 +882,13 @@ fn main() {
             destroy_website,
             get_pending_pharmaexam_files,
             read_pharmaexam_file,
+            save_material_file_start,
+            save_material_file_chunk,
+            save_material_file_finish,
+            save_material_file_abort,
+            material_file_info,
+            load_material_file_chunk,
+            delete_material_file,
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status

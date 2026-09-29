@@ -1,6 +1,7 @@
 import { AppState, Course, Topic, Slide, LearningObjective, ExamQuestion, QuizHistory, StudyPlan, Note, ExamDate, Activity } from '../types';
 import { DEFAULT_LEARNING_SETTINGS } from './learningEngine';
 import * as idb from './idbStore';
+import { isTauriRuntime } from '../platform/runtime';
 import {
   allowWorkspacePersist,
   blockWorkspacePersist,
@@ -221,8 +222,129 @@ const blobToBytes = (blob: Blob, timeoutMs: number = BLOB_READ_TIMEOUT_MS): Prom
   });
 };
 
+const NATIVE_FILE_CHUNK_BYTES = 512 * 1024;
+
+type NativeFileInfo = { size: number };
+
+type NativeLoadResult = Uint8Array | null | undefined;
+
+const stringToBytes = (value: string): Uint8Array => {
+  if (value.startsWith('data:')) {
+    const base64Data = value.split(',')[1];
+    if (base64Data) {
+      const binaryString = window.atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+      return bytes;
+    }
+  }
+  return new TextEncoder().encode(value);
+};
+
+const toFileBytes = async (file: Blob | Uint8Array | string): Promise<Uint8Array | string> => {
+  if (file instanceof Blob) return blobToBytes(file);
+  return file;
+};
+
+const nativePayloadBytes = (value: Uint8Array | string): Uint8Array => (
+  typeof value === 'string' ? stringToBytes(value) : value
+);
+
+const invokeNativeFile = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(command, args);
+};
+
+const normalizeNativeChunk = (chunk: unknown): Uint8Array => {
+  if (chunk instanceof Uint8Array) return chunk;
+  if (Array.isArray(chunk)) return Uint8Array.from(chunk as number[]);
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  if (chunk && typeof chunk === 'object' && 'buffer' in chunk) {
+    const maybeView = chunk as ArrayBufferView;
+    if (maybeView.buffer instanceof ArrayBuffer) {
+      return new Uint8Array(maybeView.buffer, maybeView.byteOffset, maybeView.byteLength);
+    }
+  }
+  throw new Error('Native file storage returned an unreadable byte chunk.');
+};
+
 /**
- * Persists a file's bytes to IndexedDB.
+ * Native Tauri storage fallback for Ubuntu/Debian builds.
+ *
+ * IndexedDB is the right backend in browsers, but WebKitGTK can fail IDB writes
+ * inside installed .deb apps even when the disk is not full. When the Tauri
+ * bridge is present, store uploaded document bytes in the app data directory
+ * via small chunks, avoiding the broken WebKitGTK path entirely. If the native
+ * command is unavailable (old binary, web/PWA, tests), callers fall back to IDB.
+ */
+const saveNativeFile = async (id: string, value: Uint8Array | string): Promise<boolean> => {
+  if (!isTauriRuntime()) return false;
+
+  const bytes = nativePayloadBytes(value);
+  let started = false;
+  try {
+    await invokeNativeFile<void>('save_material_file_start', { id });
+    started = true;
+    for (let offset = 0; offset < bytes.byteLength; offset += NATIVE_FILE_CHUNK_BYTES) {
+      const chunk = bytes.subarray(offset, Math.min(bytes.byteLength, offset + NATIVE_FILE_CHUNK_BYTES));
+      // Tauri IPC serialises byte vectors as JSON-compatible number arrays.
+      // Chunking keeps the payload size bounded for 100 MB lecture files.
+      await invokeNativeFile<void>('save_material_file_chunk', { id, bytes: Array.from(chunk) });
+    }
+    await invokeNativeFile<void>('save_material_file_finish', { id });
+    return true;
+  } catch (err) {
+    if (started) {
+      try { await invokeNativeFile<void>('save_material_file_abort', { id }); } catch { /* ignore cleanup failure */ }
+    }
+    console.error(`Native file storage could not save ${id}; falling back to IndexedDB:`, err);
+    return false;
+  }
+};
+
+const loadNativeFileBytes = async (id: string): Promise<NativeLoadResult> => {
+  if (!isTauriRuntime()) return undefined;
+  try {
+    const info = await invokeNativeFile<NativeFileInfo | null>('material_file_info', { id });
+    if (!info) return null;
+
+    const size = Math.max(0, Number(info.size) || 0);
+    const out = new Uint8Array(size);
+    let written = 0;
+    while (written < size) {
+      const length = Math.min(NATIVE_FILE_CHUNK_BYTES, size - written);
+      const chunk = normalizeNativeChunk(await invokeNativeFile<unknown>('load_material_file_chunk', {
+        id,
+        offset: written,
+        length,
+      }));
+      out.set(chunk, written);
+      written += chunk.byteLength;
+      if (chunk.byteLength === 0 && written < size) {
+        throw new Error('Native file storage returned an empty chunk before the file was fully read.');
+      }
+    }
+    return out;
+  } catch (err) {
+    console.error(`Native file storage could not load ${id}; falling back to IndexedDB:`, err);
+    return undefined;
+  }
+};
+
+const deleteNativeFile = async (id: string): Promise<void> => {
+  if (!isTauriRuntime()) return;
+  try {
+    await invokeNativeFile<void>('delete_material_file', { id });
+  } catch (err) {
+    console.error(`Native file storage could not delete ${id}:`, err);
+  }
+};
+
+/**
+ * Persists a file's bytes to durable local storage.
+ *
+ * In the native desktop app this first uses Tauri's app-data directory, then
+ * falls back to IndexedDB. In the browser/PWA it uses IndexedDB only.
  *
  * Returns `true` once the write has actually been confirmed to succeed, and
  * `false` (after logging the real error) if it did not — it never throws.
@@ -238,22 +360,27 @@ const blobToBytes = (blob: Blob, timeoutMs: number = BLOB_READ_TIMEOUT_MS): Prom
  */
 export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<boolean> => {
   try {
-    // Never hand a Blob/File to IndexedDB — always store raw bytes instead.
-    // This is the actual fix, applied at the one place every upload path
-    // (drag-drop, file picker, bulk upload, edit-and-replace) funnels
-    // through: it means no file saved from here on can ever hit the
-    // WebKit "Blob through IndexedDB" failure mode on load, because
-    // nothing we ever wrote is a Blob to begin with.
-    const toStore = file instanceof Blob ? await blobToBytes(file) : file;
+    // Never hand a Blob/File to storage — always store raw bytes instead.
+    // This fixes two WebKitGTK/Tauri Linux failure modes at once:
+    //   1. IndexedDB may reject Blob/File values or later hang reading them.
+    //   2. On some installed .deb builds, IndexedDB rejects perfectly valid
+    //      large byte writes; native app-data storage succeeds there.
+    const toStore = await toFileBytes(file);
+
+    if (await saveNativeFile(id, toStore)) return true;
+
     await idb.set(`file_${id}`, toStore);
     return true;
   } catch (err) {
-    console.error(`Error saving file ${id} to IndexedDB:`, err);
+    console.error(`Error saving file ${id} to storage:`, err);
     return false;
   }
 };
 
 export const loadFile = async (id: string): Promise<Blob | Uint8Array | string | null> => {
+  const nativeFile = await loadNativeFileBytes(id);
+  if (nativeFile !== undefined && nativeFile !== null) return nativeFile;
+
   try {
     const file = await idb.get(`file_${id}`);
     return file || null;
@@ -290,6 +417,7 @@ export const loadFileBytes = async (id: string): Promise<Uint8Array | string | n
 };
 
 export const deleteFile = async (id: string): Promise<void> => {
+  await deleteNativeFile(id);
   try {
     await idb.del(`file_${id}`);
   } catch (err) {
