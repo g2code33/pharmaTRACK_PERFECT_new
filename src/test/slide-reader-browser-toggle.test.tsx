@@ -14,7 +14,9 @@ vi.mock('../utils/supabase', async () => {
         signOut: async () => ({ error: null }),
         onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
       },
-      from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: null, error: {} }) }) }) }),
+      from: () => ({
+        select: () => ({ eq: () => ({ single: async () => ({ data: null, error: {} }) }) }),
+      }),
     },
   };
 });
@@ -24,6 +26,7 @@ vi.mock('../utils/storage', async (importOriginal) => {
   return {
     ...actual,
     loadFile: vi.fn(async () => new Uint8Array([1, 2, 3])),
+    loadFileBytes: vi.fn(async () => new Uint8Array([1, 2, 3])),
     loadSlideText: vi.fn(async () => 'Sample slide text'),
   };
 });
@@ -85,7 +88,23 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
     localStorage.setItem('pharmatrack_state', JSON.stringify(storedState));
   });
 
-  it('renders with AI panel open by default and switches to Browser when clicked', async () => {
+  const waitForCollapsedReader = async () => {
+    await waitFor(() => {
+      expect(screen.getByTitle('Restore side panel')).toBeInTheDocument();
+    });
+  };
+
+  const openBrowserPanel = async () => {
+    await waitForCollapsedReader();
+    const browserButton = screen.getByRole('button', { name: /^browser$/i });
+    fireEvent.click(browserButton);
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/search or enter url/i)).toBeInTheDocument();
+    });
+    return browserButton;
+  };
+
+  it('renders full-width by default and switches between AI and Browser when clicked', async () => {
     const windowOpenSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
 
     render(
@@ -95,10 +114,15 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    // AI panel is present initially
+    // The reader starts full-width so opening tabs/files is not squeezed by default.
+    await waitForCollapsedReader();
+    expect(screen.queryByTestId('mock-ai-chat-panel')).not.toBeInTheDocument();
+
+    const aiButton = screen.getByTitle(/open ai panel/i);
+    fireEvent.click(aiButton);
     await waitFor(() => {
       expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
     });
@@ -135,19 +159,11 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-
-    // Switch to Browser
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
     expect(screen.queryByTestId('mock-ai-chat-panel')).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/search or enter url/i)).toBeInTheDocument();
 
     // Click AI button -> returns to AI panel!
     const aiButton = screen.getByTitle(/open ai panel/i);
@@ -166,15 +182,10 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
 
     const returnToAiButton = screen.getByTitle('Close browser and return to AI');
     expect(returnToAiButton).toBeInTheDocument();
@@ -196,15 +207,10 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
 
     const pubMedChip = screen.getByRole('button', { name: /pubmed/i });
     expect(pubMedChip).toBeInTheDocument();
@@ -227,15 +233,10 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
 
     expect(screen.queryByTestId('mock-ai-chat-panel')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText(/search or enter url/i)).toBeInTheDocument();
@@ -257,15 +258,10 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
 
     const newTabButton = screen.getByTitle('New tab');
     expect(newTabButton).toBeInTheDocument();
@@ -291,15 +287,10 @@ describe('SlideReader Browser / AI Panel Toggle Integration', () => {
             <Route path="/read/:topicId" element={<SlideReader />} />
           </Routes>
         </AppProvider>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('mock-ai-chat-panel')).toBeInTheDocument();
-    });
-
-    const browserButton = screen.getByRole('button', { name: /^browser$/i });
-    fireEvent.click(browserButton);
+    await openBrowserPanel();
 
     const input = screen.getByPlaceholderText(/search or enter url/i) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'https://dailymed.nlm.nih.gov' } });

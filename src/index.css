@@ -524,19 +524,9 @@ html.dark select {
   .native-desktop-shell a,
   .native-desktop-shell button:not(.native-window-control),
   .native-desktop-shell [role="button"] {
-    transition-property: transform, box-shadow, background-color, border-color, color, opacity, filter;
-    transition-duration: 160ms;
-    transition-timing-function: ease;
-  }
-  .native-desktop-shell a:hover,
-  .native-desktop-shell button:not(.native-window-control):hover,
-  .native-desktop-shell [role="button"]:hover {
-    filter: brightness(1.03);
-  }
-  .native-desktop-shell a:active,
-  .native-desktop-shell button:not(.native-window-control):active,
-  .native-desktop-shell [role="button"]:active {
-    transform: translateY(1px) scale(0.99);
+    transition-property: background-color, border-color, color, opacity, box-shadow;
+    transition-duration: 90ms;
+    transition-timing-function: ease-out;
   }
   .native-desktop-shell .backdrop-blur-sm,
   .native-desktop-shell .backdrop-blur-md,

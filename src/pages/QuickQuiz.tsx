@@ -551,7 +551,7 @@ const QuickQuiz: React.FC = () => {
 
       <footer className="safe-area-x safe-area-bottom shrink-0 border-t border-slate-200/80 bg-slate-100/95 px-3 pb-2 pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.10)] backdrop-blur sm:px-6 sm:pb-4">
         <div className="mx-auto max-w-4xl space-y-2">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <button
               onClick={() => goToQuestion(currentIndex - 1)}
               disabled={currentIndex === 0}

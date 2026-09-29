@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useCallback, useDeferredValue, useMemo } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.110';
+const APP_VERSION_FALLBACK = '1.1.111';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -70,6 +70,7 @@ const Layout: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -163,14 +164,24 @@ const Layout: React.FC = () => {
     return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
-  const recentSlides = [...state.slides].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
+  const recentSlides = useMemo(
+    () => [...state.slides]
+      .sort((a, b) => new Date(b.lastOpenedAt || b.createdAt).getTime() - new Date(a.lastOpenedAt || a.createdAt).getTime())
+      .slice(0, 5),
+    [state.slides],
+  );
 
   useEffect(() => onSearchIndex(() => setIndexTick((n) => n + 1)), []);
 
   useEffect(() => {
-    setSearchResults(searchAcademic(state, searchQuery, undefined, 8));
-    setActiveIndex(0);
-  }, [searchQuery, state, indexTick]);
+    if (!isSearchFocused || deferredSearchQuery.trim().length < 2) {
+      setSearchResults((previous) => (previous.length ? [] : previous));
+      setActiveIndex((previous) => (previous === 0 ? previous : 0));
+      return;
+    }
+    setSearchResults(searchAcademic(state, deferredSearchQuery, undefined, 8));
+    setActiveIndex((previous) => (previous === 0 ? previous : 0));
+  }, [deferredSearchQuery, isSearchFocused, state, indexTick]);
 
   // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
   // which raced with the click it was trying to allow.

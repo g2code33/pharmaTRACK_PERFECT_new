@@ -212,12 +212,35 @@ export function prefetchRoutes(paths: string[]): void {
   for (const path of paths) prefetchRoute(path);
 }
 
+const userInputPending = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  const scheduling = (navigator as Navigator & {
+    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
+  }).scheduling;
+  try {
+    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
+  } catch {
+    return false;
+  }
+};
+
 const scheduleIdle = (cb: () => void): void => {
   if (typeof window === 'undefined') return;
-  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number })
-    .requestIdleCallback;
-  if (typeof ric === 'function') ric(cb, { timeout: 900 });
-  else window.setTimeout(cb, 250);
+  const ric = (window as unknown as {
+    requestIdleCallback?: (
+      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+      opts?: { timeout?: number },
+    ) => number;
+  }).requestIdleCallback;
+  const runWhenTrulyIdle = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
+    if (userInputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
+      window.setTimeout(() => scheduleIdle(cb), 550);
+      return;
+    }
+    cb();
+  };
+  if (typeof ric === 'function') ric(runWhenTrulyIdle, { timeout: 4500 });
+  else window.setTimeout(() => runWhenTrulyIdle(), 750);
 };
 
 /**
@@ -225,19 +248,31 @@ const scheduleIdle = (cb: () => void): void => {
  * time. Opening a sidebar tab should not show a loader, but fetching every
  * chunk at once can freeze slower WebViews, so this is deliberately staggered.
  */
+export const DEFAULT_BACKGROUND_PREFETCH_ROUTES = [
+  '/materials',
+  '/courses',
+  '/questions',
+  '/quiz',
+  '/highlights',
+  '/objectives',
+  '/planner',
+  '/learn',
+  '/notes',
+  '/search',
+  '/settings',
+  '/profile',
+] as const;
+
 export function prefetchLikelyRoutes(
-  paths: string[] = [
-    '/materials', '/courses', '/questions', '/quiz', '/highlights', '/objectives',
-    '/planner', '/learn', '/clinical', '/notes', '/analytics', '/timetable',
-    '/search', '/settings', '/profile', '/archive', '/storage', '/library', '/read',
-  ],
+  paths: string[] = [...DEFAULT_BACKGROUND_PREFETCH_ROUTES],
 ): void {
+  if (typeof window === 'undefined') return;
   const queue = [...paths];
   const warmNext = () => {
     const next = queue.shift();
     if (!next) return;
     prefetchRoute(next);
-    if (queue.length) scheduleIdle(warmNext);
+    if (queue.length) window.setTimeout(() => scheduleIdle(warmNext), 650);
   };
-  scheduleIdle(warmNext);
+  window.setTimeout(() => scheduleIdle(warmNext), 1800);
 }

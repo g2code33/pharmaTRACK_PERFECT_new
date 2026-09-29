@@ -229,6 +229,11 @@ describe('stable layout', () => {
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });
 
+  it('does not apply expensive native hover filters/transforms that make pointer movement feel slow', () => {
+    expect(css).not.toContain('filter: brightness(1.03)');
+    expect(css).not.toContain('transform: translateY(1px) scale(0.99)');
+  });
+
   it('lets the reader fill the available app page without a second page scroll or bottom void', () => {
     expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full flex-1'");
     expect(reader).toContain('slide-reader-fullbleed');

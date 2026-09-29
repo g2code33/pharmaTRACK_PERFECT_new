@@ -560,6 +560,53 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const inputPending = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  const scheduling = (navigator as Navigator & {
+    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
+  }).scheduling;
+  try {
+    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
+  } catch {
+    return false;
+  }
+};
+
+const scheduleNonUrgent = (callback: () => void, timeout = 5000, fallbackDelay = 0): (() => void) => {
+  if (typeof window === 'undefined') return () => undefined;
+  let timeoutId: number | undefined;
+  let idleId: number | undefined;
+  let cancelled = false;
+  const ric = (window as unknown as {
+    requestIdleCallback?: (
+      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+      opts?: { timeout?: number },
+    ) => number;
+    cancelIdleCallback?: (id: number) => void;
+  }).requestIdleCallback;
+  const run = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
+    if (cancelled) return;
+    if (inputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
+      timeoutId = window.setTimeout(() => {
+        idleId = ric ? ric(run, { timeout }) : undefined;
+        if (!ric) run();
+      }, 650);
+      return;
+    }
+    callback();
+  };
+  idleId = ric ? ric(run, { timeout }) : undefined;
+  if (!ric) timeoutId = window.setTimeout(run, fallbackDelay);
+  return () => {
+    cancelled = true;
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    if (idleId !== undefined) {
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+      cic?.(idleId);
+    }
+  };
+};
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, rawDispatch] = useReducer(appReducer, initialState);
   // A boot migration is async. If the student already added something, applying
@@ -575,6 +622,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // in-flight async getSession() must see the new value immediately, before
   // React has a chance to re-render.
   const hasSignedOutRef = useRef(false);
+  const warmedSlideFilesRef = useRef('');
 
   /**
    * Ends the session for real.
@@ -617,12 +665,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     dispatch({ type: 'SET_LOGGED_IN', payload: false });
   }, []);
 
-  // Warm the full-text search index from IndexedDB so global search can run
-  // synchronously against it.
+  // Warm the optional search/archive/chat indexes only when the browser is
+  // genuinely idle. These IndexedDB/catalog reads are useful, but they must not
+  // compete with pointer movement, typing, page opening, or first paint.
   useEffect(() => {
-    void loadSearchIndex();
-    void ensureArchiveCatalog();
-    void ensureConversationIndex();
+    if (typeof indexedDB === 'undefined') return undefined;
+    const cleanups: Array<() => void> = [];
+    cleanups.push(scheduleNonUrgent(() => { void loadSearchIndex(); }, 4500, 2500));
+    cleanups.push(scheduleNonUrgent(() => { void ensureArchiveCatalog(); }, 6500, 4000));
+    cleanups.push(scheduleNonUrgent(() => { void ensureConversationIndex(); }, 7500, 5500));
+    return () => cleanups.forEach((cleanup) => cleanup());
   }, []);
 
   // Local-first material readiness: once the semester state is available, warm
@@ -637,7 +689,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return bTime - aTime;
       })
       .map((slide) => slide.id);
-    prewarmFileBytes(ids);
+    const warmKey = ids.slice(0, 12).join('|');
+    if (warmKey === warmedSlideFilesRef.current) return;
+    warmedSlideFilesRef.current = warmKey;
+    prewarmFileBytes(ids, 12);
   }, [state.slides]);
 
   // Readable data is applied synchronously so a click in the same turn is not
@@ -827,7 +882,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [state.student?.id, state.isLoggedIn]);
 
   useEffect(() => {
-    let idleId: number | null = null;
+    let cancelSave: (() => void) | null = null;
     const timeoutId = setTimeout(() => {
       // Guard only against the very first render, before LOAD_STATE has run —
       // writing then would clobber saved data with an empty state.
@@ -859,18 +914,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.timetables.exam.length > 0;
 
       if (hasContent) {
-        const run = () => saveState(state);
-        const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number }).requestIdleCallback;
-        if (typeof ric === 'function') idleId = ric(run, { timeout: 2500 });
-        else window.setTimeout(run, 0);
+        cancelSave = scheduleNonUrgent(() => saveState(state), 8000);
       }
-    }, 1400); // Debounce saves and write during idle so reading stays smooth.
+    }, 1000); // Debounce saves, then write when idle so reading stays smooth.
     return () => {
       clearTimeout(timeoutId);
-      if (idleId !== null) {
-        const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
-        if (typeof cic === 'function') cic(idleId);
-      }
+      cancelSave?.();
     };
   }, [state]);
 

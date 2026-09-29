@@ -236,11 +236,39 @@ export const forgetCachedFile = (id: string): void => {
   pendingFileLoads.delete(id);
 };
 
+const userInputPending = (): boolean => {
+  if (typeof navigator === 'undefined') return false;
+  const scheduling = (navigator as Navigator & {
+    scheduling?: { isInputPending?: (options?: { includeContinuous?: boolean }) => boolean };
+  }).scheduling;
+  try {
+    return scheduling?.isInputPending?.({ includeContinuous: true }) === true;
+  } catch {
+    return false;
+  }
+};
+
 const scheduleFileWarmup = (callback: () => void, delay = 0): number | null => {
   if (typeof window === 'undefined') return null;
-  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number }).requestIdleCallback;
-  if (typeof ric === 'function') return ric(callback, { timeout: 1200 });
-  return window.setTimeout(callback, delay);
+  if (delay > 0) return window.setTimeout(() => { scheduleFileWarmup(callback); }, delay);
+
+  const ric = (window as unknown as {
+    requestIdleCallback?: (
+      cb: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+      opts?: { timeout?: number },
+    ) => number;
+  }).requestIdleCallback;
+
+  const runWhenQuiet = (deadline?: { didTimeout: boolean; timeRemaining: () => number }) => {
+    if (userInputPending() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 12)) {
+      scheduleFileWarmup(callback, 700);
+      return;
+    }
+    callback();
+  };
+
+  if (typeof ric === 'function') return ric(runWhenQuiet, { timeout: 6000 });
+  return window.setTimeout(() => runWhenQuiet(), 900);
 };
 
 /**
@@ -248,7 +276,7 @@ const scheduleFileWarmup = (callback: () => void, delay = 0): number | null => {
  * first screen. The reader still works if a warmup fails; opening the file will
  * try again and show a proper error if the local copy is missing/corrupt.
  */
-export const prewarmFileBytes = (ids: string[], maxToWarm = FILE_CACHE_MAX_ENTRIES): void => {
+export const prewarmFileBytes = (ids: string[], maxToWarm = 12): void => {
   const queue = Array.from(new Set(ids)).filter((id) => id && !fileByteCache.has(id)).slice(0, maxToWarm);
   if (!queue.length) return;
 

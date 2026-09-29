@@ -21,6 +21,7 @@ import { render, screen, act } from '@testing-library/react';
 import RouteLoading from '../components/RouteLoading';
 import RouteErrorBoundary from '../components/RouteErrorBoundary';
 import {
+  DEFAULT_BACKGROUND_PREFETCH_ROUTES,
   isChunkLoadError,
   prefetchRoute,
   registerRoute,
@@ -140,6 +141,17 @@ describe('chunk-load error detection', () => {
 });
 
 describe('route prefetch', () => {
+  it('does not auto-parse the heavy reader/chart/archive chunks at startup', () => {
+    // Those routes are still warmed on sidebar hover/focus/touch. Keeping them
+    // out of the blind background queue prevents the "mouse is slow/freezing"
+    // feeling caused by parsing PDF/PPTX/charts while the student is working.
+    expect(DEFAULT_BACKGROUND_PREFETCH_ROUTES).not.toContain('/read');
+    expect(DEFAULT_BACKGROUND_PREFETCH_ROUTES).not.toContain('/analytics');
+    expect(DEFAULT_BACKGROUND_PREFETCH_ROUTES).not.toContain('/archive');
+    expect(DEFAULT_BACKGROUND_PREFETCH_ROUTES).toContain('/materials');
+    expect(DEFAULT_BACKGROUND_PREFETCH_ROUTES).toContain('/quiz');
+  });
+
   it('warms a registered route exactly once', async () => {
     const factory = vi.fn(async () => ({ default: (() => null) as React.ComponentType }));
     registerRoute('/prefetch-test', factory);
