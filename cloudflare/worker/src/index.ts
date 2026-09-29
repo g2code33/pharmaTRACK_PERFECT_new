@@ -2,7 +2,10 @@ import type { R2Bucket, R2MultipartUpload, R2UploadedPart } from '@cloudflare/wo
 
 const API_PREFIX = '/api/v1';
 const MAX_METADATA_BODY = 16 * 1024;
+const MAX_QUICK_QUIZ_BODY = 96 * 1024;
 const MAX_MULTIPART_PART_BYTES = 100 * 1024 * 1024;
+const QUICK_QUIZ_CODE = /^[A-Za-z0-9_-]{8,32}$/;
+const QUICK_QUIZ_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OBJECT_ID = UUID;
 
@@ -440,6 +443,148 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
+function quickQuizKey(code: string): string {
+  if (!QUICK_QUIZ_CODE.test(code)) throw new HttpError(400, 'The quick quiz code is invalid.', 'invalid_quiz_code');
+  return `quick-quizzes/${code}.json`;
+}
+
+function randomQuickQuizCode(length = 10): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(bytes, (byte) => QUICK_QUIZ_ALPHABET[byte % QUICK_QUIZ_ALPHABET.length]).join('');
+}
+
+async function enforceAnonymousRateLimit(request: Request, env: Env, action: string): Promise<void> {
+  if (!env.RATE_LIMITER) return;
+  const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+  const result = await env.RATE_LIMITER.limit({ key: `anon:${action}:${ip}` });
+  if (!result.success) throw new HttpError(429, 'Too many share requests. Try again shortly.', 'rate_limited');
+}
+
+function cleanQuizText(value: unknown, field: string, max: number, required = true): string | undefined {
+  if (typeof value !== 'string') {
+    if (required) throw new HttpError(400, `${field} is required.`, 'invalid_quiz_pack');
+    return undefined;
+  }
+  const withoutControls = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127 ? ' ' : character;
+  }).join('');
+  const cleaned = withoutControls.replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    if (required) throw new HttpError(400, `${field} is required.`, 'invalid_quiz_pack');
+    return undefined;
+  }
+  if (cleaned.length > max) throw new HttpError(413, `${field} is too long.`, 'quiz_pack_too_large');
+  return cleaned;
+}
+
+function cleanQuizMeta(value: unknown): { code?: string; name?: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const code = cleanQuizText(record.code, 'course code', 32, false);
+  const name = cleanQuizText(record.name, 'course name', 120, false);
+  return code || name ? { code, name } : undefined;
+}
+
+function cleanQuizTopic(value: unknown): { name?: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const name = cleanQuizText((value as Record<string, unknown>).name, 'topic name', 120, false);
+  return name ? { name } : undefined;
+}
+
+function sanitizedQuickQuizPayload(input: unknown): string {
+  const root = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
+  const pack = root?.pack && typeof root.pack === 'object' && !Array.isArray(root.pack) ? root.pack as Record<string, unknown> : undefined;
+  if (!pack) throw new HttpError(400, 'A quick quiz pack is required.', 'invalid_quiz_pack');
+  const questions = Array.isArray(pack.questions) ? pack.questions : [];
+  if (!questions.length) throw new HttpError(400, 'At least one question is required.', 'invalid_quiz_pack');
+  if (questions.length > 100) throw new HttpError(413, 'A quick quiz can contain at most 100 questions.', 'quiz_pack_too_large');
+
+  const sanitizedQuestions = questions.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new HttpError(400, `Question ${index + 1} is invalid.`, 'invalid_quiz_pack');
+    const question = item as Record<string, unknown>;
+    const questionText = cleanQuizText(question.questionText, `Question ${index + 1}`, 2000)!;
+    const requestedType = question.questionType === 'mcq'
+      ? 'mcq'
+      : question.questionType === 'short_answer'
+        ? 'short_answer'
+        : 'essay';
+    const difficulty = question.difficulty === 'easy' || question.difficulty === 'hard' ? question.difficulty : 'medium';
+    const correctAnswer = cleanQuizText(question.correctAnswer, `Question ${index + 1} answer`, 1500, false);
+    const explanation = cleanQuizText(question.explanation, `Question ${index + 1} explanation`, 3000, false);
+    if (requestedType === 'mcq') {
+      const options = Array.isArray(question.options)
+        ? question.options.map((option, optionIndex) => cleanQuizText(option, `Question ${index + 1} option ${optionIndex + 1}`, 700)).filter(Boolean)
+        : [];
+      if (options.length < 2 || options.length > 8) throw new HttpError(400, `Question ${index + 1} needs 2 to 8 options.`, 'invalid_quiz_pack');
+      const correctOption = Number.isInteger(question.correctOption) && (question.correctOption as number) >= 0 && (question.correctOption as number) < options.length
+        ? question.correctOption as number
+        : undefined;
+      if (correctOption === undefined && !correctAnswer) throw new HttpError(400, `Question ${index + 1} needs an answer.`, 'invalid_quiz_pack');
+      return { questionText, questionType: 'mcq', difficulty, options, correctOption, correctAnswer: correctAnswer || options[correctOption ?? 0], explanation };
+    }
+    if (!correctAnswer && !explanation) throw new HttpError(400, `Question ${index + 1} needs an answer.`, 'invalid_quiz_pack');
+    return { questionText, questionType: requestedType, difficulty, correctAnswer, explanation };
+  });
+
+  const sanitized = {
+    pack: {
+      format: 'pharmatrack-quick-quiz',
+      version: 1,
+      title: cleanQuizText(pack.title, 'quiz title', 140, false) || 'Shared PharmaTRACK Quiz',
+      exportedAt: cleanQuizText(pack.exportedAt, 'export date', 40, false) || new Date().toISOString(),
+      course: cleanQuizMeta(pack.course),
+      topic: cleanQuizTopic(pack.topic),
+      questionCount: sanitizedQuestions.length,
+      questions: sanitizedQuestions,
+    },
+  };
+  const text = JSON.stringify(sanitized);
+  if (new TextEncoder().encode(text).byteLength > MAX_QUICK_QUIZ_BODY) {
+    throw new HttpError(413, 'This quick quiz is too large to share as a short link.', 'quiz_pack_too_large');
+  }
+  return text;
+}
+
+async function readQuickQuizPayload(request: Request): Promise<string> {
+  const length = requestLength(request);
+  if (length !== null && length > MAX_QUICK_QUIZ_BODY) throw new HttpError(413, 'This quick quiz is too large to share as a short link.', 'quiz_pack_too_large');
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_QUICK_QUIZ_BODY) throw new HttpError(413, 'This quick quiz is too large to share as a short link.', 'quiz_pack_too_large');
+  try {
+    return sanitizedQuickQuizPayload(JSON.parse(text) as unknown);
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, 'A valid quick quiz JSON pack is required.', 'invalid_json');
+  }
+}
+
+async function createPublicQuickQuiz(request: Request, env: Env): Promise<Response> {
+  await enforceAnonymousRateLimit(request, env, 'quick-quiz-create');
+  const payload = await readQuickQuizPayload(request);
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const code = randomQuickQuizCode();
+    const key = quickQuizKey(code);
+    if (await env.R2_OBJECTS.get(key)) continue;
+    await env.R2_OBJECTS.put(key, payload, {
+      httpMetadata: { contentType: 'application/json; charset=utf-8', cacheControl: 'public, max-age=31536000, immutable' },
+      customMetadata: { kind: 'quick-quiz', createdAt: new Date().toISOString() },
+    });
+    return json(request, env, { code }, 201, { 'Cache-Control': 'no-store' });
+  }
+  throw new HttpError(503, 'Could not allocate a quick quiz code. Try again.', 'code_collision');
+}
+
+async function getPublicQuickQuiz(request: Request, env: Env, code: string): Promise<Response> {
+  const object = await env.R2_OBJECTS.get(quickQuizKey(code));
+  if (!object) throw new HttpError(404, 'Quick quiz not found.', 'not_found');
+  const headers = corsHeaders(request, env);
+  object.writeHttpMetadata(headers);
+  headers.set('Content-Type', 'application/json; charset=utf-8');
+  headers.set('Cache-Control', 'public, max-age=300');
+  return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
+}
+
 function multipartPolicy(input: Record<string, unknown>): { name: string; type: string; policy: AssetPolicy; size: number; sha256: string | null } {
   const name = safeFileName(typeof input.name === 'string' ? input.name : null);
   const type = typeof input.contentType === 'string' ? input.contentType.toLowerCase() : '';
@@ -538,10 +683,15 @@ async function api(request: Request, env: Env): Promise<Response> {
   if (!url.pathname.startsWith(API_PREFIX)) throw new HttpError(404, 'Not found.', 'not_found');
   if (!originIsAllowed(request, env)) throw new HttpError(403, 'This browser origin is not allowed.', 'origin_not_allowed');
 
+  const path = url.pathname;
+
+  if (path === `${API_PREFIX}/quick-quizzes` && request.method === 'POST') return createPublicQuickQuiz(request, env);
+  const quickQuizMatch = path.match(new RegExp(`^${API_PREFIX}/quick-quizzes/([A-Za-z0-9_-]{8,32})$`));
+  if (quickQuizMatch && (request.method === 'GET' || request.method === 'HEAD')) return getPublicQuickQuiz(request, env, quickQuizMatch[1]);
+
   const identity = await authenticate(request, env);
   await enforceRateLimit(request, env, identity);
   const token = bearerToken(request);
-  const path = url.pathname;
 
   if (path === `${API_PREFIX}/objects` && request.method === 'POST') return uploadObject(request, env, identity, token);
   if (path === `${API_PREFIX}/uploads` && request.method === 'POST') return initiateMultipart(request, env, identity, token);

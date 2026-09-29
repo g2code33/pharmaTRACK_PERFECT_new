@@ -1,3 +1,4 @@
+import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
 import type { ExamQuestion } from '../types';
 import type { SharedQuestion } from './questionShare';
 
@@ -35,6 +36,32 @@ type CompactPack = {
   c?: { c?: string; n?: string };
   p?: { n?: string };
   q: CompactQuestion[];
+};
+
+type TinyQuestion =
+  | [string, 'm', string[], number, string?]
+  | [string, 's' | 'e', string?];
+
+type TinyPack = {
+  f: 'q2';
+  t: string;
+  q: TinyQuestion[];
+};
+
+type ShareUrlResult = { url: string; mode: 'short-code' | 'inline' };
+
+const TYPE_TO_CODE: Record<SharedQuestion['questionType'], 'm' | 's' | 'e'> = {
+  mcq: 'm',
+  short_answer: 's',
+  essay: 'e',
+  structured: 'e',
+  case_study: 'e',
+};
+
+const CODE_TO_TYPE: Record<'m' | 's' | 'e', SharedQuestion['questionType']> = {
+  m: 'mcq',
+  s: 'short_answer',
+  e: 'essay',
 };
 
 const toSharedQuestion = (q: ExamQuestion): SharedQuestion => ({
@@ -112,6 +139,54 @@ const fromCompact = (pack: CompactPack): QuickQuizPack => ({
   questions: Array.isArray(pack.q) ? pack.q.map(expandQuestion) : [],
 });
 
+const toTinyQuestion = (q: SharedQuestion): TinyQuestion => {
+  const type = TYPE_TO_CODE[q.questionType] || 'm';
+  if (type === 'm') {
+    const options = (q.options || []).map((option) => option.trim()).filter(Boolean);
+    const correctOption = Number.isInteger(q.correctOption) ? q.correctOption as number : -1;
+    const answer = q.correctAnswer?.trim();
+    return answer && (correctOption < 0 || options[correctOption] !== answer)
+      ? [q.questionText, 'm', options, correctOption, answer]
+      : [q.questionText, 'm', options, correctOption];
+  }
+  return [q.questionText, type, q.correctAnswer?.trim() || q.explanation?.trim() || ''];
+};
+
+const fromTinyQuestion = (q: TinyQuestion): SharedQuestion => {
+  if (q[1] === 'm') {
+    const correctOption = Number.isInteger(q[3]) && q[3] >= 0 ? q[3] : undefined;
+    return {
+      questionText: q[0],
+      questionType: 'mcq',
+      difficulty: 'medium',
+      options: Array.isArray(q[2]) ? q[2] : [],
+      correctOption,
+      correctAnswer: q[4] || (correctOption !== undefined ? q[2][correctOption] : undefined),
+    };
+  }
+  return {
+    questionText: q[0],
+    questionType: CODE_TO_TYPE[q[1]] || 'short_answer',
+    difficulty: 'medium',
+    correctAnswer: q[2] || undefined,
+  };
+};
+
+const toTiny = (pack: QuickQuizPack): TinyPack => ({
+  f: 'q2',
+  t: pack.title,
+  q: pack.questions.map(toTinyQuestion),
+});
+
+const fromTiny = (pack: TinyPack): QuickQuizPack => ({
+  format: QUICK_QUIZ_FORMAT,
+  version: QUICK_QUIZ_VERSION,
+  title: pack.t || 'Shared PharmaTRACK Quiz',
+  exportedAt: new Date().toISOString(),
+  questionCount: Array.isArray(pack.q) ? pack.q.length : 0,
+  questions: Array.isArray(pack.q) ? pack.q.map(fromTinyQuestion) : [],
+});
+
 function base64UrlEncode(raw: string): string {
   const bytes = new TextEncoder().encode(raw);
   let binary = '';
@@ -130,31 +205,101 @@ function base64UrlDecode(encoded: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-export function encodeQuickQuizPack(pack: QuickQuizPack): string {
-  return base64UrlEncode(JSON.stringify(toCompact(pack)));
-}
-
-export function decodeQuickQuizPack(encoded: string): QuickQuizPack {
-  const parsed = JSON.parse(base64UrlDecode(encoded));
-  const pack = parsed?.f === 'ptqq' ? fromCompact(parsed as CompactPack) : parsed as QuickQuizPack;
+function normalizeQuickQuizPack(value: unknown): QuickQuizPack {
+  const parsed = value as Partial<QuickQuizPack> | CompactPack | TinyPack | undefined;
+  const pack = parsed && 'f' in parsed && parsed.f === 'q2'
+    ? fromTiny(parsed as TinyPack)
+    : parsed && 'f' in parsed && parsed.f === 'ptqq'
+      ? fromCompact(parsed as CompactPack)
+      : parsed as QuickQuizPack;
   if (!pack || pack.format !== QUICK_QUIZ_FORMAT || !Array.isArray(pack.questions) || pack.questions.length === 0) {
     throw new Error('This quick quiz link is invalid or empty.');
   }
   return { ...pack, questionCount: pack.questions.length };
 }
 
+export function encodeQuickQuizPack(pack: QuickQuizPack): string {
+  // q2 is intentionally tiny: it keeps only what a recipient needs to start the
+  // quiz (question, options and answer), drops bulky explanations/tags, and then
+  // LZ-compresses the JSON into a URL-safe string for offline fallback links.
+  return `z${compressToEncodedURIComponent(JSON.stringify(toTiny(pack))).replace(/\+/g, '~')}`;
+}
+
+export function encodeLegacyQuickQuizPack(pack: QuickQuizPack): string {
+  return base64UrlEncode(JSON.stringify(toCompact(pack)));
+}
+
+export function decodeQuickQuizPack(encoded: string): QuickQuizPack {
+  const value = encoded.trim();
+  if (!value) throw new Error('This quick quiz link is empty.');
+  if (value.startsWith('z')) {
+    const json = decompressFromEncodedURIComponent(value.slice(1).replace(/~/g, '+'));
+    if (!json) throw new Error('This quick quiz link is invalid or empty.');
+    return normalizeQuickQuizPack(JSON.parse(json));
+  }
+  return normalizeQuickQuizPack(JSON.parse(base64UrlDecode(value)));
+}
+
+function apiBase(): string | null {
+  const configured = (import.meta.env.VITE_CLOUDFLARE_API_BASE_URL || '').replace(/\/$/, '');
+  if (configured) return configured;
+  return import.meta.env.PROD ? '' : null;
+}
+
+async function createShortQuickQuizCode(pack: QuickQuizPack): Promise<string | null> {
+  const base = apiBase();
+  if (base === null || typeof fetch !== 'function') return null;
+  try {
+    const response = await fetch(`${base}/api/v1/quick-quizzes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack }),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json() as { code?: string };
+    return payload.code || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchQuickQuizPackByCode(code: string): Promise<QuickQuizPack> {
+  const base = apiBase();
+  if (base === null || typeof fetch !== 'function') {
+    throw new Error('Short quick quiz links need the online PharmaTRACK web app.');
+  }
+  const safeCode = code.trim();
+  const response = await fetch(`${base}/api/v1/quick-quizzes/${encodeURIComponent(safeCode)}`);
+  if (!response.ok) {
+    throw new Error(response.status === 404 ? 'This quick quiz link has expired or was not found.' : 'This quick quiz link could not be loaded.');
+  }
+  const payload = await response.json() as { pack?: unknown };
+  return normalizeQuickQuizPack(payload.pack);
+}
+
 export function quickQuizUrl(pack: QuickQuizPack, href: string = window.location.href): string {
   const url = new URL(href);
-  url.hash = `/quick-quiz?pack=${encodeURIComponent(encodeQuickQuizPack(pack))}`;
+  url.hash = `/quick-quiz?p=${encodeURIComponent(encodeQuickQuizPack(pack))}`;
   return url.toString();
 }
 
+export function quickQuizCodeUrl(code: string, href: string = window.location.href): string {
+  const url = new URL(href);
+  url.hash = `/quick-quiz?c=${encodeURIComponent(code)}`;
+  return url.toString();
+}
+
+export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = window.location.href): Promise<ShareUrlResult> {
+  const code = await createShortQuickQuizCode(pack);
+  if (code) return { url: quickQuizCodeUrl(code, href), mode: 'short-code' };
+  return { url: quickQuizUrl(pack, href), mode: 'inline' };
+}
+
 export async function shareQuickQuizPack(pack: QuickQuizPack): Promise<'shared' | 'copied'> {
-  const url = quickQuizUrl(pack);
+  const { url } = await quickQuizShareUrl(pack);
   const title = `PharmaTRACK Quick Quiz: ${pack.title}`;
-  const text = `Open this PharmaTRACK quick quiz and start immediately (${pack.questionCount} question${pack.questionCount === 1 ? '' : 's'}).`;
   if (navigator.share) {
-    await navigator.share({ title, text, url });
+    await navigator.share({ title, url });
     return 'shared';
   }
   if (navigator.clipboard?.writeText) {

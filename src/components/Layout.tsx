@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.97';
+const APP_VERSION_FALLBACK = '1.1.98';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -99,7 +99,7 @@ const Layout: React.FC = () => {
     if (waiting && navigator.serviceWorker.controller) setPwaUpdateAvailable(true);
     return () => window.removeEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
   }, []);
-  
+
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
@@ -180,6 +180,25 @@ const Layout: React.FC = () => {
     }
   };
 
+  const refreshWebApp = async () => {
+    let activatedWaitingWorker = false;
+    try {
+      setUpdateStatus('checking');
+      const registration = getPwaRegistration();
+      if (registration) {
+        await registration.update().catch(() => undefined);
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          setPwaUpdateAvailable(false);
+          setUpdateStatus('done');
+          activatedWaitingWorker = true;
+          await activatePwaUpdate();
+        }
+      }
+    } finally {
+      if (!activatedWaitingWorker) window.location.reload();
+    }
+  };
+
   // `silent` is used by the automatic check on launch: it still offers a real
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
@@ -188,10 +207,7 @@ const Layout: React.FC = () => {
     // updater. Keeping this branch explicit prevents a missing native bridge
     // from turning a normal web boot into an exception.
     if (runtime.platform === 'web') {
-      if (!silent) {
-        alert('The web app updates automatically. Reload when a new version is available.');
-        window.location.reload();
-      }
+      if (!silent) void refreshWebApp();
       return;
     }
 
@@ -269,10 +285,10 @@ const Layout: React.FC = () => {
             type="button"
             aria-label="Close navigation menu"
             onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 z-40 bg-slate-950/55 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-[220] bg-slate-950/65 backdrop-blur-sm lg:hidden"
           />
         )}
-        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
+        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative lg:z-50 shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
           <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
             <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-lg shadow-green-500/20"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
             {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-white">Pharma<span className="text-[#4ADE80]">TRACK</span></h1></div>)}
@@ -331,6 +347,9 @@ const Layout: React.FC = () => {
                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">v{appVersion} · {isOffline ? 'Offline' : state.isLoggedIn ? 'Synced' : 'Local only'}</p>
                 </Link>
                 <div className="ml-auto flex items-center gap-2 sm:hidden">
+                  <button onClick={() => void refreshWebApp()} className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" aria-label="Refresh app and check for update" title="Refresh app">
+                    {updateStatus === 'checking' ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                  </button>
                   <button onClick={() => setDarkMode(!darkMode)} className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" aria-label="Toggle dark mode">{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
                   <Link to="/profile" className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" title={state.student?.name ? `Profile — ${state.student.name}` : 'Profile'}><UserCircle className="w-5 h-5" /></Link>
                 </div>
@@ -461,9 +480,9 @@ const Layout: React.FC = () => {
                 
                 <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
                   <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
-                  <button onClick={() => void checkForUpdates(false)} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
+                  <button onClick={() => void checkForUpdates(false)} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title={runtime.platform === 'web' ? 'Refresh app and check for update' : 'Check for Updates'} className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
                     {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
-                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span>
+                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : runtime.platform === 'web' ? 'Refresh App' : 'Update App'}</span>
                   </button>
                 </div>
 

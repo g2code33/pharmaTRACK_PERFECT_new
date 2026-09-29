@@ -117,7 +117,42 @@ describe('Cloudflare Worker storage boundary', () => {
     expect(await response.json()).toMatchObject({ ok: true, service: 'pharmatrack-web' });
   });
 
-  it('rejects missing authentication before touching R2', async () => {
+  it('creates and reads public short quick-quiz links without requiring sign-in', async () => {
+    const r2 = new FakeR2();
+    const environment = makeEnvironment(r2, new Map());
+    (globalThis as typeof globalThis & { __cloudflareTestEnv?: unknown }).__cloudflareTestEnv = environment;
+    const pack = {
+      format: 'pharmatrack-quick-quiz',
+      version: 1,
+      title: 'Short share test',
+      exportedAt: '2026-09-29T00:00:00.000Z',
+      questionCount: 1,
+      questions: [{
+        questionText: 'Which storage condition is correct?',
+        questionType: 'mcq',
+        difficulty: 'medium',
+        options: ['Room temperature for all medicines', 'As specified by the medicine label'],
+        correctOption: 1,
+        correctAnswer: 'As specified by the medicine label',
+      }],
+    };
+
+    const create = await worker.fetch(request('/api/v1/quick-quizzes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pack }),
+    }), environment);
+    expect(create.status).toBe(201);
+    const created = await create.json() as { code: string };
+    expect(created.code).toMatch(/^[A-Za-z0-9_-]{8,32}$/);
+    expect(r2.put).toHaveBeenCalledTimes(1);
+
+    const read = await worker.fetch(request(`/api/v1/quick-quizzes/${created.code}`), environment);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({ pack: { title: 'Short share test', questionCount: 1 } });
+  });
+
+  it('rejects missing authentication before touching private object storage', async () => {
     const r2 = new FakeR2();
     const environment = makeEnvironment(r2, new Map());
     (globalThis as typeof globalThis & { __cloudflareTestEnv?: unknown }).__cloudflareTestEnv = environment;

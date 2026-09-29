@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, ExternalLink, Home, RotateCcw, Share2, Trophy, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, ExternalLink, Home, Loader2, RotateCcw, Share2, Trophy, X } from 'lucide-react';
 import type { ExamQuestion } from '../types';
-import { decodeQuickQuizPack, shareQuickQuizPack, type QuickQuizPack } from '../utils/quickQuizShare';
+import { decodeQuickQuizPack, fetchQuickQuizPackByCode, shareQuickQuizPack, type QuickQuizPack } from '../utils/quickQuizShare';
 import { gradeAnswer } from '../utils/questionBank';
 import type { SharedQuestion } from '../utils/questionShare';
 
@@ -44,23 +44,52 @@ const correctLabel = (q: ExamQuestion): string => {
   return q.correctAnswer || q.modelAnswer || 'Not supplied';
 };
 
+type PackState = { loading: boolean; pack?: QuickQuizPack; questions: ExamQuestion[]; error?: string };
+
 const QuickQuiz: React.FC = () => {
   const [params] = useSearchParams();
-  const packResult = useMemo<{ pack?: QuickQuizPack; questions: ExamQuestion[]; error?: string }>(() => {
-    const raw = params.get('pack');
-    if (!raw) return { questions: [], error: 'No quick quiz was found in this link.' };
-    try {
-      const pack = decodeQuickQuizPack(raw);
-      return { pack, questions: pack.questions.map(toQuestion) };
-    } catch (error) {
-      return { questions: [], error: error instanceof Error ? error.message : 'This quick quiz link could not be opened.' };
-    }
-  }, [params]);
-
+  const paramsKey = params.toString();
+  const [packResult, setPackResult] = useState<PackState>({ loading: true, questions: [] });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [showAnswer, setShowAnswer] = useState(false);
   const [finished, setFinished] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setPackResult({ loading: true, questions: [] });
+      setAnswers({});
+      setCurrentIndex(0);
+      setShowAnswer(false);
+      setFinished(false);
+      try {
+        const currentParams = new URLSearchParams(paramsKey);
+        const code = currentParams.get('c');
+        const inline = currentParams.get('p') || currentParams.get('pack');
+        let pack: QuickQuizPack;
+        if (code) {
+          pack = await fetchQuickQuizPackByCode(code);
+        } else if (inline) {
+          pack = decodeQuickQuizPack(inline);
+        } else {
+          throw new Error('No quick quiz was found in this link.');
+        }
+        if (!cancelled) setPackResult({ loading: false, pack, questions: pack.questions.map(toQuestion) });
+      } catch (error) {
+        if (!cancelled) {
+          setPackResult({
+            loading: false,
+            questions: [],
+            error: error instanceof Error ? error.message : 'This quick quiz link could not be opened.',
+          });
+        }
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [paramsKey]);
+
   const current = packResult.questions[currentIndex];
 
   const saveAnswer = (id: string, answer: string) => setAnswers((prev) => ({ ...prev, [id]: answer }));
@@ -85,6 +114,18 @@ const QuickQuiz: React.FC = () => {
       if (err?.name !== 'AbortError') alert(err?.message || 'Could not share this quick quiz link.');
     }
   };
+
+  if (packResult.loading) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-950 text-white safe-area-x pt-safe pb-safe flex items-center justify-center p-4">
+        <div className="max-w-md w-full rounded-3xl bg-white/10 p-6 text-center shadow-2xl backdrop-blur">
+          <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin text-emerald-300" />
+          <h1 className="text-2xl font-black mb-2">Opening quick quiz…</h1>
+          <p className="text-slate-300">Loading the shared questions.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (packResult.error || !packResult.pack) {
     return (
