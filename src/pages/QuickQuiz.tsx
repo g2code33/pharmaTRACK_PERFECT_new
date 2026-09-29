@@ -6,6 +6,7 @@ import { useApp } from '../context/AppContext';
 import type { Course, ExamQuestion, QuizHistory, Student, Topic } from '../types';
 import { detectRuntimeCapabilities } from '../platform/runtime';
 import { decodeQuickQuizPack, fetchQuickQuizPackByCode, shareQuickQuizPack, type QuickQuizPack } from '../utils/quickQuizShare';
+import { openCurrentQuickQuizInInstalledApp } from '../utils/appLinks';
 import { gradeAnswer } from '../utils/questionBank';
 import type { SharedQuestion } from '../utils/questionShare';
 
@@ -96,7 +97,6 @@ const QuickQuiz: React.FC = () => {
   const [packResult, setPackResult] = useState<PackState>({ loading: true, questions: [] });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [showAnswer, setShowAnswer] = useState(false);
   const [finished, setFinished] = useState(false);
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
   const [timeExpired, setTimeExpired] = useState(false);
@@ -104,6 +104,7 @@ const QuickQuiz: React.FC = () => {
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
   const savedHistoryRef = useRef<string | null>(null);
   const questionScrollRef = useRef<HTMLDivElement | null>(null);
+  const autoOpenAttemptRef = useRef('');
 
   useEffect(() => {
     let cancelled = false;
@@ -111,7 +112,6 @@ const QuickQuiz: React.FC = () => {
       setPackResult({ loading: true, questions: [] });
       setAnswers({});
       setCurrentIndex(0);
-      setShowAnswer(false);
       setFinished(false);
       setTimeRemainingSeconds(null);
       setTimeExpired(false);
@@ -170,7 +170,6 @@ const QuickQuiz: React.FC = () => {
 
   const goToQuestion = (index: number) => {
     setCurrentIndex(Math.min(Math.max(0, index), Math.max(0, packResult.questions.length - 1)));
-    setShowAnswer(false);
     scrollQuestionToTop();
   };
 
@@ -178,7 +177,6 @@ const QuickQuiz: React.FC = () => {
   const reset = () => {
     setAnswers({});
     setCurrentIndex(0);
-    setShowAnswer(false);
     setFinished(false);
     setTimeExpired(false);
     setTimeRemainingSeconds(timeLimitSeconds);
@@ -303,6 +301,28 @@ const QuickQuiz: React.FC = () => {
 
   const showWebAppCta = runtime.platform === 'web' && !runtime.isPWA;
   const appHomeHref = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}#/` : '/#/';
+  const handleOpenInApp = () => {
+    const opened = openCurrentQuickQuizInInstalledApp(false);
+    if (!opened && typeof window !== 'undefined') window.location.href = appHomeHref;
+  };
+
+  useEffect(() => {
+    if (!showWebAppCta || typeof window === 'undefined') return undefined;
+    const attemptKey = `${paramsKey}|${window.location.href}`;
+    const storageKey = `pharmatrack:auto-open:${hashString(attemptKey)}`;
+    try {
+      if (autoOpenAttemptRef.current === attemptKey || window.sessionStorage.getItem(storageKey)) return undefined;
+      window.sessionStorage.setItem(storageKey, String(Date.now()));
+    } catch {
+      if (autoOpenAttemptRef.current === attemptKey) return undefined;
+    }
+    autoOpenAttemptRef.current = attemptKey;
+    const timer = window.setTimeout(() => {
+      openCurrentQuickQuizInInstalledApp(true);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [paramsKey, showWebAppCta]);
+
   const webAppCta = showWebAppCta ? (
     <div className="safe-area-x shrink-0 bg-emerald-950 px-3 py-1.5 text-white shadow-lg">
       <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2">
@@ -311,9 +331,9 @@ const QuickQuiz: React.FC = () => {
           <p className="hidden text-xs text-white/85 sm:block">Open the full app or install PharmaTRACK so your quiz history stays easy to revisit.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <a href={appHomeHref} className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-900">
+          <button type="button" onClick={handleOpenInApp} className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-900">
             <ExternalLink className="h-4 w-4" /> Open in app
-          </a>
+          </button>
           <a href={APP_DOWNLOAD_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-full border border-white/30 px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-white/10">
             <Download className="h-4 w-4" /> Get app
           </a>
@@ -421,9 +441,15 @@ const QuickQuiz: React.FC = () => {
             <button onClick={() => void shareCurrentPack()} className="rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 font-black text-indigo-700 flex items-center justify-center gap-2">
               <Share2 className="w-5 h-5" /> Share
             </button>
-            <Link to="/" className="rounded-2xl bg-[#2D6A4F] px-4 py-3 font-black text-white flex items-center justify-center gap-2">
-              <ExternalLink className="w-5 h-5" /> Open app
-            </Link>
+            {showWebAppCta ? (
+              <button type="button" onClick={handleOpenInApp} className="rounded-2xl bg-[#2D6A4F] px-4 py-3 font-black text-white flex items-center justify-center gap-2">
+                <ExternalLink className="w-5 h-5" /> Open app
+              </button>
+            ) : (
+              <Link to="/" className="rounded-2xl bg-[#2D6A4F] px-4 py-3 font-black text-white flex items-center justify-center gap-2">
+                <ExternalLink className="w-5 h-5" /> Open app
+              </Link>
+            )}
           </div>
         </div>
       </div>
@@ -518,12 +544,6 @@ const QuickQuiz: React.FC = () => {
                 />
               )}
 
-              <div className="mt-5 border-t border-slate-100 pt-4">
-                <button onClick={() => setShowAnswer((show) => !show)} className="text-sm font-black text-blue-700">
-                  {showAnswer ? 'Hide answer' : 'Show answer'}
-                </button>
-                {showAnswer && <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm text-slate-700"><strong>Answer:</strong> {correctLabel(current)}{(current.explanation || current.modelAnswer) ? <p className="mt-2">{current.explanation || current.modelAnswer}</p> : null}</div>}
-              </div>
             </div>
           )}
         </div>

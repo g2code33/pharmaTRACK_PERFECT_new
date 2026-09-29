@@ -64,18 +64,23 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // Process startup intent for .pharmaexam files
-        handleIncomingFileIntent(intent)
+        // Quick quiz app links load straight into the matching hash route.
+        // Only non-link launches are treated as .pharmaexam package imports.
+        if (routeFragmentFromIntent(intent) == null) {
+            handleIncomingFileIntent(intent)
+        }
 
-        // Load entrypoint
-        val launchUrl = "file:///android_asset/dist/index.html"
-        webView.loadUrl(launchUrl)
+        webView.loadUrl(launchUrlFromIntent(intent))
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        intent?.let { handleIncomingFileIntent(it) }
+        intent?.let {
+            if (!handleIncomingAppLinkIntent(it)) {
+                handleIncomingFileIntent(it)
+            }
+        }
     }
 
     private fun configureWebView() {
@@ -169,6 +174,46 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "Failed to toggle immersive sticky mode: ${e.message}")
             false
         }
+    }
+
+    private fun launchUrlFromIntent(intent: Intent?): String {
+        val fragment = intent?.let { routeFragmentFromIntent(it) } ?: "#/"
+        return "file:///android_asset/dist/index.html$fragment"
+    }
+
+    private fun routeFragmentFromIntent(intent: Intent): String? {
+        val uri = intent.data ?: return null
+        return routeFragmentFromUri(uri)
+    }
+
+    private fun routeFragmentFromUri(uri: Uri): String? {
+        val scheme = uri.scheme?.lowercase() ?: return null
+        if (scheme == "pharmatrack") {
+            val query = uri.encodedQuery?.let { "?$it" } ?: ""
+            val route = when (uri.host) {
+                "quick-quiz" -> "/quick-quiz$query"
+                "q" -> "/q${uri.encodedPath ?: ""}$query"
+                "open" -> uri.getQueryParameter("route")?.takeIf { it.isNotBlank() } ?: "/"
+                else -> {
+                    val path = uri.encodedPath ?: return null
+                    "$path$query"
+                }
+            }
+            return "#${if (route.startsWith("/")) route else "/$route"}"
+        }
+
+        if ((scheme == "https" || scheme == "http") && uri.host == "pharmatrack-web.pages.dev") {
+            val fragment = uri.encodedFragment ?: return null
+            return "#${if (fragment.startsWith("/")) fragment else "/$fragment"}"
+        }
+
+        return null
+    }
+
+    private fun handleIncomingAppLinkIntent(intent: Intent): Boolean {
+        val fragment = routeFragmentFromIntent(intent) ?: return false
+        webView.loadUrl("file:///android_asset/dist/index.html$fragment")
+        return true
     }
 
     private fun handleIncomingFileIntent(intent: Intent) {

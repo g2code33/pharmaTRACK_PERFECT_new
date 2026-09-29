@@ -50,6 +50,8 @@ const SecureExamination = lazyRoute('/examination/secure', () => import('./pages
 const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
+import { routeFromPharmaTrackDeepLink } from './utils/appLinks';
+import { listenNative, nativeInvoke } from './platform/runtime';
 import { AIProvider } from './ai/state';
 import {
   getSecureKioskState,
@@ -109,6 +111,45 @@ const ExamLaunchRouter: React.FC = () => {
   return null;
 };
 
+/** Routes custom app links (pharmatrack://q/...) into the already-open desktop app. */
+const NativeAppLinkRouter: React.FC = () => {
+  const navigate = useNavigate();
+  useEffect(() => {
+    let disposed = false;
+    let cleanupNative: (() => void) | undefined;
+    const route = (value: string) => {
+      const path = routeFromPharmaTrackDeepLink(value);
+      if (!disposed && path) navigate(path);
+    };
+
+    void nativeInvoke<string[]>('get_pending_pharmatrack_links')
+      .then((links) => links?.forEach(route))
+      .catch(() => undefined);
+    void listenNative<string[]>('pharmatrack-deep-link-opened', (event) => {
+      event.payload.forEach(route);
+    }).then((cleanup) => {
+      cleanupNative = cleanup;
+    });
+
+    return () => {
+      disposed = true;
+      cleanupNative?.();
+    };
+  }, [navigate]);
+  return null;
+};
+
+const AppLinkRedirect: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    const raw = new URLSearchParams(location.search).get('url') || '';
+    const route = routeFromPharmaTrackDeepLink(raw) || '/';
+    navigate(route, { replace: true });
+  }, [location.search, navigate]);
+  return <PageLoading />;
+};
+
 /** Shown only for the few hundred milliseconds a page chunk takes to arrive. */
 const PageLoading: React.FC = () => (
   <div className="flex items-center justify-center py-16" data-testid="page-loading">
@@ -166,6 +207,7 @@ const App = () => {
         <HashRouter>
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />
+            <NativeAppLinkRouter />
             <Routes>
               {needsOnboarding ? (
                 // First run remains offline-first, but an existing account can
@@ -173,6 +215,7 @@ const App = () => {
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/q/:code" element={<QuickQuiz />} />
+                  <Route path="/app-link" element={<AppLinkRedirect />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="*" element={<Onboarding />} />
@@ -181,6 +224,7 @@ const App = () => {
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/q/:code" element={<QuickQuiz />} />
+                  <Route path="/app-link" element={<AppLinkRedirect />} />
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
                   <Route
                     element={

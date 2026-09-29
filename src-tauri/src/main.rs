@@ -26,6 +26,7 @@ use tauri::{
 use tauri::RunEvent;
 
 const NATIVE_SECURE_EVENT: &str = "pharmatrack://secure-exam-native-event";
+const APP_DEEP_LINK_EVENT: &str = "pharmatrack-deep-link-opened";
 
 #[derive(Clone, serde::Serialize)]
 struct NavUpdate {
@@ -73,6 +74,9 @@ struct SecureExamHostState {
 #[derive(Default)]
 struct PendingPharmaExamFiles(Mutex<Vec<String>>);
 
+#[derive(Default)]
+struct PendingPharmaTrackLinks(Mutex<Vec<String>>);
+
 impl SecureExamHostState {
     fn is_active(&self) -> bool {
         self.active.lock().map(|value| value.is_some()).unwrap_or(true)
@@ -116,6 +120,74 @@ fn queue_pharmaexam_paths(app: &tauri::AppHandle, paths: Vec<String>) {
         }
     }
     let _ = app.emit("pharmaexam-file-opened", paths);
+}
+
+fn is_pharmatrack_deep_link(value: &str) -> bool {
+    let candidate = value.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    candidate.starts_with("pharmatrack://")
+        || candidate.starts_with("web+pharmatrack:")
+        || ((candidate.starts_with("https://pharmatrack-web.pages.dev")
+            || candidate.starts_with("http://pharmatrack-web.pages.dev"))
+            && candidate.contains("#/"))
+}
+
+fn filter_pharmatrack_deep_links<I>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    values
+        .into_iter()
+        .filter(|value| is_pharmatrack_deep_link(value))
+        .collect()
+}
+
+fn queue_pharmatrack_deep_links(app: &tauri::AppHandle, values: Vec<String>) {
+    let links = filter_pharmatrack_deep_links(values);
+    if links.is_empty() {
+        return;
+    }
+    if let Some(pending) = app.try_state::<PendingPharmaTrackLinks>() {
+        if let Ok(mut queue) = pending.0.lock() {
+            queue.extend(links.iter().cloned());
+        }
+    }
+    let _ = app.emit(APP_DEEP_LINK_EVENT, links);
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_protocol_handler() {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Unable to inspect executable path for pharmatrack:// registration: {error}");
+            return;
+        }
+    };
+    let exe = exe.to_string_lossy().into_owned();
+    let command_value = format!("\"{}\" \"%1\"", exe);
+    let entries = [
+        ("HKCU\\Software\\Classes\\pharmatrack", "/ve", "URL:PharmaTRACK App Link"),
+        ("HKCU\\Software\\Classes\\pharmatrack", "URL Protocol", ""),
+        ("HKCU\\Software\\Classes\\pharmatrack\\DefaultIcon", "/ve", exe.as_str()),
+        ("HKCU\\Software\\Classes\\pharmatrack\\shell\\open\\command", "/ve", command_value.as_str()),
+    ];
+    for (key, name, value) in entries {
+        let mut command = Command::new("reg");
+        command.arg("add").arg(key).arg("/f");
+        if name == "/ve" {
+            command.arg("/ve");
+        } else {
+            command.arg("/v").arg(name);
+        }
+        command.arg("/d").arg(value);
+        if let Err(error) = command.output() {
+            eprintln!("Unable to register pharmatrack:// protocol handler: {error}");
+            return;
+        }
+    }
 }
 
 fn ensure_application_controls_available(state: &SecureExamHostState) -> Result<(), String> {
@@ -627,6 +699,19 @@ fn get_pending_pharmaexam_files(
 }
 
 #[tauri::command]
+fn get_pending_pharmatrack_links(
+    state: State<'_, PendingPharmaTrackLinks>,
+    secure_state: State<'_, SecureExamHostState>,
+) -> Result<Vec<String>, String> {
+    ensure_application_controls_available(secure_state.inner())?;
+    let mut pending = state
+        .0
+        .lock()
+        .map_err(|_| "Pending app-link state is unavailable.".to_string())?;
+    Ok(std::mem::take(&mut *pending))
+}
+
+#[tauri::command]
 fn read_pharmaexam_file(
     path: String,
     secure_state: State<'_, SecureExamHostState>,
@@ -958,14 +1043,22 @@ fn main() {
         })
         .setup(|app| {
             app.manage(lan_server::LanServerHandle::default());
+            app.manage(PendingPharmaTrackLinks::default());
             let main_window = app
                 .get_webview_window("main")
                 .expect("main window must exist at startup");
             app.manage(MainWindowHandle(main_window));
-            // Windows and Linux deliver file-association launches as command
-            // line arguments. Mobile/macOS use RunEvent::Opened below.
+            #[cfg(target_os = "windows")]
+            register_windows_protocol_handler();
+            // Windows and Linux deliver file-association launches and custom
+            // URL scheme opens as command-line arguments. Mobile/macOS use
+            // RunEvent::Opened below.
             #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-            queue_pharmaexam_paths(app.handle(), std::env::args().skip(1).collect());
+            {
+                let launch_args: Vec<String> = std::env::args().skip(1).collect();
+                queue_pharmaexam_paths(app.handle(), launch_args.clone());
+                queue_pharmatrack_deep_links(app.handle(), launch_args);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -983,6 +1076,7 @@ fn main() {
             webview_reload,
             destroy_website,
             get_pending_pharmaexam_files,
+            get_pending_pharmatrack_links,
             read_pharmaexam_file,
             save_material_file_start,
             save_material_file_chunk,
@@ -1001,12 +1095,14 @@ fn main() {
         .run(|app, event| {
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
             if let RunEvent::Opened { urls } = event {
+                let raw_links: Vec<String> = urls.iter().map(|url| url.to_string()).collect();
                 let paths = urls
                     .into_iter()
                     .filter_map(|url| url.to_file_path().ok())
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
                 queue_pharmaexam_paths(app, paths);
+                queue_pharmatrack_deep_links(app, raw_links);
             }
         });
 }

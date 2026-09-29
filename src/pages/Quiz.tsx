@@ -22,8 +22,6 @@ import {
   Check,
   X,
   Flag,
-  Eye,
-  EyeOff,
   Trophy,
   Target,
   AlertTriangle,
@@ -72,7 +70,7 @@ const Quiz: React.FC = () => {
   const [answers, setAnswers] = useState<Map<string, { answer: string; flagged: boolean }>>(
     new Map(),
   );
-  const [showAnswer, setShowAnswer] = useState(false);
+
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [quizFinished, setQuizFinished] = useState(false);
   const [results, setResults] = useState<QuizHistory | null>(null);
@@ -144,7 +142,6 @@ const Quiz: React.FC = () => {
     setQuizQuestions(selected);
     setCurrentIndex(0);
     setAnswers(new Map());
-    setShowAnswer(false);
     setTimeRemaining(settings.timeLimit * 60);
     setQuizStarted(true);
     setQuizFinished(false);
@@ -890,23 +887,6 @@ const Quiz: React.FC = () => {
             />
           )}
 
-          {/* Show answer toggle */}
-          <div className="mt-6 pt-4 border-t">
-            <button
-              onClick={() => setShowAnswer(!showAnswer)}
-              className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700"
-            >
-              {showAnswer ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              {showAnswer ? 'Hide Answer' : 'Show Model Answer'}
-            </button>
-            {showAnswer && (
-              <div className="mt-3 p-4 bg-blue-50 rounded-lg">
-                <p className="text-gray-700">
-                  {currentQuestion.explanation || currentQuestion.modelAnswer}
-                </p>
-              </div>
-            )}
-          </div>
         </div>
       )}
 

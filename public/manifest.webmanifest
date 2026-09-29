@@ -1,5 +1,4 @@
 {
-  "id": "./",
   "id": "./index.html#/",
   "name": "PharmaTRACK",
   "short_name": "PharmaTRACK",
@@ -11,6 +10,13 @@
   "launch_handler": {
     "client_mode": "navigate-existing"
   },
+  "handle_links": "preferred",
+  "protocol_handlers": [
+    {
+      "protocol": "web+pharmatrack",
+      "url": "./index.html#/app-link?url=%s"
+    }
+  ],
   "orientation": "any",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",
