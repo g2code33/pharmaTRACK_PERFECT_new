@@ -36,7 +36,7 @@
   },
   "productName": "PharmaTRACK",
   "mainBinaryName": "PharmaTRACK",
-  "version": "1.1.100",
+  "version": "1.1.101",
   "identifier": "com.pharmatrack.app",
   "plugins": {
     "updater": {
@@ -58,7 +58,8 @@
         "minWidth": 1000,
         "minHeight": 700,
         "useHttpsScheme": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "decorations": false
       }
     ]
   }

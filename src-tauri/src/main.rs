@@ -252,12 +252,13 @@ fn apply_secure_window_controls(window: &tauri::WebviewWindow) -> Result<(), Str
 }
 
 fn restore_window_controls(window: &tauri::WebviewWindow) -> Result<(), String> {
-    // These values match the normal window policy in tauri.conf.json. Keeping
-    // restoration explicit means a crashed/returned exam does not leave the
-    // ordinary PharmaTRACK desktop window permanently altered.
+    // These values match the normal frameless desktop window policy in
+    // tauri.conf.json. Keeping restoration explicit means a returned exam does
+    // not leave the ordinary PharmaTRACK window fullscreen, undecorated in the
+    // wrong mode, or permanently always-on-top.
     window.set_fullscreen(false).map_err(|error| error.to_string())?;
     window.set_always_on_top(false).map_err(|error| error.to_string())?;
-    window.set_decorations(true).map_err(|error| error.to_string())?;
+    window.set_decorations(false).map_err(|error| error.to_string())?;
     window.set_resizable(true).map_err(|error| error.to_string())?;
     window.set_minimizable(true).map_err(|error| error.to_string())?;
     window.set_maximizable(true).map_err(|error| error.to_string())?;

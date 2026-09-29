@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useCallback } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
@@ -15,10 +15,10 @@ import {
   restartNativeApplication,
 } from '../platform/runtime';
 import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.100';
+const APP_VERSION_FALLBACK = '1.1.101';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -48,6 +48,16 @@ const mobileNavItems = [
   { path: '/questions', icon: FileQuestion, label: 'Questions' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
+
+type NativeDesktopWindow = {
+  startDragging: () => Promise<void>;
+  minimize: () => Promise<void>;
+  toggleMaximize: () => Promise<void>;
+  isMaximized: () => Promise<boolean>;
+  close: () => Promise<void>;
+};
+
+type NativeWindowAction = 'drag' | 'minimize' | 'toggleMaximize' | 'close';
 
 const Layout: React.FC = () => {
   const { state, logout } = useApp();
@@ -82,6 +92,51 @@ const Layout: React.FC = () => {
     }
   });
   const runtime = detectRuntimeCapabilities();
+  const nativePlatformLabel = runtime.nativeWebview && typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
+    ? 'Windows App'
+    : 'Desktop App';
+  const nativeWindowRef = useRef<NativeDesktopWindow | null>(null);
+  const [nativeIsMaximized, setNativeIsMaximized] = useState(false);
+
+  const getNativeDesktopWindow = useCallback(async (): Promise<NativeDesktopWindow | null> => {
+    if (!runtime.nativeWebview) return null;
+    if (!nativeWindowRef.current) {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      nativeWindowRef.current = getCurrentWindow() as unknown as NativeDesktopWindow;
+    }
+    return nativeWindowRef.current;
+  }, [runtime.nativeWebview]);
+
+  const syncNativeWindowState = useCallback(async () => {
+    const win = await getNativeDesktopWindow();
+    if (!win) return;
+    try {
+      setNativeIsMaximized(await win.isMaximized());
+    } catch {
+      setNativeIsMaximized(false);
+    }
+  }, [getNativeDesktopWindow]);
+
+  const runNativeWindowAction = useCallback(async (action: NativeWindowAction) => {
+    const win = await getNativeDesktopWindow();
+    if (!win) return;
+    try {
+      if (action === 'drag') await win.startDragging();
+      if (action === 'minimize') await win.minimize();
+      if (action === 'toggleMaximize') {
+        await win.toggleMaximize();
+        await syncNativeWindowState();
+      }
+      if (action === 'close') await win.close();
+    } catch (error) {
+      console.warn(`Native window action failed: ${action}`, error);
+    }
+  }, [getNativeDesktopWindow, syncNativeWindowState]);
+
+  useEffect(() => {
+    if (!runtime.nativeWebview) return;
+    void syncNativeWindowState();
+  }, [runtime.nativeWebview, syncNativeWindowState]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -264,7 +319,61 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+      {runtime.nativeWebview && (
+        <div className="native-titlebar flex h-11 flex-shrink-0 items-center border-b border-emerald-300/10 bg-[linear-gradient(135deg,#07111f_0%,#0f2d2a_48%,#164e3a_100%)] text-white shadow-[0_10px_30px_rgba(6,78,59,0.22)]">
+          <div
+            className="native-titlebar-drag flex h-full flex-1 select-none items-center gap-3 overflow-hidden px-4"
+            data-tauri-drag-region
+            onMouseDown={(event) => { if (event.button === 0 && event.detail === 1) void runNativeWindowAction('drag'); }}
+            onDoubleClick={() => void runNativeWindowAction('toggleMaximize')}
+            title="Drag to move · Double-click to maximize"
+          >
+            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl border border-emerald-300/20 bg-white/10 shadow-lg shadow-emerald-400/15 ring-1 ring-white/10">
+              <img src="/logo.png" alt="PharmaTRACK" className="h-full w-full object-cover scale-110" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-sm font-black uppercase italic tracking-tight">Pharma<span className="text-emerald-300">TRACK</span> Desktop</p>
+                <span className="hidden rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-100 sm:inline-flex">{nativePlatformLabel}</span>
+              </div>
+              <p className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-emerald-100/70 sm:block">Track · Learn · Achieve · v{appVersion}</p>
+            </div>
+          </div>
+          <div className="flex h-full items-center pr-1">
+            <button
+              type="button"
+              aria-label="Minimize PharmaTRACK"
+              title="Minimize"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => void runNativeWindowAction('minimize')}
+              className="native-window-control"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              aria-label={nativeIsMaximized ? 'Restore PharmaTRACK window' : 'Maximize PharmaTRACK'}
+              title={nativeIsMaximized ? 'Restore' : 'Maximize'}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => void runNativeWindowAction('toggleMaximize')}
+              className="native-window-control"
+            >
+              <Maximize2 className={`h-3.5 w-3.5 ${nativeIsMaximized ? 'scale-90' : ''}`} />
+            </button>
+            <button
+              type="button"
+              aria-label="Close PharmaTRACK"
+              title="Close"
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={() => void runNativeWindowAction('close')}
+              className="native-window-control native-window-control-close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
       {pwaUpdateAvailable && (
         <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
