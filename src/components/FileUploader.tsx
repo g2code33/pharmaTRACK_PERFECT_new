@@ -106,7 +106,15 @@ const prettySize = (bytes: number) =>
 
 const FileUploader: React.FC<FileUploaderProps> = ({
   onComplete,
-  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,image/*',
+  // Extensions only — no MIME wildcard (`image/*`) mixed in. Combining a
+  // MIME wildcard with a bare-extension list in the same `accept` string is
+  // a known trigger for native file dialogs (WebKitGTK's GTK file chooser on
+  // Linux especially) to mis-resolve the filter and render every folder as
+  // completely empty, even though matching files are right there. Every
+  // supported extension is still listed explicitly (so nothing gets greyed
+  // out the way `.pptm`/`.doc` used to), and `inspectFile()`'s byte-sniffing
+  // below is the real gatekeeper regardless of what the OS dialog shows.
+  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
   maxSizeMb = MAX_DEFAULT_MB,
   compact = false,
 }) => {

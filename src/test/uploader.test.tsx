@@ -92,7 +92,14 @@ describe('FileUploader wiring', () => {
     for (const ext of ['.pdf', '.docx', '.doc', '.pptx', '.pptm', '.ppt', '.txt']) {
       expect(accept).toContain(ext);
     }
-    expect(accept).toContain('image/*');
+    // Images are listed as explicit extensions, not a `image/*` MIME
+    // wildcard: mixing a wildcard with a bare-extension list in the same
+    // `accept` string is what made some native file dialogs (WebKitGTK on
+    // Linux) render every folder as empty instead of just filtering it.
+    for (const ext of ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']) {
+      expect(accept).toContain(ext);
+    }
+    expect(accept).not.toContain('image/*');
   });
 
   it('treats .pptm as a presentation', () => {
