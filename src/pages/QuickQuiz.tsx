@@ -92,6 +92,7 @@ const QuickQuiz: React.FC = () => {
   const [localName, setLocalName] = useState('');
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
   const savedHistoryRef = useRef<string | null>(null);
+  const questionScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,12 +135,26 @@ const QuickQuiz: React.FC = () => {
 
   const current = packResult.questions[currentIndex];
 
+  const scrollQuestionToTop = () => {
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      questionScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  };
+
+  const goToQuestion = (index: number) => {
+    setCurrentIndex(Math.min(Math.max(0, index), Math.max(0, packResult.questions.length - 1)));
+    setShowAnswer(false);
+    scrollQuestionToTop();
+  };
+
   const saveAnswer = (id: string, answer: string) => setAnswers((prev) => ({ ...prev, [id]: answer }));
   const reset = () => {
     setAnswers({});
     setCurrentIndex(0);
     setShowAnswer(false);
     setFinished(false);
+    scrollQuestionToTop();
   };
 
   const score = useMemo(() => {
@@ -245,11 +260,11 @@ const QuickQuiz: React.FC = () => {
   const showWebAppCta = runtime.platform === 'web' && !runtime.isPWA;
   const appHomeHref = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}#/` : '/#/';
   const webAppCta = showWebAppCta ? (
-    <div className="safe-area-x bg-emerald-950 px-3 py-2 text-white shadow-lg">
+    <div className="safe-area-x shrink-0 bg-emerald-950 px-3 py-1.5 text-white shadow-lg">
       <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.18em] text-emerald-200">Using PharmaTRACK in a browser</p>
-          <p className="text-sm text-white/85">Open the full app or install PharmaTRACK so your quiz history stays easy to revisit.</p>
+          <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-200">Using PharmaTRACK in a browser</p>
+          <p className="hidden text-xs text-white/85 sm:block">Open the full app or install PharmaTRACK so your quiz history stays easy to revisit.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <a href={appHomeHref} className="inline-flex items-center gap-2 rounded-full bg-white px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-900">
@@ -371,123 +386,137 @@ const QuickQuiz: React.FC = () => {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-slate-100">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
       {webAppCta}
-      <div className="mx-auto max-w-3xl space-y-4 safe-area-x pt-safe pb-safe p-3 sm:p-6">
-        <div className="rounded-[1.75rem] bg-[#0F172A] p-4 sm:p-5 text-white shadow-xl">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-300">PharmaTRACK Quick Quiz</p>
-              <h1 className="text-xl sm:text-2xl font-black mt-1">{packResult.pack.title}</h1>
-              <p className="text-xs text-slate-300 mt-1">
+
+      <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-2 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-3 sm:pt-4">
+        <div className="mx-auto max-w-4xl rounded-2xl bg-[#0F172A] p-3 text-white shadow-lg sm:p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-[9px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">PharmaTRACK Quick Quiz</p>
+              <h1 className="mt-0.5 truncate text-base font-black sm:text-lg">{packResult.pack.title}</h1>
+              <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-300 sm:text-xs">
                 {packResult.pack.course?.code || packResult.pack.course?.name || 'Shared quiz'}{packResult.pack.topic?.name ? ` · ${packResult.pack.topic.name}` : ''}
               </p>
             </div>
-            <Link to="/" className="shrink-0 rounded-2xl bg-white/10 p-3 text-white"><Home className="w-5 h-5" /></Link>
+            <Link to="/" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-white sm:h-11 sm:w-11"><Home className="w-5 h-5" /></Link>
           </div>
-          <div className="mt-4 h-2 rounded-full bg-white/10 overflow-hidden">
-            <div className="h-full rounded-full bg-emerald-400" style={{ width: `${((currentIndex + 1) / packResult.questions.length) * 100}%` }} />
+          <div className="mt-2 flex items-center gap-3">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-emerald-400" style={{ width: `${((currentIndex + 1) / packResult.questions.length) * 100}%` }} />
+            </div>
+            <p className="shrink-0 text-[11px] font-black text-slate-200 sm:text-xs">Q{currentIndex + 1}/{packResult.questions.length}</p>
           </div>
-          <p className="mt-2 text-xs font-bold text-slate-300">Question {currentIndex + 1} of {packResult.questions.length}</p>
         </div>
+      </header>
 
-        {!state.student && (
-          <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4 shadow-sm">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="flex-1">
-                <div className="mb-2 flex items-center gap-2 text-amber-900">
-                  <UserPlus className="h-5 w-5" />
-                  <p className="font-black">Create a local profile to save this quiz</p>
+      <main ref={questionScrollRef} className="safe-area-x min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-6 sm:py-5">
+        <div className="mx-auto max-w-4xl space-y-4">
+          {!state.student && (
+            <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4 shadow-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <div className="mb-2 flex items-center gap-2 text-amber-900">
+                    <UserPlus className="h-5 w-5" />
+                    <p className="font-black">Create a local profile to save this quiz</p>
+                  </div>
+                  <p className="mb-3 text-sm text-amber-800">No sign-in is needed. Your name lets PharmaTRACK keep this quiz on this device after refresh.</p>
+                  <input
+                    value={localName}
+                    onChange={(event) => setLocalName(event.target.value)}
+                    placeholder="Your name"
+                    className="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 font-bold text-slate-900 outline-none focus:ring-4 focus:ring-amber-300/40"
+                  />
                 </div>
-                <p className="mb-3 text-sm text-amber-800">No sign-in is needed. Your name lets PharmaTRACK keep this quiz on this device after refresh.</p>
-                <input
-                  value={localName}
-                  onChange={(event) => setLocalName(event.target.value)}
-                  placeholder="Your name"
-                  className="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 font-bold text-slate-900 outline-none focus:ring-4 focus:ring-amber-300/40"
+                <button onClick={ensureLocalStudent} className="rounded-2xl bg-amber-500 px-5 py-3 font-black text-amber-950 shadow-sm hover:bg-amber-400">
+                  Save locally
+                </button>
+              </div>
+            </div>
+          )}
+
+          {current && (
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm sm:rounded-[1.75rem] sm:p-7">
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-black uppercase text-purple-700">{current.questionType.replace('_', ' ')}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase text-slate-600">{current.difficulty}</span>
+              </div>
+              <h2 className="text-lg font-black leading-relaxed text-slate-900 sm:text-xl">{current.questionText}</h2>
+
+              {current.questionType === 'mcq' && current.options?.length ? (
+                <div className="mt-5 space-y-3">
+                  {current.options.map((opt, idx) => {
+                    const selected = answers[current.id] === String(idx);
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => saveAnswer(current.id, String(idx))}
+                        className={`flex w-full items-start gap-3 rounded-2xl border-2 p-4 text-left touch-manipulation transition-all ${selected ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm' : 'border-slate-200 bg-white text-slate-800 active:scale-[0.99]'}`}
+                      >
+                        <span className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-black ${selected ? 'bg-[#2D6A4F] text-white' : 'bg-slate-100 text-slate-500'}`}>{String.fromCharCode(65 + idx)}</span>
+                        <span className="min-w-0 flex-1 leading-relaxed">{opt}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <textarea
+                  value={answers[current.id] || ''}
+                  onChange={(e) => saveAnswer(current.id, e.target.value)}
+                  placeholder="Type your answer…"
+                  className="mt-5 min-h-[9rem] w-full rounded-2xl border border-slate-300 p-4 outline-none focus:ring-4 focus:ring-[#2D6A4F]/15"
                 />
+              )}
+
+              <div className="mt-5 border-t border-slate-100 pt-4">
+                <button onClick={() => setShowAnswer((show) => !show)} className="text-sm font-black text-blue-700">
+                  {showAnswer ? 'Hide answer' : 'Show answer'}
+                </button>
+                {showAnswer && <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm text-slate-700"><strong>Answer:</strong> {correctLabel(current)}{(current.explanation || current.modelAnswer) ? <p className="mt-2">{current.explanation || current.modelAnswer}</p> : null}</div>}
               </div>
-              <button onClick={ensureLocalStudent} className="rounded-2xl bg-amber-500 px-5 py-3 font-black text-amber-950 shadow-sm hover:bg-amber-400">
-                Save locally
-              </button>
             </div>
-          </div>
-        )}
-
-        {current && (
-          <div className="rounded-[1.75rem] bg-white p-5 sm:p-7 shadow-sm border border-slate-200">
-            <div className="mb-4 flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-black uppercase text-purple-700">{current.questionType.replace('_', ' ')}</span>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase text-slate-600">{current.difficulty}</span>
-            </div>
-            <h2 className="text-lg sm:text-xl font-black text-slate-900 leading-relaxed">{current.questionText}</h2>
-
-            {current.questionType === 'mcq' && current.options?.length ? (
-              <div className="mt-5 space-y-3">
-                {current.options.map((opt, idx) => {
-                  const selected = answers[current.id] === String(idx);
-                  return (
-                    <button
-                      key={idx}
-                      onClick={() => saveAnswer(current.id, String(idx))}
-                      className={`w-full rounded-2xl border-2 p-4 text-left touch-manipulation transition-all ${selected ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm' : 'border-slate-200 bg-white text-slate-800 active:scale-[0.99]'}`}
-                    >
-                      <span className={`mr-3 inline-flex h-8 w-8 items-center justify-center rounded-full font-black ${selected ? 'bg-[#2D6A4F] text-white' : 'bg-slate-100 text-slate-500'}`}>{String.fromCharCode(65 + idx)}</span>
-                      {opt}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <textarea
-                value={answers[current.id] || ''}
-                onChange={(e) => saveAnswer(current.id, e.target.value)}
-                placeholder="Type your answer…"
-                className="mt-5 min-h-[9rem] w-full rounded-2xl border border-slate-300 p-4 outline-none focus:ring-4 focus:ring-[#2D6A4F]/15"
-              />
-            )}
-
-            <div className="mt-5 border-t border-slate-100 pt-4">
-              <button onClick={() => setShowAnswer((show) => !show)} className="text-sm font-black text-blue-700">
-                {showAnswer ? 'Hide answer' : 'Show answer'}
-              </button>
-              {showAnswer && <div className="mt-3 rounded-2xl bg-blue-50 p-4 text-sm text-slate-700"><strong>Answer:</strong> {correctLabel(current)}{(current.explanation || current.modelAnswer) ? <p className="mt-2">{current.explanation || current.modelAnswer}</p> : null}</div>}
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-3 sm:grid-cols-3 gap-2">
-          <button
-            onClick={() => { setCurrentIndex((idx) => Math.max(0, idx - 1)); setShowAnswer(false); }}
-            disabled={currentIndex === 0}
-            className="rounded-2xl bg-white px-3 py-3 font-black text-slate-700 shadow-sm disabled:opacity-40 flex items-center justify-center gap-1"
-          >
-            <ChevronLeft className="w-5 h-5" /> Prev
-          </button>
-          <button onClick={submitQuiz} className="rounded-2xl bg-emerald-600 px-3 py-3 font-black text-white shadow-sm">
-            Finish & save
-          </button>
-          <button
-            onClick={() => { setCurrentIndex((idx) => Math.min(packResult.questions.length - 1, idx + 1)); setShowAnswer(false); }}
-            disabled={currentIndex === packResult.questions.length - 1}
-            className="rounded-2xl bg-blue-600 px-3 py-3 font-black text-white shadow-sm disabled:opacity-40 flex items-center justify-center gap-1"
-          >
-            Next <ChevronRight className="w-5 h-5" />
-          </button>
+          )}
         </div>
+      </main>
 
-        <div className="flex flex-wrap justify-center gap-2">
-          {packResult.questions.map((q, idx) => (
+      <footer className="safe-area-x safe-area-bottom shrink-0 border-t border-slate-200/80 bg-slate-100/95 px-3 pb-2 pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.10)] backdrop-blur sm:px-6 sm:pb-4">
+        <div className="mx-auto max-w-4xl space-y-2">
+          <div className="grid grid-cols-3 gap-2">
             <button
-              key={q.id}
-              onClick={() => { setCurrentIndex(idx); setShowAnswer(false); }}
-              className={`h-9 w-9 rounded-full text-sm font-black ${idx === currentIndex ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-slate-500 border border-slate-200'}`}
+              onClick={() => goToQuestion(currentIndex - 1)}
+              disabled={currentIndex === 0}
+              className="flex items-center justify-center gap-1 rounded-2xl bg-white px-3 py-3 font-black text-slate-700 shadow-sm disabled:opacity-40"
             >
-              {idx + 1}
+              <ChevronLeft className="w-5 h-5" /> Prev
             </button>
-          ))}
+            <button onClick={submitQuiz} className="rounded-2xl bg-emerald-600 px-3 py-3 font-black text-white shadow-sm">
+              <span className="hidden sm:inline">Finish & save</span><span className="sm:hidden">Finish</span>
+            </button>
+            <button
+              onClick={() => goToQuestion(currentIndex + 1)}
+              disabled={currentIndex === packResult.questions.length - 1}
+              className="flex items-center justify-center gap-1 rounded-2xl bg-blue-600 px-3 py-3 font-black text-white shadow-sm disabled:opacity-40"
+            >
+              Next <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="max-h-24 overflow-y-auto overscroll-contain rounded-2xl bg-white/70 p-2 shadow-inner sm:max-h-28" aria-label="Jump to question">
+            <div className="flex flex-wrap justify-center gap-2">
+              {packResult.questions.map((q, idx) => (
+                <button
+                  key={q.id}
+                  onClick={() => goToQuestion(idx)}
+                  className={`h-9 w-9 rounded-full text-sm font-black ${idx === currentIndex ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-slate-500 border border-slate-200'}`}
+                  aria-current={idx === currentIndex ? 'step' : undefined}
+                >
+                  {idx + 1}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
+      </footer>
     </div>
   );
 };
