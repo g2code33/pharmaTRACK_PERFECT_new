@@ -4,8 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import * as mammoth from 'mammoth';
-import { renderPptx } from '../utils/pptxRenderer';
-import { type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
+import { ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
 import { inspectFile } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
 import { saveFile } from '../utils/storage';
@@ -93,6 +92,16 @@ const fileTypeFor = (kind: UploadKind, file: File): UploadedMaterial['fileType']
   if (kind === 'pdf') return 'pdf';
   if (kind === 'image') return file.name.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
   return 'text';
+};
+
+const uploadKindFromDetected = (detected: MaterialKind | 'ole' | 'text', file: File): UploadKind => {
+  switch (detected) {
+    case 'pdf': return 'pdf';
+    case 'docx': return 'docx';
+    case 'pptx': return 'pptx';
+    case 'image': return 'image';
+    default: return kindOf(file);
+  }
 };
 
 const iconFor = (kind: UploadKind) => {
@@ -196,6 +205,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let usedOcr = false;
       let visualStatus: VisualStatus = 'unknown';
       let pageTexts: { page: number; text: string }[] = [];
+      let bytesToSave: Uint8Array<ArrayBufferLike> = new Uint8Array(buffer);
+      let fileType: UploadedMaterial['fileType'] = fileTypeFor(item.kind, item.file);
+      let materialKind: MaterialKind = item.kind === 'pptx' ? 'pptx' : item.kind === 'docx' ? 'docx' : item.kind === 'image' ? 'image' : item.kind;
+      let sizeBytes = item.file.size;
 
       if (item.kind === 'pdf') {
         const r = await processPdf(item, buffer);
@@ -205,23 +218,22 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         const r = await mammoth.extractRawText({ arrayBuffer: buffer });
         text = r.value;
       } else if (item.kind === 'pptx') {
-        // Text extraction must not decode every picture, and a failed render
-        // must not throw the original file away. The reader tries the visual
-        // render again and says so if it still cannot draw the slides.
-        try {
-          const deck = await renderPptx(item.file, { lazyMedia: true });
-          text = deck.fullText;
-          pages = deck.slides.length;
-          pageTexts = deck.slides.map((sl) => ({ page: sl.slideNumber, text: sl.text }));
-          visualStatus = pages > 0 ? 'ok' : 'failed';
-          deck.dispose();
-        } catch (err) {
-          console.error('Presentation could not be read as slides; keeping the original.', err);
-          text = '';
-          pages = 0;
-          pageTexts = [];
-          visualStatus = 'failed';
-        }
+        // PowerPoint uploads are normalised to PDF immediately. The reader then
+        // uses the fast, bounded PDF renderer instead of reparsing a PPTX on
+        // every open, which fixes the freezes users saw with large decks and
+        // makes all presentations behave like regular handouts.
+        const { convertPptxToPdf } = await import('../utils/pptxToPdf');
+        const converted = await convertPptxToPdf(item.file, (progress, message) => {
+          update(item.id, { status: 'reading', progress, message });
+        });
+        text = converted.text;
+        pages = converted.pageCount;
+        pageTexts = converted.pageTexts;
+        bytesToSave = converted.pdfBytes;
+        fileType = 'pdf';
+        materialKind = 'pdf';
+        sizeBytes = converted.pdfBytes.byteLength;
+        visualStatus = 'ok';
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
           update(item.id, { status: 'ocr', message: 'Reading text from image…' });
@@ -240,7 +252,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
       const materialId = uuidv4();
       // Binary lives in IndexedDB; only metadata + text go into app state.
-      const saved = await saveFile(materialId, new Uint8Array(buffer));
+      const saved = await saveFile(materialId, bytesToSave);
       if (!saved) {
         // Do NOT call onComplete here — that would create a material record
         // that looks fully uploaded but has no bytes behind it, which is
@@ -259,8 +271,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       update(item.id, {
         status: 'done',
         progress: 1,
-        message: visualStatus === 'failed'
-          ? 'Saved the original. Visual rendering failed — open it to read the extracted text.'
+        message: item.kind === 'pptx'
+          ? `Converted to PDF · ${pages} slide${pages === 1 ? '' : 's'}`
           : usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`,
         usedOcr,
       });
@@ -272,11 +284,15 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         id: materialId,
         title: item.file.name.replace(/\.[^.]+$/, ''),
         kind: item.kind,
-        fileType: fileTypeFor(item.kind, item.file),
+        fileType,
         text,
         pageCount: pages,
-        sizeBytes: item.file.size,
+        sizeBytes,
         usedOcr,
+        materialKind,
+        originalName: item.file.name,
+        ocrStatus: ocrStatusFor(materialKind, usedOcr, text),
+        visualStatus,
       });
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -336,7 +352,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         }
 
         accepted.push({
-          id: uuidv4(), file, kind: kindOf(file), status: 'queued', progress: 0,
+          id: uuidv4(), file, kind: uploadKindFromDetected(verdict.detected, file), status: 'queued', progress: 0,
           message: 'Waiting…', usedOcr: false, looksScanned: false, warning,
           controller: new AbortController(),
         });
@@ -370,20 +386,20 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         onDragLeave={() => { dragDepth.current--; if (dragDepth.current <= 0) setDragging(false); }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
-        className={`border-2 border-dashed rounded-2xl text-center cursor-pointer transition-all ${compact ? 'p-6' : 'p-10'} ${
+        className={`border-2 border-dashed rounded-2xl text-center cursor-pointer touch-manipulation transition-all ${compact ? 'p-4 sm:p-6' : 'p-5 sm:p-10'} ${
           dragging ? 'border-[#2D6A4F] bg-[#2D6A4F]/5 scale-[1.01]' : 'border-slate-300 hover:border-[#2D6A4F] hover:bg-slate-50'
         }`}
       >
-        <Upload className={`mx-auto mb-3 ${dragging ? 'text-[#2D6A4F]' : 'text-slate-400'} ${compact ? 'w-8 h-8' : 'w-12 h-12'}`} />
-        <p className="font-bold text-slate-700">
-          {dragging ? 'Drop to upload' : 'Drag files here, or click to browse'}
+        <Upload className={`mx-auto mb-3 ${dragging ? 'text-[#2D6A4F]' : 'text-slate-400'} ${compact ? 'w-8 h-8' : 'w-9 h-9 sm:w-12 sm:h-12'}`} />
+        <p className="text-base sm:text-lg font-bold leading-snug text-slate-700">
+          {dragging ? 'Drop to upload' : 'Tap to browse or drop files here'}
         </p>
-        <p className="text-xs text-slate-400 mt-1">
-          PDF · Word · PowerPoint · Images — up to {maxSizeMb} MB each
+        <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-slate-400 sm:max-w-none">
+          PDF · Word · PowerPoint (converted to PDF) · Images — up to {maxSizeMb} MB each
         </p>
       </div>
 
-      <label className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-xl cursor-pointer hover:bg-amber-100/60 transition-colors">
+      <label className="flex items-start gap-3 p-3 sm:p-4 bg-amber-50 border border-amber-200 rounded-xl cursor-pointer hover:bg-amber-100/60 transition-colors">
         <input
           type="checkbox"
           checked={ocrRequested}
@@ -416,8 +432,8 @@ const FileUploader: React.FC<FileUploaderProps> = ({
             const Icon = iconFor(item.kind);
             const active = ['reading', 'ocr', 'saving'].includes(item.status);
             return (
-              <div key={item.id} className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl">
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
+              <div key={item.id} className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl shadow-sm">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
                   item.status === 'error' ? 'bg-red-50 text-red-500'
                   : item.status === 'done' ? 'bg-green-50 text-green-600'
                   : 'bg-slate-100 text-slate-500'

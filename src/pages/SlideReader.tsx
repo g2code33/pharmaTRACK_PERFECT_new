@@ -3,8 +3,8 @@ import { nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-import { loadFileBytes } from '../utils/storage';
-import { sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { loadFileBytes, saveFile } from '../utils/storage';
+import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -105,7 +105,7 @@ const SlideReader: React.FC = () => {
 
   const initialSlide = parseInt(searchParams.get('slide') || '0', 10);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(initialSlide);
-  const [showAIPanel, setShowAIPanel] = useState(true);
+  const [showAIPanel, setShowAIPanel] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth >= 1024));
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [activePanel, setActivePanel] = useState<'ai' | 'browser'>('ai');
   /** Page/slide currently on screen — the *only* material sent to the AI. */
@@ -390,6 +390,7 @@ const SlideReader: React.FC = () => {
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [openedKind, setOpenedKind] = useState<MaterialKind | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
+  const [loadMessage, setLoadMessage] = useState('Loading Material...');
   // Distinct from isLoadingContent: set when loading genuinely finished
   // without producing a fileUrl, so the reader can show a clear message
   // and a retry button instead of leaving "Loading Material..." on screen
@@ -404,6 +405,7 @@ const SlideReader: React.FC = () => {
     const knownKind = currentMaterial.materialKind;
     const knownSize = currentMaterial.fileSize;
     setIsLoadingContent(true);
+    setLoadMessage('Loading Material...');
     setLoadError(null);
     setOpenedKind(null);
     let isMounted = true;
@@ -429,23 +431,45 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-      const sniffed = sniffMaterialKind(data);
+      let sniffed = sniffMaterialKind(data);
+      let bytesForViewer = data;
+      const updates: Partial<import('../types').Slide> = {};
+
+      if (sniffed === 'pptx') {
+        setLoadMessage('Converting PowerPoint to PDF for smooth reading…');
+        const { convertPptxToPdf } = await import('../utils/pptxToPdf');
+        const converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
+          type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        }), (progress, message) => {
+          if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
+        });
+        if (!isMounted) return;
+        bytesForViewer = converted.pdfBytes;
+        sniffed = 'pdf';
+        const saved = await saveFile(materialId, converted.pdfBytes);
+        if (saved) {
+          updates.fileType = 'pdf';
+          updates.materialKind = 'pdf';
+          updates.contentText = converted.text;
+          updates.pageCount = converted.pageCount;
+          updates.fileSize = converted.pdfBytes.byteLength;
+          updates.visualStatus = 'ok';
+        }
+      }
+
       const mime = fileType === 'pdf' || sniffed === 'pdf'
         ? 'application/pdf'
-        : sniffed === 'pptx'
-          ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-          : 'application/octet-stream';
-      const blob = new Blob([data as unknown as BlobPart], { type: mime });
+        : 'application/octet-stream';
+      const blob = new Blob([bytesForViewer as unknown as BlobPart], { type: mime });
       const newUrl = URL.createObjectURL(blob);
       setOpenedKind(sniffed);
       setFileUrl(newUrl);
       setIsLoadingContent(false);
 
-      const updates: Partial<import('../types').Slide> = {};
       if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
         updates.materialKind = sniffed;
       }
-      if (knownSize == null) updates.fileSize = data.byteLength;
+      if (knownSize == null) updates.fileSize = bytesForViewer.byteLength;
       if (Object.keys(updates).length) {
         dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
       }
@@ -603,7 +627,7 @@ const SlideReader: React.FC = () => {
       return (
         <div className="py-40 text-center flex flex-col items-center justify-center h-full w-full">
           <Loader2 className="w-12 h-12 text-[#FFB703] mx-auto mb-4 animate-spin" />
-          <p className="text-xl font-black text-gray-400 uppercase tracking-widest">Loading Material...</p>
+          <p className="text-xl font-black text-gray-400 uppercase tracking-widest">{loadMessage}</p>
         </div>
       );
     }
@@ -652,8 +676,7 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    const nameHint = (currentMaterial?.title || '').toLowerCase();
-    if (currentMaterial?.fileType === 'text' && /\.pptx?$/.test(nameHint)) {
+    if (currentMaterial?.fileType === 'text' && shouldOpenAsPresentation(currentMaterial, openedKind)) {
       return (
         <PptxViewer
           fileUrl={fileUrl}
@@ -722,7 +745,7 @@ const SlideReader: React.FC = () => {
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`flex flex-col h-full bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
+    <div className={`flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-[calc(100dvh-8.5rem)] min-h-[32rem] sm:h-[calc(100dvh-9.5rem)]'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>

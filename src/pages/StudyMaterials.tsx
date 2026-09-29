@@ -567,8 +567,8 @@ const StudyMaterials: React.FC = () => {
                 <FileText className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h3 className="font-bold text-green-900 text-lg">✨ RECOMMENDED: Upload Word Documents (.docx)</h3>
-                <p className="text-sm text-green-700 mt-1">Word files work 10x better than PDFs! Perfect text extraction, zero errors.</p>
+                <h3 className="font-bold text-green-900 text-lg">✨ Upload PDFs, Word, images, and PowerPoint</h3>
+                <p className="text-sm text-green-700 mt-1">PowerPoint files are converted to PDF inside PharmaTRACK, then opened with the fast PDF reader.</p>
               </div>
             </div>
             <div className="bg-white/70 rounded-lg p-4 ml-13">
@@ -579,7 +579,7 @@ const StudyMaterials: React.FC = () => {
               <ol className="text-sm text-blue-800 space-y-2">
                 <li className="flex items-start gap-2">
                   <span className="bg-blue-500 text-white w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">1</span>
-                  <span>Convert your lecturer's slides to Word (.docx) or use lecture notes directly</span>
+                  <span>Upload the original PDF, PowerPoint, Word file, or scanned handout</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="bg-blue-500 text-white w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">2</span>
@@ -587,7 +587,7 @@ const StudyMaterials: React.FC = () => {
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="bg-blue-500 text-white w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">3</span>
-                  <span>Click <strong>"Add Slide"</strong> and upload your .docx file</span>
+                  <span>Click <strong>"Bulk Upload Files"</strong> — each file becomes one material</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="bg-blue-500 text-white w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold">4</span>
@@ -597,7 +597,7 @@ const StudyMaterials: React.FC = () => {
             </div>
             <p className="text-xs text-green-600 mt-3 ml-13 flex items-center gap-1">
               <AlertCircle className="w-3 h-3" />
-              PDFs still supported, but Word documents provide the best experience!
+              PPTX files are converted to PDF locally for a smoother reader experience.
             </p>
           </div>
 
@@ -863,8 +863,8 @@ const StudyMaterials: React.FC = () => {
 
       {/* Add/Edit Slide Modal */}
       {showSlideModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl w-full max-w-xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[240] flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4">
+          <div className="safe-area-bottom w-full max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-t-[1.75rem] bg-white shadow-2xl sm:max-w-xl sm:rounded-xl">
             <div className="flex items-center justify-between p-4 border-b sticky top-0 bg-white">
               <h2 className="text-lg font-semibold">
                 {editingSlide ? 'Edit Slide' : 'Add New Slide'}
@@ -895,7 +895,7 @@ const StudyMaterials: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Upload documents
                 </label>
-                <FileUploader onComplete={handleUploadComplete} />
+                <FileUploader onComplete={handleUploadComplete} compact />
               </div>
 
               <details>
@@ -935,16 +935,16 @@ const StudyMaterials: React.FC = () => {
 
       {/* Bulk Upload Modal */}
       {showBulkUpload && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
-            <div className="flex items-center justify-between p-4 border-b">
+        <div className="fixed inset-0 z-[240] flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4">
+          <div className="safe-area-bottom w-full max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-t-[1.75rem] bg-white shadow-2xl sm:max-w-md sm:rounded-xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white p-4">
               <h2 className="text-lg font-semibold">Bulk Upload Files</h2>
               <button onClick={() => setShowBulkUpload(false)} className="p-1 hover:bg-gray-100 rounded">
                 <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
-            <div className="p-6">
-              <FileUploader onComplete={handleUploadComplete} />
+            <div className="p-4 sm:p-6">
+              <FileUploader onComplete={handleUploadComplete} compact />
               <p className="text-xs text-gray-500 mt-4 text-center">
                 Each file is added as one material — the reader handles its pages.
               </p>

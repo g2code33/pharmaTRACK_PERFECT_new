@@ -653,8 +653,8 @@ const CourseDetail: React.FC = () => {
 
       {/* Slide Modal */}
       {showSlideModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[240] flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4">
+          <div className="safe-area-bottom w-full max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-t-[1.75rem] bg-white shadow-2xl sm:max-w-lg sm:rounded-xl">
             <div className="flex items-center justify-between p-4 border-b sticky top-0 bg-white">
               <h2 className="text-lg font-semibold text-gray-800">
                 {editingSlide ? 'Edit Slide' : 'Add New Slide'}
@@ -686,7 +686,7 @@ const CourseDetail: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Upload documents
                 </label>
-                <FileUploader onComplete={handleUploadComplete} />
+                <FileUploader onComplete={handleUploadComplete} compact />
               </div>
 
               <details className="group">
