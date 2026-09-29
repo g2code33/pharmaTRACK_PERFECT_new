@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles } from 'lucide-react';
+import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp } from 'lucide-react';
 import { ExamQuestion } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import QuestionAnalytics from '../components/QuestionAnalytics';
 import AddQuestionModal from '../components/AddQuestionModal';
 import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYPE_LABEL } from '../utils/questionBank';
+import { buildCourseQuestionPack, buildImportPlan, buildTopicQuestionPack, downloadQuestionPack, parseSharedQuestions } from '../utils/questionShare';
+
 
 const QuestionBank = () => {
   const { state, dispatch } = useApp();
@@ -33,6 +35,13 @@ const QuestionBank = () => {
   // Accordion State
   const [expandedCourses, setExpandedCourses] = useState<Set<string>>(new Set());
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
+
+  // Share (per-course / per-topic export+import) state
+  const [shareImport, setShareImport] = useState<{ scope: 'course' | 'topic'; courseId: string; topicId?: string; courseLabel: string; topicLabel?: string } | null>(null);
+  const [shareJsonInput, setShareJsonInput] = useState('');
+  const [shareError, setShareError] = useState('');
+  const [shareFileName, setShareFileName] = useState('');
+  const shareFileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredTopics = state.topics.filter(t => t.courseId === selectedCourseId);
 
@@ -138,6 +147,74 @@ const QuestionBank = () => {
     }
   };
 
+  const handleExportCourse = (courseId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const pack = buildCourseQuestionPack(state, courseId);
+    if (!pack) { alert('This course has no questions to export yet.'); return; }
+    downloadQuestionPack(pack);
+  };
+
+  const handleExportTopic = (topicId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const pack = buildTopicQuestionPack(state, topicId);
+    if (!pack) { alert('This topic has no questions to export yet.'); return; }
+    downloadQuestionPack(pack);
+  };
+
+  const openShareImport = (scope: 'course' | 'topic', courseId: string, topicId: string | undefined, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const course = state.courses.find((c) => c.id === courseId);
+    const topic = topicId ? state.topics.find((t) => t.id === topicId) : undefined;
+    setShareImport({
+      scope,
+      courseId,
+      topicId,
+      courseLabel: course ? `${course.courseCode} — ${course.courseName}` : 'this course',
+      topicLabel: topic?.topicName,
+    });
+    setShareJsonInput('');
+    setShareFileName('');
+    setShareError('');
+  };
+
+  const closeShareImport = () => {
+    setShareImport(null);
+    setShareJsonInput('');
+    setShareFileName('');
+    setShareError('');
+  };
+
+  const handleShareFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setShareFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => setShareJsonInput(String(reader.result || ''));
+    reader.onerror = () => setShareError('Could not read that file.');
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleShareImportSubmit = () => {
+    if (!shareImport) return;
+    if (!shareJsonInput.trim()) { setShareError('Paste a question pack or choose a .json file first.'); return; }
+    try {
+      const groups = parseSharedQuestions(shareJsonInput);
+      const plan = buildImportPlan(state, groups, { courseId: shareImport.courseId, topicId: shareImport.topicId });
+      if (!plan.ok) { setShareError(plan.reason); return; }
+
+      plan.newTopics.forEach((t) => dispatch({ type: 'ADD_TOPIC', payload: t }));
+      dispatch({ type: 'ADD_EXAM_QUESTIONS', payload: plan.questions });
+
+      const topicIds = shareImport.topicId ? [shareImport.topicId] : [...new Set(plan.questions.map((q) => q.topicId))];
+      setExpandedCourses((prev) => new Set([...prev, shareImport.courseId]));
+      setExpandedTopics((prev) => new Set([...prev, ...topicIds]));
+      closeShareImport();
+    } catch (err: any) {
+      setShareError(err.message || 'Invalid file. Expected a PharmaTRACK question pack (.json).');
+    }
+  };
+
   const openEditModal = (q: ExamQuestion) => {
     setEditingQuestion(q);
     setEditForm({
@@ -230,13 +307,23 @@ const QuestionBank = () => {
         ) : (
           groupedData.map(course => (
             <div key={course.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-              <button onClick={() => toggleCourse(course.id)} className="w-full flex items-center justify-between p-5 bg-slate-50 hover:bg-slate-100 transition-colors border-b border-slate-200">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleCourse(course.id)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCourse(course.id); } }}
+                className="w-full flex items-center justify-between p-5 bg-slate-50 hover:bg-slate-100 transition-colors border-b border-slate-200 cursor-pointer"
+              >
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 bg-indigo-100 text-indigo-700 rounded-xl flex items-center justify-center"><BookOpen size={24} /></div>
                   <div className="text-left"><h2 className="text-xl font-bold text-slate-800">{course.courseCode}: {course.courseName}</h2><p className="text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
                 </div>
-                <div className="p-2 bg-white rounded-full shadow-sm">{expandedCourses.has(course.id) ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}</div>
-              </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={(e) => handleExportCourse(course.id, e)} title="Export this course's questions to share" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-[#2D6A4F] hover:bg-green-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Download size={14} /> Export</button>
+                  <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Share2 size={14} /> Import</button>
+                  <div className="p-2 bg-white rounded-full shadow-sm">{expandedCourses.has(course.id) ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}</div>
+                </div>
+              </div>
 
               {expandedCourses.has(course.id) && (
                 <div className="p-4 space-y-4 bg-slate-50/50">
@@ -248,8 +335,10 @@ const QuestionBank = () => {
                            <h3 className="font-bold text-slate-700">{topic.topicName}</h3>
                            <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
                          </div>
-                         <div className="flex items-center gap-3">
-                           <button onClick={(e) => handleDeleteTopicQuestions(topic.id, e)} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Trash2 size={14}/> Clear Topic</button>
+                         <div className="flex items-center gap-2">
+                           <button onClick={(e) => handleExportTopic(topic.id, e)} title="Export this topic's questions to share" className="text-slate-500 hover:text-[#2D6A4F] hover:bg-green-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Download size={14}/> <span className="hidden sm:inline">Export</span></button>
+                           <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span className="hidden sm:inline">Import</span></button>
+                           <button onClick={(e) => handleDeleteTopicQuestions(topic.id, e)} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Trash2 size={14}/> <span className="hidden sm:inline">Clear Topic</span></button>
                            {expandedTopics.has(topic.id) ? <ChevronUp size={20} className="text-slate-400"/> : <ChevronDown size={20} className="text-slate-400"/>}
                          </div>
                        </div>
@@ -368,6 +457,49 @@ const QuestionBank = () => {
             <div className="flex justify-end space-x-3">
               <button onClick={() => setShowImportModal(false)} className="px-6 py-3 rounded-xl text-slate-600 hover:bg-slate-100 font-bold transition-colors">Cancel</button>
               <button onClick={handleImport} className="px-8 py-3 bg-[#2D6A4F] hover:bg-[#1B4332] text-white rounded-xl font-bold shadow-lg shadow-[#2D6A4F]/30 transition-all">Import Questions</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHARE IMPORT MODAL — per-course / per-topic "accept a PharmaTRACK question pack" */}
+      {shareImport && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[200]">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full p-8 flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2"><Share2 className="text-indigo-500" size={22} /> Import Shared Questions</h2>
+              <button onClick={closeShareImport} className="text-slate-400 hover:bg-slate-100 p-2 rounded-xl transition-colors"><X size={24} /></button>
+            </div>
+            <p className="text-sm font-semibold text-slate-500 mb-6">
+              {shareImport.scope === 'topic'
+                ? <>Adding straight into <span className="text-slate-800">{shareImport.courseLabel}</span> → <span className="text-slate-800">{shareImport.topicLabel}</span>.</>
+                : <>Adding into <span className="text-slate-800">{shareImport.courseLabel}</span>. Topics named in the file are matched by name, or created if they don't exist yet.</>}
+            </p>
+
+            {shareError && <div className="mb-4 p-4 bg-red-50 text-red-600 border border-red-200 rounded-xl text-sm font-bold flex items-center gap-2"><AlertCircle size={18}/> {shareError}</div>}
+
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => shareFileInputRef.current?.click()}
+                className="flex items-center gap-2 px-5 py-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl font-bold transition-colors"
+              >
+                <FileUp size={18} /> Choose .json file…
+              </button>
+              <input ref={shareFileInputRef} type="file" accept=".json,application/json" onChange={handleShareFileSelected} className="hidden" />
+              {shareFileName && <span className="text-xs font-bold text-slate-500">Loaded: {shareFileName}</span>}
+              <span className="text-xs font-semibold text-slate-400">or paste it below</span>
+            </div>
+
+            <textarea
+              value={shareJsonInput}
+              onChange={(e) => { setShareJsonInput(e.target.value); setShareFileName(''); }}
+              className="flex-1 w-full border-2 border-slate-200 rounded-2xl p-5 font-mono text-sm focus:border-indigo-500 outline-none resize-none min-h-[150px] mb-6 shadow-inner bg-slate-50"
+              placeholder="Paste a PharmaTRACK question pack (or a plain JSON array of questions) here…"
+            />
+
+            <div className="flex justify-end space-x-3">
+              <button onClick={closeShareImport} className="px-6 py-3 rounded-xl text-slate-600 hover:bg-slate-100 font-bold transition-colors">Cancel</button>
+              <button onClick={handleShareImportSubmit} className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-lg shadow-indigo-500/30 transition-all">Import Questions</button>
             </div>
           </div>
         </div>
