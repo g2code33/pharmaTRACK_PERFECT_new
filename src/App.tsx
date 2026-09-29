@@ -172,6 +172,7 @@ const App = () => {
                 // sign in from a fresh device before completing onboarding.
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
+                  <Route path="/q/:code" element={<QuickQuiz />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="*" element={<Onboarding />} />
@@ -179,6 +180,7 @@ const App = () => {
               ) : (
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
+                  <Route path="/q/:code" element={<QuickQuiz />} />
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
                   <Route
                     element={

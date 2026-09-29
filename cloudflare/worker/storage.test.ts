@@ -152,6 +152,18 @@ describe('Cloudflare Worker storage boundary', () => {
     expect(await read.json()).toMatchObject({ pack: { title: 'Short share test', questionCount: 1 } });
   });
 
+  it('allows the Windows/Tauri desktop origin to create short quick-quiz links', async () => {
+    const r2 = new FakeR2();
+    const environment = makeEnvironment(r2, new Map());
+    (globalThis as typeof globalThis & { __cloudflareTestEnv?: unknown }).__cloudflareTestEnv = environment;
+    const response = await worker.fetch(new Request('https://worker.example.test/api/v1/quick-quizzes', {
+      method: 'OPTIONS',
+      headers: { Origin: 'tauri://localhost', 'Access-Control-Request-Method': 'POST' },
+    }), environment);
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('tauri://localhost');
+  });
+
   it('rejects missing authentication before touching private object storage', async () => {
     const r2 = new FakeR2();
     const environment = makeEnvironment(r2, new Map());

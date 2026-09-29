@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Check, ChevronLeft, ChevronRight, ExternalLink, Home, Loader2, RotateCcw, Share2, Trophy, X } from 'lucide-react';
 import type { ExamQuestion } from '../types';
 import { decodeQuickQuizPack, fetchQuickQuizPackByCode, shareQuickQuizPack, type QuickQuizPack } from '../utils/quickQuizShare';
@@ -48,7 +48,8 @@ type PackState = { loading: boolean; pack?: QuickQuizPack; questions: ExamQuesti
 
 const QuickQuiz: React.FC = () => {
   const [params] = useSearchParams();
-  const paramsKey = params.toString();
+  const { code: routeCode } = useParams<{ code?: string }>();
+  const paramsKey = `${params.toString()}|${routeCode || ''}`;
   const [packResult, setPackResult] = useState<PackState>({ loading: true, questions: [] });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -64,8 +65,9 @@ const QuickQuiz: React.FC = () => {
       setShowAnswer(false);
       setFinished(false);
       try {
-        const currentParams = new URLSearchParams(paramsKey);
-        const code = currentParams.get('c');
+        const [queryString, codeFromRoute = ''] = paramsKey.split('|');
+        const currentParams = new URLSearchParams(queryString);
+        const code = currentParams.get('c') || codeFromRoute;
         const inline = currentParams.get('p') || currentParams.get('pack');
         let pack: QuickQuizPack;
         if (code) {

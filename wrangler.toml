@@ -13,7 +13,7 @@ workers_dev = true
 [vars]
 ENVIRONMENT = "local"
 SUPABASE_URL = "https://ltpwedxcvbejiywmwrwc.supabase.co"
-CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,tauri://localhost,https://tauri.localhost,http://tauri.localhost"
 
 [assets]
 directory = "dist"
@@ -38,7 +38,7 @@ ENVIRONMENT = "staging"
 SUPABASE_URL = "https://ltpwedxcvbejiywmwrwc.supabase.co"
 # The Pages project is the canonical staging web origin. Keep this exact;
 # do not use a wildcard.
-CORS_ORIGINS = "https://pharmatrack-web-staging.pages.dev"
+CORS_ORIGINS = "https://pharmatrack-web-staging.pages.dev,tauri://localhost,https://tauri.localhost,http://tauri.localhost"
 
 [env.staging.assets]
 directory = "dist"
@@ -64,7 +64,7 @@ ENVIRONMENT = "production"
 SUPABASE_URL = "https://ltpwedxcvbejiywmwrwc.supabase.co"
 # The Pages project is the canonical production web origin. Keep this exact;
 # a missing or wildcard origin is not acceptable for private APIs.
-CORS_ORIGINS = "https://pharmatrack-web.pages.dev"
+CORS_ORIGINS = "https://pharmatrack-web.pages.dev,tauri://localhost,https://tauri.localhost,http://tauri.localhost"
 
 [env.production.assets]
 directory = "dist"

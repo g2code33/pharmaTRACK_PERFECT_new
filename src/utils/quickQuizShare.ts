@@ -50,6 +50,9 @@ type TinyPack = {
 
 type ShareUrlResult = { url: string; mode: 'short-code' | 'inline' };
 
+const PUBLIC_APP_URL_FALLBACK = 'https://pharmatrack-web.pages.dev/';
+const INLINE_LINK_MAX_LENGTH = 1800;
+
 const TYPE_TO_CODE: Record<SharedQuestion['questionType'], 'm' | 's' | 'e'> = {
   mcq: 'm',
   short_answer: 's',
@@ -246,6 +249,56 @@ function apiBase(): string | null {
   return import.meta.env.PROD ? '' : null;
 }
 
+function isNativeAppUrl(url: URL): boolean {
+  return url.protocol === 'tauri:' || url.hostname === 'tauri.localhost';
+}
+
+function shareBaseUrl(href: string): URL {
+  const current = new URL(href);
+  const configured = (import.meta.env.VITE_PUBLIC_APP_URL || '').trim();
+  if (configured) return new URL(configured);
+  return isNativeAppUrl(current) ? new URL(PUBLIC_APP_URL_FALLBACK) : current;
+}
+
+function buildHashUrl(route: string, href: string): string {
+  const url = shareBaseUrl(href);
+  url.search = '';
+  url.hash = route.startsWith('/') ? route : `/${route}`;
+  return url.toString();
+}
+
+const cleanText = (value: string | undefined): string | undefined => {
+  const cleaned = value?.replace(/\s+/g, ' ').trim();
+  return cleaned || undefined;
+};
+
+function toShortCodePack(pack: QuickQuizPack): QuickQuizPack {
+  const questions = pack.questions.map((q): SharedQuestion => {
+    const type = q.questionType === 'mcq' || q.questionType === 'short_answer' ? q.questionType : 'essay';
+    const options = type === 'mcq' ? (q.options || []).map((option) => option.trim()).filter(Boolean) : undefined;
+    const correctOption = type === 'mcq' && Number.isInteger(q.correctOption) ? q.correctOption : undefined;
+    const optionAnswer = type === 'mcq' && options && correctOption !== undefined ? options[correctOption] : undefined;
+    return {
+      questionText: cleanText(q.questionText) || q.questionText,
+      questionType: type,
+      difficulty: q.difficulty,
+      options,
+      correctOption,
+      correctAnswer: cleanText(q.correctAnswer) || optionAnswer || cleanText(q.explanation),
+    };
+  });
+  return {
+    format: QUICK_QUIZ_FORMAT,
+    version: QUICK_QUIZ_VERSION,
+    title: cleanText(pack.title) || 'Shared PharmaTRACK Quiz',
+    exportedAt: pack.exportedAt || new Date().toISOString(),
+    course: pack.course,
+    topic: pack.topic,
+    questionCount: questions.length,
+    questions,
+  };
+}
+
 async function createShortQuickQuizCode(pack: QuickQuizPack): Promise<string | null> {
   const base = apiBase();
   if (base === null || typeof fetch !== 'function') return null;
@@ -253,7 +306,7 @@ async function createShortQuickQuizCode(pack: QuickQuizPack): Promise<string | n
     const response = await fetch(`${base}/api/v1/quick-quizzes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pack }),
+      body: JSON.stringify({ pack: toShortCodePack(pack) }),
     });
     if (!response.ok) return null;
     const payload = await response.json() as { code?: string };
@@ -278,21 +331,20 @@ export async function fetchQuickQuizPackByCode(code: string): Promise<QuickQuizP
 }
 
 export function quickQuizUrl(pack: QuickQuizPack, href: string = window.location.href): string {
-  const url = new URL(href);
-  url.hash = `/quick-quiz?p=${encodeURIComponent(encodeQuickQuizPack(pack))}`;
-  return url.toString();
+  return buildHashUrl(`/quick-quiz?p=${encodeURIComponent(encodeQuickQuizPack(pack))}`, href);
 }
 
 export function quickQuizCodeUrl(code: string, href: string = window.location.href): string {
-  const url = new URL(href);
-  url.hash = `/quick-quiz?c=${encodeURIComponent(code)}`;
-  return url.toString();
+  return buildHashUrl(`/q/${encodeURIComponent(code.trim())}`, href);
 }
 
 export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = window.location.href): Promise<ShareUrlResult> {
   const code = await createShortQuickQuizCode(pack);
   if (code) return { url: quickQuizCodeUrl(code, href), mode: 'short-code' };
-  return { url: quickQuizUrl(pack, href), mode: 'inline' };
+
+  const url = quickQuizUrl(pack, href);
+  if (url.length <= INLINE_LINK_MAX_LENGTH) return { url, mode: 'inline' };
+  throw new Error('Could not create a short quick quiz link. Check your internet connection and try again — this quiz is too large for a safe offline fallback link.');
 }
 
 export async function shareQuickQuizPack(pack: QuickQuizPack): Promise<'shared' | 'copied'> {

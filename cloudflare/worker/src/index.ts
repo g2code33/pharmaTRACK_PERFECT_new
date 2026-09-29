@@ -2,7 +2,8 @@ import type { R2Bucket, R2MultipartUpload, R2UploadedPart } from '@cloudflare/wo
 
 const API_PREFIX = '/api/v1';
 const MAX_METADATA_BODY = 16 * 1024;
-const MAX_QUICK_QUIZ_BODY = 96 * 1024;
+const MAX_QUICK_QUIZ_BODY = 1024 * 1024;
+const MAX_QUICK_QUIZ_QUESTIONS = 500;
 const MAX_MULTIPART_PART_BYTES = 100 * 1024 * 1024;
 const QUICK_QUIZ_CODE = /^[A-Za-z0-9_-]{8,32}$/;
 const QUICK_QUIZ_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -93,7 +94,7 @@ function allowedOrigins(env: Env): Set<string> {
 
 function originIsAllowed(request: Request, env: Env): boolean {
   const origin = request.headers.get('Origin');
-  return !origin || allowedOrigins(env).has(origin);
+  return !origin || origin === 'tauri://localhost' || origin === 'https://tauri.localhost' || origin === 'http://tauri.localhost' || allowedOrigins(env).has(origin);
 }
 
 function corsHeaders(request: Request, env: Env): Headers {
@@ -106,7 +107,7 @@ function corsHeaders(request: Request, env: Env): Headers {
     'Referrer-Policy': 'no-referrer',
   });
   const origin = request.headers.get('Origin');
-  if (origin && allowedOrigins(env).has(origin)) {
+  if (origin && originIsAllowed(request, env)) {
     headers.set('Access-Control-Allow-Origin', origin);
   }
   return headers;
@@ -498,7 +499,7 @@ function sanitizedQuickQuizPayload(input: unknown): string {
   if (!pack) throw new HttpError(400, 'A quick quiz pack is required.', 'invalid_quiz_pack');
   const questions = Array.isArray(pack.questions) ? pack.questions : [];
   if (!questions.length) throw new HttpError(400, 'At least one question is required.', 'invalid_quiz_pack');
-  if (questions.length > 100) throw new HttpError(413, 'A quick quiz can contain at most 100 questions.', 'quiz_pack_too_large');
+  if (questions.length > MAX_QUICK_QUIZ_QUESTIONS) throw new HttpError(413, `A quick quiz can contain at most ${MAX_QUICK_QUIZ_QUESTIONS} questions.`, 'quiz_pack_too_large');
 
   const sanitizedQuestions = questions.map((item, index) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new HttpError(400, `Question ${index + 1} is invalid.`, 'invalid_quiz_pack');

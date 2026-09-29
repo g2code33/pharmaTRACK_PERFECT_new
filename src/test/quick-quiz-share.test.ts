@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildQuickQuizPack,
   decodeQuickQuizPack,
   encodeLegacyQuickQuizPack,
   encodeQuickQuizPack,
   quickQuizCodeUrl,
+  quickQuizShareUrl,
   quickQuizUrl,
 } from '../utils/quickQuizShare';
 import type { ExamQuestion } from '../types';
@@ -64,6 +65,26 @@ describe('quick quiz sharing', () => {
 
   it('builds the very short code URL used when the web share API is available', () => {
     const url = quickQuizCodeUrl('AbC234xyz9', 'https://example.com/app/index.html#/questions');
-    expect(url).toBe('https://example.com/app/index.html#/quick-quiz?c=AbC234xyz9');
+    expect(url).toBe('https://example.com/app/index.html#/q/AbC234xyz9');
+  });
+
+  it('never shares native tauri://localhost links outside the desktop app', async () => {
+    vi.stubEnv('VITE_CLOUDFLARE_API_BASE_URL', 'https://api.example.test');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ code: 'WinShort42' }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch;
+    try {
+      const pack = buildQuickQuizPack([question('1')], { title: 'Native share' })!;
+      const result = await quickQuizShareUrl(pack, 'tauri://localhost#/questions');
+      expect(result).toEqual({
+        mode: 'short-code',
+        url: 'https://pharmatrack-web.pages.dev/#/q/WinShort42',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      vi.unstubAllEnvs();
+    }
   });
 });
