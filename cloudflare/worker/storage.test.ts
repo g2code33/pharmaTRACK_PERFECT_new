@@ -126,6 +126,7 @@ describe('Cloudflare Worker storage boundary', () => {
       version: 1,
       title: 'Short share test',
       exportedAt: '2026-09-29T00:00:00.000Z',
+      timeLimitMinutes: 20,
       questionCount: 1,
       questions: [{
         questionText: 'Which storage condition is correct?',
@@ -149,7 +150,7 @@ describe('Cloudflare Worker storage boundary', () => {
 
     const read = await worker.fetch(request(`/api/v1/quick-quizzes/${created.code}`), environment);
     expect(read.status).toBe(200);
-    expect(await read.json()).toMatchObject({ pack: { title: 'Short share test', questionCount: 1 } });
+    expect(await read.json()).toMatchObject({ pack: { title: 'Short share test', timeLimitMinutes: 20, questionCount: 1 } });
   });
 
   it('allows the Windows/Tauri desktop origin to create short quick-quiz links', async () => {

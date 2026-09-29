@@ -493,6 +493,12 @@ function cleanQuizTopic(value: unknown): { name?: string } | undefined {
   return name ? { name } : undefined;
 }
 
+function cleanQuizTimeLimit(value: unknown): number | undefined {
+  const numeric = typeof value === 'string' ? Number(value) : value;
+  if (typeof numeric !== 'number' || !Number.isFinite(numeric) || numeric <= 0) return undefined;
+  return Math.min(24 * 60, Math.max(1, Math.round(numeric)));
+}
+
 function sanitizedQuickQuizPayload(input: unknown): string {
   const root = input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
   const pack = root?.pack && typeof root.pack === 'object' && !Array.isArray(root.pack) ? root.pack as Record<string, unknown> : undefined;
@@ -536,6 +542,7 @@ function sanitizedQuickQuizPayload(input: unknown): string {
       exportedAt: cleanQuizText(pack.exportedAt, 'export date', 40, false) || new Date().toISOString(),
       course: cleanQuizMeta(pack.course),
       topic: cleanQuizTopic(pack.topic),
+      timeLimitMinutes: cleanQuizTimeLimit(pack.timeLimitMinutes),
       questionCount: sanitizedQuestions.length,
       questions: sanitizedQuestions,
     },

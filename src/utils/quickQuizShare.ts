@@ -12,6 +12,8 @@ export interface QuickQuizPack {
   exportedAt: string;
   course?: { code?: string; name?: string };
   topic?: { name?: string };
+  /** Positive minutes for a timed shared quiz. Missing means no time limit. */
+  timeLimitMinutes?: number;
   questionCount: number;
   questions: SharedQuestion[];
 }
@@ -35,6 +37,7 @@ type CompactPack = {
   at: string;
   c?: { c?: string; n?: string };
   p?: { n?: string };
+  tm?: number;
   q: CompactQuestion[];
 };
 
@@ -45,6 +48,7 @@ type TinyQuestion =
 type TinyPack = {
   f: 'q2';
   t: string;
+  tm?: number;
   q: TinyQuestion[];
 };
 
@@ -79,12 +83,19 @@ const toSharedQuestion = (q: ExamQuestion): SharedQuestion => ({
   tags: q.tags?.filter((tag) => tag !== 'imported' && tag !== 'manual' && tag !== 'shared'),
 });
 
+function normalizeTimeLimitMinutes(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(24 * 60, Math.max(1, Math.round(n)));
+}
+
 export function buildQuickQuizPack(
   questions: ExamQuestion[],
-  meta: { title: string; course?: { code?: string; name?: string }; topic?: { name?: string } },
+  meta: { title: string; course?: { code?: string; name?: string }; topic?: { name?: string }; timeLimitMinutes?: number },
 ): QuickQuizPack | null {
   const usable = questions.filter((q) => q.questionText.trim());
   if (!usable.length) return null;
+  const timeLimitMinutes = normalizeTimeLimitMinutes(meta.timeLimitMinutes);
   return {
     format: QUICK_QUIZ_FORMAT,
     version: QUICK_QUIZ_VERSION,
@@ -92,6 +103,7 @@ export function buildQuickQuizPack(
     exportedAt: new Date().toISOString(),
     course: meta.course,
     topic: meta.topic,
+    ...(timeLimitMinutes ? { timeLimitMinutes } : {}),
     questionCount: usable.length,
     questions: usable.map(toSharedQuestion),
   };
@@ -128,6 +140,7 @@ const toCompact = (pack: QuickQuizPack): CompactPack => ({
   at: pack.exportedAt,
   c: pack.course ? { c: pack.course.code, n: pack.course.name } : undefined,
   p: pack.topic ? { n: pack.topic.name } : undefined,
+  tm: normalizeTimeLimitMinutes(pack.timeLimitMinutes),
   q: pack.questions.map(compactQuestion),
 });
 
@@ -138,6 +151,7 @@ const fromCompact = (pack: CompactPack): QuickQuizPack => ({
   exportedAt: pack.at || new Date().toISOString(),
   course: pack.c ? { code: pack.c.c, name: pack.c.n } : undefined,
   topic: pack.p ? { name: pack.p.n } : undefined,
+  timeLimitMinutes: normalizeTimeLimitMinutes(pack.tm),
   questionCount: Array.isArray(pack.q) ? pack.q.length : 0,
   questions: Array.isArray(pack.q) ? pack.q.map(expandQuestion) : [],
 });
@@ -178,6 +192,7 @@ const fromTinyQuestion = (q: TinyQuestion): SharedQuestion => {
 const toTiny = (pack: QuickQuizPack): TinyPack => ({
   f: 'q2',
   t: pack.title,
+  tm: normalizeTimeLimitMinutes(pack.timeLimitMinutes),
   q: pack.questions.map(toTinyQuestion),
 });
 
@@ -186,6 +201,7 @@ const fromTiny = (pack: TinyPack): QuickQuizPack => ({
   version: QUICK_QUIZ_VERSION,
   title: pack.t || 'Shared PharmaTRACK Quiz',
   exportedAt: new Date().toISOString(),
+  timeLimitMinutes: normalizeTimeLimitMinutes(pack.tm),
   questionCount: Array.isArray(pack.q) ? pack.q.length : 0,
   questions: Array.isArray(pack.q) ? pack.q.map(fromTinyQuestion) : [],
 });
@@ -218,7 +234,12 @@ function normalizeQuickQuizPack(value: unknown): QuickQuizPack {
   if (!pack || pack.format !== QUICK_QUIZ_FORMAT || !Array.isArray(pack.questions) || pack.questions.length === 0) {
     throw new Error('This quick quiz link is invalid or empty.');
   }
-  return { ...pack, questionCount: pack.questions.length };
+  const timeLimitMinutes = normalizeTimeLimitMinutes((pack as Partial<QuickQuizPack>).timeLimitMinutes);
+  return {
+    ...pack,
+    ...(timeLimitMinutes ? { timeLimitMinutes } : { timeLimitMinutes: undefined }),
+    questionCount: pack.questions.length,
+  };
 }
 
 export function encodeQuickQuizPack(pack: QuickQuizPack): string {
@@ -294,6 +315,7 @@ function toShortCodePack(pack: QuickQuizPack): QuickQuizPack {
     exportedAt: pack.exportedAt || new Date().toISOString(),
     course: pack.course,
     topic: pack.topic,
+    timeLimitMinutes: normalizeTimeLimitMinutes(pack.timeLimitMinutes),
     questionCount: questions.length,
     questions,
   };
@@ -338,6 +360,38 @@ export function quickQuizCodeUrl(code: string, href: string = window.location.hr
   return buildHashUrl(`/q/${encodeURIComponent(code.trim())}`, href);
 }
 
+function abortShare(): never {
+  const error = new Error('Quick quiz sharing cancelled before a time setting was chosen.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export function chooseQuickQuizShareTiming(defaultMinutes?: number): number | undefined {
+  const promptText = [
+    'Set the time before sharing this Quick Quiz.',
+    'Type "never" for no time limit, or enter a timed duration in minutes (for example: 10, 15, 30, 60).',
+  ].join('\n');
+
+  const normalizedDefault = normalizeTimeLimitMinutes(defaultMinutes);
+  while (true) {
+    const answer = window.prompt(promptText, normalizedDefault ? String(normalizedDefault) : 'never');
+    if (answer === null) abortShare();
+    const cleaned = answer.trim().toLowerCase();
+    if (['never', 'none', 'no limit', 'no time limit', 'untimed', '0'].includes(cleaned)) return undefined;
+    const minutes = normalizeTimeLimitMinutes(cleaned);
+    if (minutes) return minutes;
+    window.alert('Please choose a time setting: type "never" or enter a positive number of minutes.');
+  }
+}
+
+export function applyQuickQuizShareTiming(pack: QuickQuizPack): QuickQuizPack {
+  const timeLimitMinutes = chooseQuickQuizShareTiming(pack.timeLimitMinutes);
+  return {
+    ...pack,
+    ...(timeLimitMinutes ? { timeLimitMinutes } : { timeLimitMinutes: undefined }),
+  };
+}
+
 export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = window.location.href): Promise<ShareUrlResult> {
   const code = await createShortQuickQuizCode(pack);
   if (code) return { url: quickQuizCodeUrl(code, href), mode: 'short-code' };
@@ -348,8 +402,9 @@ export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = wind
 }
 
 export async function shareQuickQuizPack(pack: QuickQuizPack): Promise<'shared' | 'copied'> {
-  const { url } = await quickQuizShareUrl(pack);
-  const title = `PharmaTRACK Quick Quiz: ${pack.title}`;
+  const timedPack = applyQuickQuizShareTiming(pack);
+  const { url } = await quickQuizShareUrl(timedPack);
+  const title = `PharmaTRACK Quick Quiz: ${timedPack.title}`;
   if (navigator.share) {
     await navigator.share({ title, url });
     return 'shared';

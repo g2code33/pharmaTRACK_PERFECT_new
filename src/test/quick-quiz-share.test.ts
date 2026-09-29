@@ -7,6 +7,7 @@ import {
   quickQuizCodeUrl,
   quickQuizShareUrl,
   quickQuizUrl,
+  shareQuickQuizPack,
 } from '../utils/quickQuizShare';
 import type { ExamQuestion } from '../types';
 
@@ -38,6 +39,7 @@ describe('quick quiz sharing', () => {
       title: 'Test quick quiz',
       course: { code: 'PHAR 101', name: 'Pharmacology' },
       topic: { name: 'Glycosides' },
+      timeLimitMinutes: 25,
     });
 
     expect(pack).not.toBeNull();
@@ -48,6 +50,8 @@ describe('quick quiz sharing', () => {
 
     const decoded = decodeQuickQuizPack(encoded);
     expect(decoded.title).toBe('Test quick quiz');
+    expect(decoded.timeLimitMinutes).toBe(25);
+    expect(decodeQuickQuizPack(encodeLegacyQuickQuizPack(pack!)).timeLimitMinutes).toBe(25);
     expect(decoded.questionCount).toBe(2);
     expect(decoded.questions[0].questionText).toBe('Question 1?');
     expect(decoded.questions[0].options).toEqual(['Answer A', 'Answer B', 'Answer C']);
@@ -68,20 +72,46 @@ describe('quick quiz sharing', () => {
     expect(url).toBe('https://example.com/app/index.html#/q/AbC234xyz9');
   });
 
+  it('requires the sharer to choose timing before a link is copied', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('15');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText }, share: undefined });
+
+    try {
+      const pack = buildQuickQuizPack([question('1')], { title: 'Timed copy' })!;
+      const result = await shareQuickQuizPack(pack);
+      const copiedUrl = writeText.mock.calls[0]?.[0] as string;
+      const encoded = new URL(copiedUrl).hash.split('p=')[1];
+
+      expect(result).toBe('copied');
+      expect(prompt).toHaveBeenCalledWith(expect.stringContaining('Set the time before sharing'), 'never');
+      expect(prompt.mock.invocationCallOrder[0]).toBeLessThan(writeText.mock.invocationCallOrder[0]);
+      expect(decodeQuickQuizPack(decodeURIComponent(encoded)).timeLimitMinutes).toBe(15);
+    } finally {
+      prompt.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('never shares native tauri://localhost links outside the desktop app', async () => {
     vi.stubEnv('VITE_CLOUDFLARE_API_BASE_URL', 'https://api.example.test');
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ code: 'WinShort42' }), {
-      status: 201,
-      headers: { 'Content-Type': 'application/json' },
-    })) as typeof fetch;
+    let postedBody: any;
+    globalThis.fetch = (async (_input, init) => {
+      postedBody = JSON.parse(String(init?.body || '{}'));
+      return new Response(JSON.stringify({ code: 'WinShort42' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
     try {
-      const pack = buildQuickQuizPack([question('1')], { title: 'Native share' })!;
+      const pack = buildQuickQuizPack([question('1')], { title: 'Native share', timeLimitMinutes: 12 })!;
       const result = await quickQuizShareUrl(pack, 'tauri://localhost#/questions');
       expect(result).toEqual({
         mode: 'short-code',
         url: 'https://pharmatrack-web.pages.dev/#/q/WinShort42',
       });
+      expect(postedBody.pack.timeLimitMinutes).toBe(12);
     } finally {
       globalThis.fetch = originalFetch;
       vi.unstubAllEnvs();

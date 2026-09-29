@@ -160,6 +160,7 @@ const Quiz: React.FC = () => {
       title,
       course: course ? { code: course.courseCode, name: course.courseName } : undefined,
       topic: topic ? { name: topic.topicName } : undefined,
+      timeLimitMinutes: settings.timed ? settings.timeLimit : undefined,
     });
     if (!pack) return;
     try {

@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
-import { AlertTriangle, Check, ChevronLeft, ChevronRight, Download, ExternalLink, Home, Loader2, RotateCcw, Save, Share2, Trophy, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronLeft, ChevronRight, Clock, Download, ExternalLink, Home, Loader2, RotateCcw, Save, Share2, Trophy, UserPlus, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import type { Course, ExamQuestion, QuizHistory, Student, Topic } from '../types';
 import { detectRuntimeCapabilities } from '../platform/runtime';
@@ -76,6 +76,15 @@ const correctLabel = (q: ExamQuestion): string => {
   return q.correctAnswer || q.modelAnswer || 'Not supplied';
 };
 
+const formatQuizTimer = (seconds: number): string => {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = safeSeconds % 60;
+  if (hours > 0) return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
+
 type PackState = { loading: boolean; pack?: QuickQuizPack; packKey?: string; questions: ExamQuestion[]; error?: string };
 
 const QuickQuiz: React.FC = () => {
@@ -89,6 +98,8 @@ const QuickQuiz: React.FC = () => {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [showAnswer, setShowAnswer] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
+  const [timeExpired, setTimeExpired] = useState(false);
   const [localName, setLocalName] = useState('');
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
   const savedHistoryRef = useRef<string | null>(null);
@@ -102,6 +113,8 @@ const QuickQuiz: React.FC = () => {
       setCurrentIndex(0);
       setShowAnswer(false);
       setFinished(false);
+      setTimeRemainingSeconds(null);
+      setTimeExpired(false);
       savedHistoryRef.current = null;
       setSavedHistoryId(null);
       try {
@@ -134,6 +147,19 @@ const QuickQuiz: React.FC = () => {
   }, [paramsKey]);
 
   const current = packResult.questions[currentIndex];
+  const timeLimitSeconds = useMemo(() => {
+    const minutes = packResult.pack?.timeLimitMinutes;
+    return typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) * 60 : null;
+  }, [packResult.pack?.timeLimitMinutes]);
+  const timerSeconds = timeLimitSeconds === null ? null : Math.max(0, timeRemainingSeconds ?? timeLimitSeconds);
+  const timerLabel = timerSeconds === null ? 'No time limit' : formatQuizTimer(timerSeconds);
+  const timerIsLow = timerSeconds !== null && timerSeconds <= 60;
+
+  useEffect(() => {
+    if (packResult.loading || !packResult.pack) return;
+    setTimeRemainingSeconds(timeLimitSeconds);
+    setTimeExpired(false);
+  }, [packResult.loading, packResult.pack, packResult.packKey, timeLimitSeconds]);
 
   const scrollQuestionToTop = () => {
     if (typeof window === 'undefined') return;
@@ -154,6 +180,10 @@ const QuickQuiz: React.FC = () => {
     setCurrentIndex(0);
     setShowAnswer(false);
     setFinished(false);
+    setTimeExpired(false);
+    setTimeRemainingSeconds(timeLimitSeconds);
+    savedHistoryRef.current = null;
+    setSavedHistoryId(null);
     scrollQuestionToTop();
   };
 
@@ -172,7 +202,7 @@ const QuickQuiz: React.FC = () => {
     }
   };
 
-  const ensureLocalStudent = (): Student => {
+  const ensureLocalStudent = useCallback((): Student => {
     if (state.student) return state.student;
     const created: Student = {
       id: uuidv4(),
@@ -185,9 +215,9 @@ const QuickQuiz: React.FC = () => {
     };
     dispatch({ type: 'SET_STUDENT', payload: created });
     return created;
-  };
+  }, [dispatch, localName, state.student]);
 
-  const persistSubmittedQuiz = (): string | null => {
+  const persistSubmittedQuiz = useCallback((): string | null => {
     if (!packResult.pack || !packResult.packKey || !packResult.questions.length) return null;
     if (savedHistoryRef.current) return savedHistoryRef.current;
 
@@ -240,7 +270,7 @@ const QuickQuiz: React.FC = () => {
       })),
       scorePercentage: Math.round((correctCount / packResult.questions.length) * 100),
       weakTopics: packResult.questions.some((question) => !gradeAnswer(question, answers[question.id] || '')) ? [topicId] : [],
-      timeTaken: 0,
+      timeTaken: timeLimitSeconds === null ? 0 : timeLimitSeconds - Math.max(0, timeRemainingSeconds ?? timeLimitSeconds),
       completedAt: now,
       mode: 'mixed',
     };
@@ -250,12 +280,26 @@ const QuickQuiz: React.FC = () => {
     savedHistoryRef.current = history.id;
     setSavedHistoryId(history.id);
     return history.id;
-  };
+  }, [addActivity, answers, dispatch, ensureLocalStudent, packResult, state.courses, state.examQuestions, state.topics, timeLimitSeconds, timeRemainingSeconds]);
 
   const submitQuiz = () => {
     persistSubmittedQuiz();
     setFinished(true);
   };
+
+  useEffect(() => {
+    if (finished || timeLimitSeconds === null || timeRemainingSeconds === null) return undefined;
+    if (timeRemainingSeconds <= 0) {
+      setTimeExpired(true);
+      persistSubmittedQuiz();
+      setFinished(true);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setTimeRemainingSeconds((remaining) => (remaining === null ? null : Math.max(0, remaining - 1)));
+    }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [finished, persistSubmittedQuiz, timeLimitSeconds, timeRemainingSeconds]);
 
   const showWebAppCta = runtime.platform === 'web' && !runtime.isPWA;
   const appHomeHref = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}#/` : '/#/';
@@ -322,6 +366,7 @@ const QuickQuiz: React.FC = () => {
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.2em] text-emerald-200">Quick quiz complete</p>
                 <h1 className="text-2xl sm:text-3xl font-black">{packResult.pack.title}</h1>
+                {timeExpired && <p className="mt-1 text-sm font-bold text-amber-200">Time expired, so the quiz was submitted automatically.</p>}
               </div>
             </div>
             <div className="grid grid-cols-3 sm:grid-cols-3 gap-2 text-center">
@@ -401,11 +446,16 @@ const QuickQuiz: React.FC = () => {
             </div>
             <Link to="/" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-white sm:h-11 sm:w-11"><Home className="w-5 h-5" /></Link>
           </div>
-          <div className="mt-2 flex items-center gap-3">
+          <div className="mt-2 flex items-center gap-2 sm:gap-3">
             <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
               <div className="h-full rounded-full bg-emerald-400" style={{ width: `${((currentIndex + 1) / packResult.questions.length) * 100}%` }} />
             </div>
-            <p className="shrink-0 text-[11px] font-black text-slate-200 sm:text-xs">Q{currentIndex + 1}/{packResult.questions.length}</p>
+            <div className="flex shrink-0 items-center gap-2 text-[11px] font-black text-slate-200 sm:text-xs">
+              <span>Q{currentIndex + 1}/{packResult.questions.length}</span>
+              <span className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-1 ${timerIsLow ? 'bg-red-500/20 text-red-100 ring-1 ring-red-300/40' : 'bg-white/10 text-emerald-100'}`}>
+                <Clock className="h-3.5 w-3.5" /> Time: {timerLabel}
+              </span>
+            </div>
           </div>
         </div>
       </header>

@@ -11,10 +11,12 @@ describe('quick quiz mobile layout', () => {
     expect(quickQuiz).toContain('min-h-0 flex-1 overflow-y-auto overscroll-contain');
   });
 
-  it('keeps the compact quiz header and bottom controls outside question scrolling', () => {
+  it('keeps the compact quiz header, timer, and bottom controls outside question scrolling', () => {
     expect(quickQuiz).toContain('<header className="safe-area-x shrink-0');
     expect(quickQuiz).toContain('<footer className="safe-area-x safe-area-bottom shrink-0');
     expect(quickQuiz).toContain('Q{currentIndex + 1}/{packResult.questions.length}');
+    expect(quickQuiz).toContain('Time: {timerLabel}');
+    expect(quickQuiz).toContain("timerLabel = timerSeconds === null ? 'No time limit'");
   });
 
   it('gives the question jump buttons their own scroll area for long quizzes', () => {
