@@ -10,7 +10,10 @@ use std::{
     fs::OpenOptions,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    process::Command,
     sync::Mutex,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ring::rand::{SecureRandom, SystemRandom};
@@ -675,6 +678,104 @@ fn material_file_path(app: &tauri::AppHandle, id: &str, temp: bool) -> Result<Pa
     Ok(material_files_dir(app)?.join(format!("file_{id}{suffix}")))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePptxPdfResult {
+    pdf_bytes: Vec<u8>,
+    converter: String,
+}
+
+fn find_office_converter() -> Option<String> {
+    let candidates = [
+        "soffice",
+        "libreoffice",
+        "soffice.exe",
+        "libreoffice.exe",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    ];
+    candidates.iter().find_map(|candidate| {
+        Command::new(candidate)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|_| candidate.to_string())
+    })
+}
+
+fn convert_pptx_with_office(app: tauri::AppHandle, id: String) -> Result<NativePptxPdfResult, String> {
+    let source = material_file_path(&app, &id, false)?;
+    let metadata = fs::metadata(&source).map_err(|error| format!("Unable to inspect saved PowerPoint: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 250 * 1024 * 1024 {
+        return Err("The saved PowerPoint is missing, empty, or too large to convert natively.".to_string());
+    }
+
+    let converter = find_office_converter().ok_or_else(|| "LibreOffice/soffice is not installed, so native PowerPoint conversion is unavailable.".to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let work_dir = material_files_dir(&app)?.join("pptx-conversion").join(format!("{id}-{stamp}"));
+    fs::create_dir_all(&work_dir).map_err(|error| format!("Unable to prepare native conversion workspace: {error}"))?;
+    let input = work_dir.join("input.pptx");
+    let output = work_dir.join("input.pdf");
+    fs::copy(&source, &input).map_err(|error| format!("Unable to stage PowerPoint for native conversion: {error}"))?;
+
+    let mut child = Command::new(&converter)
+        .arg("--headless")
+        .arg("--nologo")
+        .arg("--nofirststartwizard")
+        .arg("--convert-to")
+        .arg("pdf")
+        .arg("--outdir")
+        .arg(&work_dir)
+        .arg(&input)
+        .spawn()
+        .map_err(|error| format!("Unable to start LibreOffice conversion: {error}"))?;
+
+    let deadline = SystemTime::now() + Duration::from_secs(120);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if SystemTime::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&work_dir);
+                    return Err("Native PowerPoint conversion timed out.".to_string());
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = fs::remove_dir_all(&work_dir);
+                return Err(format!("Native PowerPoint conversion failed: {error}"));
+            }
+        }
+    };
+
+    if !status.success() || !output.exists() {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Err("LibreOffice could not convert this PowerPoint to PDF.".to_string());
+    }
+
+    let pdf_bytes = fs::read(&output).map_err(|error| format!("Unable to read converted PDF: {error}"))?;
+    let _ = fs::remove_dir_all(&work_dir);
+    Ok(NativePptxPdfResult { pdf_bytes, converter })
+}
+
+#[tauri::command]
+async fn convert_material_pptx_to_pdf_native(
+    app: tauri::AppHandle,
+    state: State<'_, SecureExamHostState>,
+    id: String,
+) -> Result<NativePptxPdfResult, String> {
+    ensure_application_controls_available(state.inner())?;
+    tauri::async_runtime::spawn_blocking(move || convert_pptx_with_office(app, id))
+        .await
+        .map_err(|error| format!("Native conversion task failed: {error}"))?
+}
+
 #[tauri::command]
 fn save_material_file_start(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let dir = material_files_dir(&app)?;
@@ -887,6 +988,7 @@ fn main() {
             save_material_file_chunk,
             save_material_file_finish,
             save_material_file_abort,
+            convert_material_pptx_to_pdf_native,
             material_file_info,
             load_material_file_chunk,
             delete_material_file,

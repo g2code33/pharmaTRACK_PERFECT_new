@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.107';
+const APP_VERSION_FALLBACK = '1.1.108';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -92,6 +92,7 @@ const Layout: React.FC = () => {
     }
   });
   const runtime = detectRuntimeCapabilities();
+  const isReaderRoute = location.pathname.startsWith('/read/');
   const nativePlatformLabel = runtime.nativeWebview && typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
     ? 'Windows App'
     : 'Desktop App';
@@ -321,7 +322,7 @@ const Layout: React.FC = () => {
   return (
     <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {runtime.nativeWebview && (
-        <div className="native-titlebar flex h-11 flex-shrink-0 items-center border-b border-emerald-300/10 bg-[linear-gradient(135deg,#07111f_0%,#0f2d2a_48%,#164e3a_100%)] text-white shadow-[0_10px_30px_rgba(6,78,59,0.22)]">
+        <div className="native-titlebar flex h-11 flex-shrink-0 items-center border-b border-slate-200 bg-white text-slate-900 shadow-sm">
           <div
             className="native-titlebar-drag flex h-full flex-1 select-none items-center gap-3 overflow-hidden px-4"
             data-tauri-drag-region
@@ -329,15 +330,15 @@ const Layout: React.FC = () => {
             onDoubleClick={() => void runNativeWindowAction('toggleMaximize')}
             title="Drag to move · Double-click to maximize"
           >
-            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl border border-emerald-300/20 bg-white/10 shadow-lg shadow-emerald-400/15 ring-1 ring-white/10">
+            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <img src="/logo.png" alt="PharmaTRACK" className="h-full w-full object-cover scale-110" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <p className="truncate text-sm font-black uppercase italic tracking-tight">Pharma<span className="text-emerald-300">TRACK</span> Desktop</p>
-                <span className="hidden rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-100 sm:inline-flex">{nativePlatformLabel}</span>
+                <p className="truncate text-sm font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-emerald-600">TRACK</span> Desktop</p>
+                <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex">{nativePlatformLabel}</span>
               </div>
-              <p className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-emerald-100/70 sm:block">Track · Learn · Achieve · v{appVersion}</p>
+              <p className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500 sm:block">Track · Learn · Achieve · v{appVersion}</p>
             </div>
           </div>
           <div className="flex h-full items-center pr-1">
@@ -394,45 +395,44 @@ const Layout: React.FC = () => {
             type="button"
             aria-label="Close navigation menu"
             onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 z-[220] bg-slate-950/65 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-[220] bg-slate-950/45 lg:hidden"
           />
         )}
-        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative lg:z-50 shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
-          <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
-            <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-lg shadow-green-500/20"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
-            {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-white">Pharma<span className="text-[#4ADE80]">TRACK</span></h1></div>)}
-            <button onClick={() => setMobileMenuOpen(false)} className="lg:hidden p-1 hover:bg-white/10 rounded"><X className="w-5 h-5 text-white" /></button>
+        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900 flex flex-col border-r border-slate-200 transition-all duration-200 ease-out lg:relative lg:z-50 shadow-xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
+          <div className={`flex items-center p-6 border-b border-slate-100 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
+            <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-sm ring-1 ring-slate-200"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
+            {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-slate-900">Pharma<span className="text-[#2D6A4F]">TRACK</span></h1></div>)}
+            <button onClick={() => setMobileMenuOpen(false)} className="lg:hidden p-1 hover:bg-slate-100 rounded"><X className="w-5 h-5 text-slate-700" /></button>
           </div>
           <nav className="flex-1 p-4 space-y-1 overflow-y-auto hide-scrollbar">
             {navItems.map((item: any) => {
               const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
               return (
-                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => prefetchRoute(item.path)} onFocus={() => prefetchRoute(item.path)} onTouchStart={() => prefetchRoute(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-all duration-200 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-[#2D6A4F]/20' : item.highlight ? 'bg-purple-600/10 text-purple-400 hover:bg-purple-600/20' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}>
+                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => prefetchRoute(item.path)} onFocus={() => prefetchRoute(item.path)} onTouchStart={() => prefetchRoute(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-colors duration-150 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-sm' : item.highlight ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'}`}>
                   <item.icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-[#FFB703]' : ''}`} />
                   {!sidebarCollapsed && <span className="text-sm font-bold tracking-tight">{item.label}</span>}
                 </Link>
               );
             })}
           </nav>
-          <div className="p-4 bg-[#0F172A] border-t border-white/5">
+          <div className="p-4 bg-white border-t border-slate-100">
             <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
               {state.isLoggedIn ? (
-                <button onClick={handleLogout} title="End Session" className={`text-gray-400 hover:text-red-400 p-2.5 rounded-xl hover:bg-red-500/10 transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest text-white/50'}`}><LogOut className="w-5 h-5" />{!sidebarCollapsed && <span>End Session</span>}</button>
+                <button onClick={handleLogout} title="End Session" className={`text-slate-500 hover:text-red-600 p-2.5 rounded-xl hover:bg-red-50 transition-colors ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest'}`}><LogOut className="w-5 h-5" />{!sidebarCollapsed && <span>End Session</span>}</button>
               ) : (
                 // Red: signed out means the user's work exists in exactly one
                 // place, with no backup. Worth flagging, not whispering.
                 <Link to="/login" title="Not backed up — sign in to sync" className={`text-red-300 hover:text-white bg-red-600/20 hover:bg-red-600/40 border border-red-500/40 p-2.5 rounded-xl transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest'}`}><Cloud className="w-5 h-5" />{!sidebarCollapsed && <span>Sign in to sync</span>}</Link>
               )}
-              <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:flex p-2.5 bg-white/5 text-gray-400 hover:text-[#FFB703] hover:bg-white/10 rounded-xl transition-all">{sidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}</button>
+              <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:flex p-2.5 bg-slate-100 text-slate-500 hover:text-[#2D6A4F] hover:bg-slate-200 rounded-xl transition-colors">{sidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}</button>
             </div>
           </div>
         </aside>
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
-              this element a stacking context, so the search dropdown inside it
-              can never escape — the header itself has to sit above them. */}
-          <header className="app-header bg-white/90 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-700 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
+          {/* z-[120] beats the reader's side panels (z-[110]); keep the header
+              solid white so the desktop shell does not repaint a costly blur. */}
+          <header className="app-header bg-white dark:bg-white border-b border-gray-200 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 lg:gap-6">
               <div className="flex items-center gap-2 sm:gap-4">
                 <button
@@ -452,7 +452,7 @@ const Layout: React.FC = () => {
                    <Home className="w-5 h-5" />
                 </Link>
                 <Link to="/" className="sm:hidden min-w-0 flex-1">
-                  <p className="truncate text-base font-black uppercase italic tracking-tight text-slate-900 dark:text-white">Pharma<span className="text-[#2D6A4F] dark:text-[#4ADE80]">TRACK</span></p>
+                  <p className="truncate text-base font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-[#2D6A4F]">TRACK</span></p>
                   <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">v{appVersion} · {isOffline ? 'Offline' : state.isLoggedIn ? 'Synced' : 'Local only'}</p>
                 </Link>
                 <div className="ml-auto flex items-center gap-2 sm:hidden">
@@ -475,7 +475,7 @@ const Layout: React.FC = () => {
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
                     onKeyDown={onSearchKeyDown}
-                    className="w-full pl-11 pr-12 py-3 bg-gray-100 dark:bg-slate-800 dark:text-slate-100 border-none rounded-2xl text-sm font-medium focus:bg-white dark:focus:bg-slate-700 focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
+                    className="w-full pl-11 pr-12 py-3 bg-gray-100 text-slate-900 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-colors shadow-inner"
                   />
                   {searchQuery ? (
                     <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
@@ -601,7 +601,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="app-page-main safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 p-3 sm:p-6 relative">
+          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'p-0' : 'p-3 sm:p-6'}`}>
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY
@@ -617,7 +617,7 @@ const Layout: React.FC = () => {
         </div>
       </div>
 
-      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200/80 bg-white/95 px-2 pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/95">
+      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200 bg-white px-2 pt-2 shadow-[0_-8px_20px_rgba(15,23,42,0.10)] dark:border-slate-200 dark:bg-white">
         <div className="mx-auto grid max-w-md grid-cols-5 sm:grid-cols-5 gap-1">
           {mobileNavItems.map((item) => {
             const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));

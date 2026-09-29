@@ -4,7 +4,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { loadFileBytes, saveFile } from '../utils/storage';
-import { looksLikePresentationText, shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -105,7 +105,7 @@ const SlideReader: React.FC = () => {
 
   const initialSlide = parseInt(searchParams.get('slide') || '0', 10);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(initialSlide);
-  const [showAIPanel, setShowAIPanel] = useState(() => (typeof window === 'undefined' ? true : window.innerWidth >= 1024));
+  const [showAIPanel, setShowAIPanel] = useState(false);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [activePanel, setActivePanel] = useState<'ai' | 'browser'>('ai');
   /** Page/slide currently on screen — the *only* material sent to the AI. */
@@ -436,13 +436,16 @@ const SlideReader: React.FC = () => {
       const updates: Partial<import('../types').Slide> = {};
 
       if (sniffed === 'pptx') {
-        setLoadMessage('Converting PowerPoint to PDF for smooth reading…');
-        const { convertPptxToPdf } = await import('../utils/pptxToPdf');
-        const converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
-          type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        }), (progress, message) => {
-          if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
-        });
+        setLoadMessage('Converting PowerPoint to original-layout PDF…');
+        const { convertNativeMaterialPptxToPdf, convertPptxToPdf } = await import('../utils/pptxToPdf');
+        let converted = await convertNativeMaterialPptxToPdf(materialId);
+        if (!converted) {
+          converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
+            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          }), (progress, message) => {
+            if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
+          });
+        }
         if (!isMounted) return;
         bytesForViewer = converted.pdfBytes;
         sniffed = 'pdf';
@@ -450,8 +453,8 @@ const SlideReader: React.FC = () => {
         if (saved) {
           updates.fileType = 'pdf';
           updates.materialKind = 'pdf';
-          updates.contentText = converted.text;
-          updates.pageCount = converted.pageCount;
+          if (converted.text) updates.contentText = converted.text;
+          if (converted.pageCount) updates.pageCount = converted.pageCount;
           updates.fileSize = converted.pdfBytes.byteLength;
           updates.visualStatus = 'ok';
         }
@@ -590,12 +593,6 @@ const SlideReader: React.FC = () => {
    * document and the rest of the semester are never sent.
    */
   const isPdf = currentMaterial?.fileType === 'pdf' || openedKind === 'pdf';
-  const isConvertedPresentationPdf = Boolean(
-    isPdf && currentMaterial && (
-      /\.(pptx|pptm|ppt)$/i.test(currentMaterial.originalName ?? '') ||
-      looksLikePresentationText(currentMaterial.contentText)
-    ),
-  );
   const aiScope: ContextSelection = {
     topicId,
     courseId: topic?.courseId,
@@ -672,7 +669,7 @@ const SlideReader: React.FC = () => {
           onAskAi={handleAskAiAboutSelection}
           jumpToPage={deepLinkPage}
           initialQuery={deepLinkQuery}
-          initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}
+          initialZoom="width"
           focusHighlightId={focusHighlightId}
           onPageChange={(current, total, text) => {
             setPage(current);
@@ -752,7 +749,7 @@ const SlideReader: React.FC = () => {
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'}`}>
+    <div className={`slide-reader-fullbleed flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>
@@ -805,7 +802,7 @@ const SlideReader: React.FC = () => {
 
       <div className="flex flex-1 overflow-hidden relative">
         <div className="flex flex-col bg-[#F8FAFC] dark:bg-slate-900 min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col items-center p-0 scrollbar-thin">
+          <div ref={scrollContainerRef} className="flex-1 overflow-hidden flex flex-col items-stretch p-0">
             {renderUniversalContent()}
           </div>
 

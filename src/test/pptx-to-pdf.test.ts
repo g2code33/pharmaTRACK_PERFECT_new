@@ -4,6 +4,10 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { convertPptxToPdf } from '../utils/pptxToPdf';
 
+const converterSource = fs.readFileSync(path.resolve(__dirname, '../utils/pptxToPdf.ts'), 'utf8');
+const readerSource = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const nativeSource = fs.readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
+
 const slideXml = (title: string, body: string) => `<?xml version="1.0"?>
 <p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
@@ -45,5 +49,14 @@ describe('PPTX to PDF conversion', () => {
       { page: 2, text: expect.stringContaining('Clinical pearl') },
     ]);
     expect(progress[progress.length - 1]).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('prefers native LibreOffice conversion in the desktop app before browser fallback', () => {
+    expect(converterSource).toContain('convertNativeMaterialPptxToPdf');
+    expect(converterSource).toContain("convert_material_pptx_to_pdf_native");
+    expect(readerSource.indexOf('convertNativeMaterialPptxToPdf(materialId)')).toBeGreaterThan(-1);
+    expect(readerSource.indexOf('convertNativeMaterialPptxToPdf(materialId)')).toBeLessThan(readerSource.indexOf('convertPptxToPdf(new Blob'));
+    expect(nativeSource).toContain('LibreOffice/soffice');
+    expect(nativeSource).toContain('--convert-to');
   });
 });

@@ -214,19 +214,30 @@ export function prefetchRoutes(paths: string[]): void {
 
 const scheduleIdle = (cb: () => void): void => {
   if (typeof window === 'undefined') return;
-  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number })
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number })
     .requestIdleCallback;
-  if (typeof ric === 'function') ric(cb);
-  else window.setTimeout(cb, 1200);
+  if (typeof ric === 'function') ric(cb, { timeout: 900 });
+  else window.setTimeout(cb, 250);
 };
 
 /**
- * After the first screen is idle, quietly prefetch the handful of pages a
- * student is most likely to open next. Heavy, rarely-used pages (PDF/PPTX
- * viewers, examination admin) are intentionally left out so startup stays fast.
+ * After the first screen is idle, warm normal local-first app tabs one at a
+ * time. Opening a sidebar tab should not show a loader, but fetching every
+ * chunk at once can freeze slower WebViews, so this is deliberately staggered.
  */
 export function prefetchLikelyRoutes(
-  paths: string[] = ['/materials', '/courses', '/questions', '/notes', '/search'],
+  paths: string[] = [
+    '/materials', '/courses', '/questions', '/quiz', '/highlights', '/objectives',
+    '/planner', '/learn', '/clinical', '/notes', '/analytics', '/timetable',
+    '/search', '/settings', '/profile', '/archive', '/storage', '/library', '/read',
+  ],
 ): void {
-  scheduleIdle(() => prefetchRoutes(paths));
+  const queue = [...paths];
+  const warmNext = () => {
+    const next = queue.shift();
+    if (!next) return;
+    prefetchRoute(next);
+    if (queue.length) scheduleIdle(warmNext);
+  };
+  scheduleIdle(warmNext);
 }

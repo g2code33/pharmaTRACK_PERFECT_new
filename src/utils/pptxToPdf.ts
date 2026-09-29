@@ -2,6 +2,7 @@ import fontkit from '@pdf-lib/fontkit';
 import { degrees, PDFDocument, rgb, StandardFonts, type PDFFont, type PDFPage } from 'pdf-lib';
 import regularFontUrl from '../assets/fonts/DejaVuSans.ttf?url';
 import boldFontUrl from '../assets/fonts/DejaVuSans-Bold.ttf?url';
+import { nativeInvoke } from '../platform/runtime';
 import { renderPptx, ptToPx, type PptxDocument, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from './pptxRenderer';
 
 export interface PptxPdfConversionResult {
@@ -9,6 +10,11 @@ export interface PptxPdfConversionResult {
   text: string;
   pageTexts: { page: number; text: string }[];
   pageCount: number;
+}
+
+interface NativePptxPdfResult {
+  pdfBytes?: number[] | Uint8Array;
+  converter?: string;
 }
 
 interface ConversionFonts {
@@ -704,6 +710,25 @@ async function drawSlide(pdf: PDFDocument, deck: PptxDocument, slide: PptxSlide,
   for (const shape of slide.shapes) {
     await drawShape(pdf, page, shape, fonts, deck.slideHeight);
   }
+}
+
+export async function convertNativeMaterialPptxToPdf(materialId: string): Promise<PptxPdfConversionResult | null> {
+  const result = await nativeInvoke<NativePptxPdfResult>('convert_material_pptx_to_pdf_native', { id: materialId });
+  if (!result?.pdfBytes) return null;
+  const pdfBytes = result.pdfBytes instanceof Uint8Array ? result.pdfBytes : Uint8Array.from(result.pdfBytes);
+  let pageCount = 0;
+  try {
+    const pdf = await PDFDocument.load(pdfBytes);
+    pageCount = pdf.getPageCount();
+  } catch {
+    pageCount = 0;
+  }
+  return {
+    pdfBytes,
+    text: '',
+    pageTexts: [],
+    pageCount,
+  };
 }
 
 export async function convertPptxToPdf(

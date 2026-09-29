@@ -812,6 +812,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [state.student?.id, state.isLoggedIn]);
 
   useEffect(() => {
+    let idleId: number | null = null;
     const timeoutId = setTimeout(() => {
       // Guard only against the very first render, before LOAD_STATE has run —
       // writing then would clobber saved data with an empty state.
@@ -842,9 +843,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.timetables.quiz.length > 0 ||
         state.timetables.exam.length > 0;
 
-      if (hasContent) saveState(state);
-    }, 1000); // Debounce saves by 1 second to prevent UI freezing
-    return () => clearTimeout(timeoutId);
+      if (hasContent) {
+        const run = () => saveState(state);
+        const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number }).requestIdleCallback;
+        if (typeof ric === 'function') idleId = ric(run, { timeout: 2500 });
+        else window.setTimeout(run, 0);
+      }
+    }, 1400); // Debounce saves and write during idle so reading stays smooth.
+    return () => {
+      clearTimeout(timeoutId);
+      if (idleId !== null) {
+        const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback;
+        if (typeof cic === 'function') cic(idleId);
+      }
+    };
   }, [state]);
 
   const getCourseProgress = (courseId: string): number => {

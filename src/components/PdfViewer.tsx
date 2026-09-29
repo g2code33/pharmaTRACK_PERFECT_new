@@ -79,12 +79,17 @@ const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
  * Pages rendered around the viewport. Wide enough that normal scrolling always
  * lands on an already-painted page.
  */
-const RENDER_WINDOW = 6;
+const RENDER_WINDOW = 1;
 /**
- * Beyond this, canvases are released. One page at 2x DPR is roughly 20 MB, so
- * an unbounded cache would exhaust memory on a 100+ page deck.
+ * Beyond this, canvases are released. One page at high DPI can be tens of MB,
+ * so an unbounded cache makes the desktop WebView feel frozen on lecture decks.
  */
-const KEEP_WINDOW = 14;
+const KEEP_WINDOW = 5;
+
+const yieldToMainThread = () => new Promise<void>((resolve) => {
+  if (typeof window === 'undefined') { resolve(); return; }
+  window.setTimeout(resolve, 0);
+});
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -149,6 +154,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
+  const renderBatch = useRef(0);
 
   useEffect(() => {
     setZoomPreset(initialZoom);
@@ -199,6 +205,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           if (i === Math.min(4, pdf.numPages) || i === pdf.numPages) {
             if (!cancelled) setBaseSizes([...sizes]);
           }
+          if (i % 8 === 0) await yieldToMainThread();
         }
 
         pdf.getOutline().then((o) => !cancelled && o && setOutline(o as OutlineNode[])).catch(() => {});
@@ -229,6 +236,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   /* ---------------- extract text ---------------- */
   useEffect(() => {
     if (!doc) return;
+    // Do not scan every page on open. Large lecture PDFs/PPTX conversions were
+    // spending seconds extracting full text before the user even searched,
+    // making the whole WebView feel frozen. Visible pages fill pageTexts during
+    // renderPage; the full pass runs only when Find/deep-link search needs it.
+    if (!showSearch && !initialQuery) return;
     let cancelled = false;
     (async () => {
       const texts: string[] = [];
@@ -239,6 +251,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           const content = await page.getTextContent();
           texts[i - 1] = content.items.map((it: any) => it.str).join(' ');
         } catch { texts[i - 1] = ''; }
+        if (i % 4 === 0) {
+          setPageTexts((prev) => {
+            const next = prev.slice();
+            texts.forEach((text, index) => { if (text !== undefined) next[index] = text; });
+            return next;
+          });
+          await yieldToMainThread();
+        }
       }
       if (cancelled) return;
       setPageTexts(texts);
@@ -246,7 +266,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       onTextExtracted?.(texts.map((text, i) => ({ page: i + 1, text })));
     })();
     return () => { cancelled = true; };
-  }, [doc]);
+  }, [doc, showSearch, initialQuery, onTextExtracted]);
 
   /* ---------------- search mark painting ---------------- */
 
@@ -336,7 +356,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       const page = await doc.getPage(pageNum);
       const viewport = page.getViewport({ scale, rotation });
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -359,6 +379,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         textLayer.style.height = `${Math.floor(viewport.height)}px`;
 
         const content = await page.getTextContent();
+        const extractedText = content.items.map((it: any) => it.str).join(' ');
+        setPageTexts((prev) => {
+          if (prev[pageNum - 1] === extractedText) return prev;
+          const next = prev.slice();
+          next[pageNum - 1] = extractedText;
+          return next;
+        });
         const textTask = pdfjs.renderTextLayer({
           textContentSource: content, container: textLayer, viewport,
         });
@@ -390,9 +417,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderWindow = useCallback((centre: number) => {
     if (!doc || !numPages) return;
 
+    const batch = ++renderBatch.current;
+    const pages: number[] = [];
     for (let d = 0; d <= RENDER_WINDOW; d++) {
       for (const p of d === 0 ? [centre] : [centre - d, centre + d]) {
-        if (p >= 1 && p <= numPages) renderPage(p);
+        if (p >= 1 && p <= numPages && !pages.includes(p)) pages.push(p);
       }
     }
 
@@ -404,6 +433,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         renderedKey.current.delete(p);
       }
     }
+
+    void (async () => {
+      for (const p of pages) {
+        if (batch !== renderBatch.current) return;
+        await renderPage(p);
+        await yieldToMainThread();
+      }
+    })();
   }, [doc, numPages, renderPage]);
 
   /* ---------------- viewport tracking ---------------- */

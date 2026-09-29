@@ -15,6 +15,7 @@ const viewer = fs.readFileSync(
 );
 const css = fs.readFileSync(path.resolve(__dirname, '../index.css'), 'utf8');
 const reader = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx'), 'utf8');
 const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
 const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
 const studyMaterials = fs.readFileSync(path.resolve(__dirname, '../pages/StudyMaterials.tsx'), 'utf8');
@@ -144,15 +145,22 @@ describe('instant page navigation', () => {
     expect(viewer).toMatch(/width: size\?\.w[\s\S]{0,60}height: size\?\.h/);
   });
 
-  it('pre-renders a window of pages around the viewport', () => {
-    expect(viewer).toMatch(/const RENDER_WINDOW = \d+/);
+  it('pre-renders a small sequential window around the viewport', () => {
+    expect(viewer).toContain('const RENDER_WINDOW = 1');
     expect(viewer).toMatch(/const renderWindow = useCallback/);
+    expect(viewer).toContain('await renderPage(p);');
+    expect(viewer).toContain('await yieldToMainThread();');
   });
 
   it('evicts distant canvases so long documents stay bounded', () => {
-    // A single 2x-DPR page canvas is ~20 MB; keeping 100 would exhaust memory.
-    expect(viewer).toMatch(/const KEEP_WINDOW = \d+/);
+    // A single high-DPR page canvas is many MB; keeping 100 would exhaust memory.
+    expect(viewer).toContain('const KEEP_WINDOW = 5');
     expect(viewer).toMatch(/Math\.abs\(p - centre\) > KEEP_WINDOW/);
+  });
+
+  it('does not extract every page of text until Find needs it', () => {
+    expect(viewer).toContain('if (!showSearch && !initialQuery) return;');
+    expect(viewer).toContain('const dpr = Math.min(window.devicePixelRatio || 1, 1.5);');
   });
 
   it('renders the destination before scrolling to it', () => {
@@ -214,14 +222,29 @@ describe('whole-document uploads', () => {
 });
 
 describe('stable layout', () => {
-  it('lets the reader fill the available app page instead of using a second viewport subtraction', () => {
-    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'");
+  it('keeps the native titlebar and hamburger/sidebar shell white, not green-gradient', () => {
+    expect(layout).toContain('native-titlebar flex h-11 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900');
+    expect(css).toContain('background: #ffffff !important;');
+    expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });
 
-  it('opens converted PowerPoint PDFs with page-fit zoom so the whole landscape slide is visible', () => {
+  it('lets the reader fill the available app page instead of using a second viewport subtraction', () => {
+    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'");
+    expect(reader).toContain('slide-reader-fullbleed');
+    expect(reader).toContain('flex-1 overflow-hidden flex flex-col items-stretch p-0');
+    expect(layout).toContain("isReaderRoute ? 'p-0' : 'p-3 sm:p-6'");
+  });
+
+  it('opens the reader at full width instead of showing a default split panel', () => {
+    expect(reader).toContain('const [showAIPanel, setShowAIPanel] = useState(false);');
+    expect(reader).toContain('Expand Reader');
+  });
+
+  it('opens documents at page-width zoom so the page fills the reader area', () => {
     expect(viewer).toContain('initialZoom?: ZoomPreset');
-    expect(reader).toContain("initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}");
-    expect(reader).toContain('looksLikePresentationText(currentMaterial.contentText)');
+    expect(reader).toContain('initialZoom="width"');
+    expect(reader).not.toContain("initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}");
   });
 
   it('keeps a permanent scrollbar gutter so pages cannot shift sideways', () => {
