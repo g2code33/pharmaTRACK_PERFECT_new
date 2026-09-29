@@ -74,8 +74,17 @@ function toPdfY(pageHeight: number, y: number, h = 0): number {
   return pageHeight - y - h;
 }
 
+function replaceControlCharacters(value: string): string {
+  let out = '';
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    out += code < 32 || code === 127 ? ' ' : value[i];
+  }
+  return out;
+}
+
 function safeText(value: string, unicode: boolean): string {
-  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, ' ');
+  const cleaned = replaceControlCharacters(value);
   if (unicode) return cleaned;
   // pdf-lib StandardFonts encode WinAnsi. Replace unsupported characters rather
   // than letting one fancy glyph abort the whole upload. The extracted/search
