@@ -633,6 +633,25 @@ fn read_pharmaexam_file(
     fs::read(candidate).map_err(|error| format!("Unable to read examination package: {error}"))
 }
 
+#[cfg(target_os = "linux")]
+fn apply_linux_webkit_runtime_workarounds() {
+    // Ubuntu/Debian users can hit a blank or never-painted Tauri window when
+    // WebKitGTK's GPU compositing/DMABUF path does not initialise correctly
+    // under a particular driver, VM, or Wayland session. Set the safe fallback
+    // flags before Tauri creates GTK/WebKit objects so the installed .deb paints
+    // reliably even when launched from the desktop menu (not just via npm
+    // scripts). Respect an explicit user override if one is already present.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_linux_webkit_runtime_workarounds() {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,6 +680,8 @@ mod tests {
 }
 
 fn main() {
+    apply_linux_webkit_runtime_workarounds();
+
     tauri::Builder::default()
         .manage(SecureExamHostState::default())
         .manage(PendingPharmaExamFiles::default())

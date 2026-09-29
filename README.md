@@ -3,7 +3,7 @@
 A desktop study companion for pharmacy students. Cross-platform Tauri v2 app
 built with React, TypeScript and Tailwind CSS.
 
-![Version](https://img.shields.io/badge/version-1.1.84-blue)
+![Version](https://img.shields.io/badge/version-1.1.95-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-v2-24C8D8)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
 
@@ -68,6 +68,11 @@ npm install --legacy-peer-deps
 
 npm run tauri:dev
 ```
+
+The released Ubuntu/Debian `.deb` launcher also sets the same WebKitGTK
+rendering fallback flags and passes `.pharmaexam` file paths through the desktop
+entry, so double-clicked examination packages open in the installed app instead
+of launching a blank window or an empty session.
 
 ## Commands
 

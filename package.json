@@ -1,7 +1,7 @@
 {
   "name": "pharmatrack",
   "private": true,
-  "version": "1.1.94",
+  "version": "1.1.95",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -25,7 +25,7 @@
     "version:set": "node scripts/set-version.mjs",
     "version:check": "node scripts/set-version.mjs check",
     "tauri": "tauri",
-    "tauri:dev": "env -u LD_LIBRARY_PATH WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 tauri dev",
+    "tauri:dev": "env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 tauri dev",
     "tauri:build": "env -u LD_LIBRARY_PATH tauri build"
   },
   "dependencies": {
