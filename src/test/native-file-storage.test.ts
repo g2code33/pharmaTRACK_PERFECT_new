@@ -73,7 +73,17 @@ describe('native material file storage', () => {
     expect(loaded).toEqual(new Uint8Array([80, 68, 70, 1, 2, 3]));
   });
 
-  it('deletes the native copy as well as the IndexedDB key', async () => {
+  it('serves newly uploaded files from the warm in-memory cache before touching storage again', async () => {
+    const { saveFile, loadFileBytes } = await import('../utils/storage');
+
+    await expect(saveFile('doc-hot-1', new Uint8Array([9, 8, 7]))).resolves.toBe(true);
+    mockInvoke.mockClear();
+
+    expect(await loadFileBytes('doc-hot-1')).toEqual(new Uint8Array([9, 8, 7]));
+    expect(mockInvoke).not.toHaveBeenCalledWith('material_file_info', { id: 'doc-hot-1' });
+  });
+
+  it('deletes the native copy as well as the IndexedDB key and warm cache', async () => {
     const { saveFile, deleteFile, loadFileBytes } = await import('../utils/storage');
 
     await saveFile('doc-native-2', new Uint8Array([1, 2, 3]));

@@ -1,4 +1,4 @@
-import { AppState, Course, Topic, Slide, LearningObjective, ExamQuestion, QuizHistory, StudyPlan, Note, ExamDate, Activity } from '../types';
+import { AppState } from '../types';
 import { DEFAULT_LEARNING_SETTINGS } from './learningEngine';
 import * as idb from './idbStore';
 import { isTauriRuntime } from '../platform/runtime';
@@ -171,6 +171,99 @@ export const saveState = (state: AppState): void => {
 };
 
 // File Storage using IndexedDB (for large files like PDFs, audio, images)
+
+type StoredFileBytes = Uint8Array | string;
+
+type CachedFileBytes = {
+  value: StoredFileBytes;
+  bytes: number;
+  touchedAt: number;
+};
+
+/**
+ * Keep opened/uploaded files warm in memory for this app session. PharmaTRACK is
+ * local-first, so a material that was just uploaded or recently opened should
+ * not have to round-trip through IndexedDB/Tauri IPC again before the viewer can
+ * paint. The cap prevents a very large library from turning this speed cache
+ * into a memory leak; older entries are evicted first.
+ */
+const FILE_CACHE_MAX_BYTES = 384 * 1024 * 1024;
+const FILE_CACHE_MAX_ENTRIES = 64;
+const fileByteCache = new Map<string, CachedFileBytes>();
+const pendingFileLoads = new Map<string, Promise<StoredFileBytes | null>>();
+
+const storedByteLength = (value: StoredFileBytes): number => (
+  typeof value === 'string' ? value.length * 2 : value.byteLength
+);
+
+const cachedByteTotal = (): number => {
+  let total = 0;
+  fileByteCache.forEach((entry) => { total += entry.bytes; });
+  return total;
+};
+
+const enforceFileCacheLimit = () => {
+  while (fileByteCache.size > FILE_CACHE_MAX_ENTRIES || cachedByteTotal() > FILE_CACHE_MAX_BYTES) {
+    let oldestKey = '';
+    let oldestTouch = Number.POSITIVE_INFINITY;
+    fileByteCache.forEach((entry, key) => {
+      if (entry.touchedAt < oldestTouch) {
+        oldestTouch = entry.touchedAt;
+        oldestKey = key;
+      }
+    });
+    if (!oldestKey) break;
+    fileByteCache.delete(oldestKey);
+  }
+};
+
+const rememberFileBytes = (id: string, value: StoredFileBytes): void => {
+  const bytes = storedByteLength(value);
+  if (bytes > FILE_CACHE_MAX_BYTES) return;
+  fileByteCache.set(id, { value, bytes, touchedAt: Date.now() });
+  enforceFileCacheLimit();
+};
+
+const cachedFileBytes = (id: string): StoredFileBytes | undefined => {
+  const cached = fileByteCache.get(id);
+  if (!cached) return undefined;
+  cached.touchedAt = Date.now();
+  return cached.value;
+};
+
+export const forgetCachedFile = (id: string): void => {
+  fileByteCache.delete(id);
+  pendingFileLoads.delete(id);
+};
+
+const scheduleFileWarmup = (callback: () => void, delay = 0): number | null => {
+  if (typeof window === 'undefined') return null;
+  const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => number }).requestIdleCallback;
+  if (typeof ric === 'function') return ric(callback, { timeout: 1200 });
+  return window.setTimeout(callback, delay);
+};
+
+/**
+ * Background-read material files into the session cache without blocking the
+ * first screen. The reader still works if a warmup fails; opening the file will
+ * try again and show a proper error if the local copy is missing/corrupt.
+ */
+export const prewarmFileBytes = (ids: string[], maxToWarm = FILE_CACHE_MAX_ENTRIES): void => {
+  const queue = Array.from(new Set(ids)).filter((id) => id && !fileByteCache.has(id)).slice(0, maxToWarm);
+  if (!queue.length) return;
+
+  const warmNext = () => {
+    const id = queue.shift();
+    if (!id) return;
+    void loadFileBytes(id)
+      .catch(() => undefined)
+      .finally(() => {
+        if (queue.length) scheduleFileWarmup(warmNext, 80);
+      });
+  };
+
+  scheduleFileWarmup(warmNext, 250);
+};
 
 /**
  * How long a Blob → bytes conversion is allowed to take before it is
@@ -367,9 +460,13 @@ export const saveFile = async (id: string, file: Blob | Uint8Array | string): Pr
     //      large byte writes; native app-data storage succeeds there.
     const toStore = await toFileBytes(file);
 
-    if (await saveNativeFile(id, toStore)) return true;
+    if (await saveNativeFile(id, toStore)) {
+      rememberFileBytes(id, toStore);
+      return true;
+    }
 
     await idb.set(`file_${id}`, toStore);
+    rememberFileBytes(id, toStore);
     return true;
   } catch (err) {
     console.error(`Error saving file ${id} to storage:`, err);
@@ -410,13 +507,30 @@ export const loadFile = async (id: string): Promise<Blob | Uint8Array | string |
  * leaving a loading spinner running forever.
  */
 export const loadFileBytes = async (id: string): Promise<Uint8Array | string | null> => {
-  const file = await loadFile(id);
-  if (file == null) return null;
-  if (file instanceof Blob) return blobToBytes(file);
-  return file;
+  const cached = cachedFileBytes(id);
+  if (cached !== undefined) return cached;
+
+  const pending = pendingFileLoads.get(id);
+  if (pending) return pending;
+
+  const load = (async () => {
+    const file = await loadFile(id);
+    if (file == null) return null;
+    const bytes = file instanceof Blob ? await blobToBytes(file) : file;
+    rememberFileBytes(id, bytes);
+    return bytes;
+  })();
+
+  pendingFileLoads.set(id, load);
+  try {
+    return await load;
+  } finally {
+    pendingFileLoads.delete(id);
+  }
 };
 
 export const deleteFile = async (id: string): Promise<void> => {
+  forgetCachedFile(id);
   await deleteNativeFile(id);
   try {
     await idb.del(`file_${id}`);

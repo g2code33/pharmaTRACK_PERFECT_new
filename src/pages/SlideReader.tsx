@@ -749,7 +749,7 @@ const SlideReader: React.FC = () => {
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`slide-reader-fullbleed flex min-h-0 flex-col bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'}`}>
+    <div className={`slide-reader-fullbleed flex min-h-0 flex-col overflow-hidden bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full flex-1'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>
@@ -800,7 +800,7 @@ const SlideReader: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-1 min-h-0 overflow-hidden relative">
         <div className="flex flex-col bg-[#F8FAFC] dark:bg-slate-900 min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
           <div ref={scrollContainerRef} className="flex-1 overflow-hidden flex flex-col items-stretch p-0">
             {renderUniversalContent()}
@@ -837,7 +837,7 @@ const SlideReader: React.FC = () => {
 
         {showAIPanel && (
           <div
-            className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
+            className="h-full min-h-0 bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
             style={{ width: `${panelWidth}px` }}
           >
             <button
@@ -868,7 +868,7 @@ const SlideReader: React.FC = () => {
         )}
 
         {showBrowserPanel && (
-          <div className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
+          <div className="h-full min-h-0 bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
 
             {/* Tab bar */}
             <div className="flex bg-gray-200 overflow-x-auto border-b border-gray-300 scrollbar-none h-9 flex-shrink-0">

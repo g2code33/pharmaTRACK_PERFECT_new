@@ -19,7 +19,7 @@ import {
   ClinicalAttempt,
   ClinicalCase,
 } from '../types';
-import { loadState, saveState } from '../utils/storage';
+import { loadState, prewarmFileBytes, saveState } from '../utils/storage';
 import { ensureSchema } from '../utils/storageManager';
 import {
   findLegacyKey,
@@ -624,6 +624,21 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     void ensureArchiveCatalog();
     void ensureConversationIndex();
   }, []);
+
+  // Local-first material readiness: once the semester state is available, warm
+  // uploaded file bytes in the background, newest/recently-opened first. This
+  // keeps documents ready for the reader without blocking startup or tab clicks.
+  useEffect(() => {
+    if (!state.slides.length) return;
+    const ids = [...state.slides]
+      .sort((a, b) => {
+        const aTime = new Date(a.lastOpenedAt || a.createdAt || 0).getTime();
+        const bTime = new Date(b.lastOpenedAt || b.createdAt || 0).getTime();
+        return bTime - aTime;
+      })
+      .map((slide) => slide.id);
+    prewarmFileBytes(ids);
+  }, [state.slides]);
 
   // Readable data is applied synchronously so a click in the same turn is not
   // overwritten by an empty snapshot. Migration is async and only replaces

@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.109';
+const APP_VERSION_FALLBACK = '1.1.110';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -601,7 +601,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'p-0' : 'p-3 sm:p-6'}`}>
+          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY

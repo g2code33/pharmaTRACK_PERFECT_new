@@ -349,7 +349,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
   const canSend = configured && !offlineBlocked && !examBlocked;
 
   return (
-    <div className={`flex flex-col h-full bg-white ${className}`} data-testid="ai-chat-panel">
+    <div className={`flex h-full min-h-0 flex-col bg-white ${className}`} data-testid="ai-chat-panel">
       {/* Header: identity + engine status, never a provider-specific control */}
       <div className={`flex items-center justify-between border-b border-gray-100 ${compact ? 'px-3 py-2' : 'px-4 py-3'}`}>
         <div className="flex items-center gap-2 min-w-0">
@@ -420,7 +420,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({
       )}
 
       {/* Messages */}
-      <div className={`flex-1 overflow-y-auto space-y-3 bg-slate-50/40 ${compact ? 'p-3' : 'p-4'}`}>
+      <div className={`min-h-0 flex-1 overflow-y-auto space-y-3 bg-slate-50/40 ${compact ? 'p-3' : 'p-4'}`}>
         {conversation.messages.length === 0 && configured && (
           <div className="h-full flex flex-col items-center justify-center text-center px-6">
             <Lightbulb className="w-7 h-7 text-[#FFB703] mb-2" />

@@ -164,6 +164,17 @@ body { overflow-x: hidden; }
   padding-right: max(env(safe-area-inset-right, 0px), 0.75rem);
 }
 
+/* Reader pages own their scrollable areas. Do not add shell/mobile padding or
+   page-level scrolling around them, otherwise the slide/AI row ends early and
+   leaves a large empty block below the viewer. */
+.app-page-main:has(.slide-reader-fullbleed) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 !important;
+}
+
 /* Touch manipulation avoids the 300ms double-tap delay on iOS Safari */
 .touch-manipulation {
   touch-action: manipulation;
@@ -489,8 +500,21 @@ html.dark select {
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
   }
   .native-desktop-shell .app-page-main:has(.slide-reader-fullbleed) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
     margin: 0.75rem 1rem 1rem;
     overflow: hidden;
+    padding: 0 !important;
+  }
+  .native-desktop-shell .slide-reader-fullbleed {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .native-desktop-shell .slide-reader-fullbleed,
+  .native-desktop-shell .slide-reader-fullbleed * {
+    scroll-behavior: auto !important;
   }
   .native-desktop-shell a,
   .native-desktop-shell button,

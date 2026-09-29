@@ -229,11 +229,13 @@ describe('stable layout', () => {
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });
 
-  it('lets the reader fill the available app page instead of using a second viewport subtraction', () => {
-    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full'");
+  it('lets the reader fill the available app page without a second page scroll or bottom void', () => {
+    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full flex-1'");
     expect(reader).toContain('slide-reader-fullbleed');
+    expect(reader).toContain('flex flex-1 min-h-0 overflow-hidden relative');
     expect(reader).toContain('flex-1 overflow-hidden flex flex-col items-stretch p-0');
-    expect(layout).toContain("isReaderRoute ? 'p-0' : 'p-3 sm:p-6'");
+    expect(layout).toContain("isReaderRoute ? 'p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'");
+    expect(css).toMatch(/app-page-main:has\(\.slide-reader-fullbleed\)[\s\S]{0,180}display:\s*flex/);
   });
 
   it('opens the reader at full width instead of showing a default split panel', () => {
