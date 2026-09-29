@@ -647,7 +647,7 @@ const SlideReader: React.FC = () => {
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`flex flex-col h-full bg-[#F1F5F9] ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
+    <div className={`flex flex-col h-full bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>
@@ -699,7 +699,7 @@ const SlideReader: React.FC = () => {
       </div>
 
       <div className="flex flex-1 overflow-hidden relative">
-        <div className="flex flex-col bg-[#F8FAFC] min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
+        <div className="flex flex-col bg-[#F8FAFC] dark:bg-slate-900 min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col items-center p-0 scrollbar-thin">
             {renderUniversalContent()}
           </div>

@@ -64,10 +64,21 @@ const Layout: React.FC = () => {
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
   const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('pharmatrack-dark-mode');
+      if (saved !== null) return saved === 'true';
+      return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
+    } catch {
+      return false;
+    }
+  });
   const runtime = detectRuntimeCapabilities();
 
-  useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try { localStorage.setItem('pharmatrack-dark-mode', String(darkMode)); } catch { /* ignore */ }
+  }, [darkMode]);
   useEffect(() => {
     void getApplicationVersion(APP_VERSION_FALLBACK).then(setAppVersion);
   }, []);
@@ -280,7 +291,7 @@ const Layout: React.FC = () => {
           {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
               this element a stacking context, so the search dropdown inside it
               can never escape — the header itself has to sit above them. */}
-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
+          <header className="bg-white/80 dark:bg-slate-900/90 backdrop-blur-md border-b border-gray-200 dark:border-slate-700 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
             <div className="flex items-center gap-4 lg:gap-6">
               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
               
@@ -303,7 +314,7 @@ const Layout: React.FC = () => {
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
                     onKeyDown={onSearchKeyDown}
-                    className="w-full pl-11 pr-12 py-3 bg-gray-100 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
+                    className="w-full pl-11 pr-12 py-3 bg-gray-100 dark:bg-slate-800 dark:text-slate-100 border-none rounded-2xl text-sm font-medium focus:bg-white dark:focus:bg-slate-700 focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
                   />
                   {searchQuery ? (
                     <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
@@ -429,7 +440,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
+          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 p-3 sm:p-6 relative">
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY

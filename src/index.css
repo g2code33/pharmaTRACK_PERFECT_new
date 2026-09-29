@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Tailwind v4 requires this to be declared explicitly for the `dark:`
+   variant to respond to an ancestor `.dark` class (e.g. the one toggled
+   on <html> by the app's dark-mode switch in Layout.tsx). Without this,
+   Tailwind v4 falls back to `prefers-color-scheme`, which is completely
+   decoupled from the in-app toggle. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Custom styles for PharmaTRACK */
 :root {
   --color-primary: #10B981;
@@ -18,6 +25,102 @@
 .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
 body { background-color: #F8FAFC; color: #0F172A; }
+
+html.dark body { background-color: #0f172a; color: #f1f5f9; }
+html.dark ::-webkit-scrollbar-track { background: #1e293b; }
+html.dark ::-webkit-scrollbar-thumb { background: #475569; }
+html.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ==========================================================================
+   Global dark-mode retrofit
+   --------------------------------------------------------------------------
+   The vast majority of pages in this app were authored with hardcoded
+   light-theme Tailwind utility classes (bg-white, text-gray-800, etc.) and
+   never given `dark:` variants. Rather than hand-edit every one of the ~70
+   page/component files, this block re-targets the small, closed set of
+   light-theme utility classes that are actually used across the app so
+   that EVERY page automatically gets proper dark backgrounds and light,
+   readable text as soon as `.dark` is present on <html> — with no risk of
+   missing a file. Intentionally-dark utilities (bg-slate-900, bg-[#0F172A]
+   sidebar, text-white badges, etc.) are left untouched since they already
+   render correctly in both themes.
+   ========================================================================== */
+
+/* Card / panel / page backgrounds that were authored as "light" */
+html.dark .bg-white { background-color: #1e293b !important; }
+html.dark .bg-gray-50,
+html.dark .bg-slate-50 { background-color: #0f172a !important; }
+html.dark .bg-gray-100,
+html.dark .bg-slate-100 { background-color: #273549 !important; }
+html.dark .bg-gray-200,
+html.dark .bg-slate-200 { background-color: #334155 !important; }
+html.dark .bg-gray-300,
+html.dark .bg-slate-300 { background-color: #475569 !important; }
+
+/* Hover states for the backgrounds above */
+html.dark .hover\:bg-gray-50:hover,
+html.dark .hover\:bg-slate-50:hover { background-color: #1e293b !important; }
+html.dark .hover\:bg-gray-100:hover,
+html.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
+html.dark .hover\:bg-gray-200:hover,
+html.dark .hover\:bg-slate-200:hover { background-color: #3f4b5e !important; }
+html.dark .hover\:bg-gray-300:hover { background-color: #475569 !important; }
+html.dark .hover\:bg-slate-600:hover { background-color: #475569 !important; }
+html.dark .hover\:bg-slate-900:hover { background-color: #0f172a !important; }
+
+/* Headings / primary text authored assuming a white background */
+html.dark .text-gray-900,
+html.dark .text-slate-900,
+html.dark .text-slate-950 { color: #f8fafc !important; }
+html.dark .text-gray-800,
+html.dark .text-slate-800 { color: #f1f5f9 !important; }
+
+/* Body copy / secondary text */
+html.dark .text-gray-700,
+html.dark .text-slate-700 { color: #e2e8f0 !important; }
+html.dark .text-gray-600,
+html.dark .text-slate-600 { color: #cbd5e1 !important; }
+
+/* Muted / helper text */
+html.dark .text-gray-500,
+html.dark .text-slate-500 { color: #94a3b8 !important; }
+html.dark .text-gray-400,
+html.dark .text-slate-400 { color: #7c8ba1 !important; }
+
+html.dark .hover\:text-gray-800:hover { color: #f1f5f9 !important; }
+html.dark .hover\:text-gray-700:hover,
+html.dark .hover\:text-slate-700:hover { color: #e2e8f0 !important; }
+html.dark .hover\:text-gray-600:hover,
+html.dark .hover\:text-slate-600:hover { color: #cbd5e1 !important; }
+
+/* Borders / dividers */
+html.dark .border-gray-50,
+html.dark .border-gray-100,
+html.dark .border-slate-50,
+html.dark .border-slate-100 { border-color: #334155 !important; }
+html.dark .border-gray-200,
+html.dark .border-gray-300,
+html.dark .border-slate-200,
+html.dark .border-slate-300,
+html.dark .border-gray-800 { border-color: #475569 !important; }
+html.dark .hover\:border-gray-300:hover,
+html.dark .hover\:border-slate-300:hover,
+html.dark .hover\:border-slate-400:hover { border-color: #64748b !important; }
+html.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: #334155 !important; }
+
+/* Safety net for plain form controls that never declared an explicit
+   background/text color and would otherwise stay browser-default white */
+html.dark input:not([type="checkbox"]):not([type="radio"]),
+html.dark select,
+html.dark textarea {
+  background-color: #1e293b;
+  color: #f1f5f9;
+  border-color: #334155;
+}
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: #64748b; }
 
 /* Mobile browser chrome and installed iPhone PWAs expose a dynamic viewport.
    Keep the shell from growing behind the home indicator or forcing a page-level
