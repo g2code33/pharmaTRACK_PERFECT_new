@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.96';
+const APP_VERSION_FALLBACK = '1.1.97';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -38,6 +38,14 @@ const navItems = [
   { path: '/timetable', icon: Calendar, label: 'Offline Timetable' },
   { path: '/archive', icon: Archive, label: 'Academic Archive' },
   { path: '/storage', icon: HardDrive, label: 'Storage' },
+  { path: '/settings', icon: Settings, label: 'Settings' },
+];
+
+const mobileNavItems = [
+  { path: '/', icon: Home, label: 'Home' },
+  { path: '/materials', icon: Upload, label: 'Materials' },
+  { path: '/quiz', icon: Brain, label: 'Quiz' },
+  { path: '/questions', icon: FileQuestion, label: 'Questions' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -240,7 +248,7 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <div className={`app-shell flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
       {pwaUpdateAvailable && (
         <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
@@ -256,7 +264,15 @@ const Layout: React.FC = () => {
       )}
       <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
-        <aside className={`fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
+        {mobileMenuOpen && (
+          <button
+            type="button"
+            aria-label="Close navigation menu"
+            onClick={() => setMobileMenuOpen(false)}
+            className="fixed inset-0 z-40 bg-slate-950/55 backdrop-blur-sm lg:hidden"
+          />
+        )}
+        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
           <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
             <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-lg shadow-green-500/20"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
             {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-white">Pharma<span className="text-[#4ADE80]">TRACK</span></h1></div>)}
@@ -291,25 +307,42 @@ const Layout: React.FC = () => {
           {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
               this element a stacking context, so the search dropdown inside it
               can never escape — the header itself has to sit above them. */}
-          <header className="bg-white/80 dark:bg-slate-900/90 backdrop-blur-md border-b border-gray-200 dark:border-slate-700 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
-            <div className="flex items-center gap-4 lg:gap-6">
-              <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
-              
-              {/* Universal Home Button */}
-              <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
-                 <Home className="w-5 h-5" />
-              </Link>
-              <Link to="/" className="sm:hidden flex items-center justify-center p-2 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
-                 <Home className="w-5 h-5" />
-              </Link>
+          <header className="app-header bg-white/90 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200 dark:border-slate-700 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 lg:gap-6">
+              <div className="flex items-center gap-2 sm:gap-4">
+                <button
+                  type="button"
+                  aria-label="Open navigation menu"
+                  className="lg:hidden touch-target flex items-center justify-center rounded-2xl bg-slate-100 text-slate-700 active:scale-95 dark:bg-slate-800 dark:text-slate-200"
+                  onClick={() => setMobileMenuOpen(true)}
+                >
+                  <Menu className="w-6 h-6" />
+                </button>
 
-              <div className="flex-1 max-w-3xl relative" ref={searchBoxRef}>
+                {/* Universal Home Button */}
+                <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
+                   <Home className="w-5 h-5" />
+                </Link>
+                <Link to="/" className="sm:hidden touch-target flex items-center justify-center bg-[#2D6A4F]/10 text-[#2D6A4F] rounded-2xl transition-all shadow-sm" title="Go Home">
+                   <Home className="w-5 h-5" />
+                </Link>
+                <Link to="/" className="sm:hidden min-w-0 flex-1">
+                  <p className="truncate text-base font-black uppercase italic tracking-tight text-slate-900 dark:text-white">Pharma<span className="text-[#2D6A4F] dark:text-[#4ADE80]">TRACK</span></p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">v{appVersion} · {isOffline ? 'Offline' : state.isLoggedIn ? 'Synced' : 'Local only'}</p>
+                </Link>
+                <div className="ml-auto flex items-center gap-2 sm:hidden">
+                  <button onClick={() => setDarkMode(!darkMode)} className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" aria-label="Toggle dark mode">{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
+                  <Link to="/profile" className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" title={state.student?.name ? `Profile — ${state.student.name}` : 'Profile'}><UserCircle className="w-5 h-5" /></Link>
+                </div>
+              </div>
+
+              <div className="w-full sm:flex-1 sm:max-w-3xl relative" ref={searchBoxRef}>
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none"><Search className="w-4 h-4 text-gray-400" /></div>
                   <input
                     ref={searchInputRef}
                     type="text"
-                    placeholder="Search notes, slides, questions, archives…  (Ctrl+K)"
+                    placeholder="Search PharmaTRACK…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
@@ -440,7 +473,7 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 p-3 sm:p-6 relative">
+          <main className="app-page-main safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 p-3 sm:p-6 relative">
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY
@@ -455,6 +488,27 @@ const Layout: React.FC = () => {
           </main>
         </div>
       </div>
+
+      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200/80 bg-white/95 px-2 pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.12)] backdrop-blur-xl dark:border-slate-700 dark:bg-slate-900/95">
+        <div className="mx-auto grid max-w-md grid-cols-5 sm:grid-cols-5 gap-1">
+          {mobileNavItems.map((item) => {
+            const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onTouchStart={() => prefetchRoute(item.path)}
+                className={`touch-manipulation flex min-h-[3.25rem] flex-col items-center justify-center rounded-2xl px-1 text-[10px] font-black transition-all ${
+                  isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-emerald-900/20' : 'text-slate-500 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'
+                }`}
+              >
+                <item.icon className="mb-0.5 h-5 w-5" />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 };

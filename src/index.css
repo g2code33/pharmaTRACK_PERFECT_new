@@ -136,6 +136,24 @@ body { overflow-x: hidden; }
   .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
+@media (max-width: 1023px) {
+  .app-header {
+    padding-top: max(calc(env(safe-area-inset-top, 0px) + 0.5rem), 0.85rem);
+    padding-left: max(env(safe-area-inset-left, 0px), 0.75rem);
+    padding-right: max(env(safe-area-inset-right, 0px), 0.75rem);
+  }
+  .mobile-sidebar {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+  .app-page-main {
+    padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) + 5.75rem), 6rem) !important;
+  }
+  .mobile-bottom-nav {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.5rem);
+  }
+}
+
 /* Safe area insets for iOS devices (notch, dynamic island, home indicator) */
 .pt-safe { padding-top: max(env(safe-area-inset-top, 0px), 0.75rem); }
 .pb-safe { padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem); }

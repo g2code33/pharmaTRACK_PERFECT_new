@@ -1,11 +1,16 @@
 {
   "id": "./",
+  "id": "./index.html#/",
   "name": "PharmaTRACK",
   "short_name": "PharmaTRACK",
   "description": "Offline-first pharmacy study, examination, and academic workspace.",
   "start_url": "./index.html#/",
   "scope": "./",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui", "browser"],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
   "orientation": "any",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",

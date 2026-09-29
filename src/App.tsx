@@ -27,6 +27,7 @@ const Courses = lazyRoute('/courses', () => import('./pages/Courses'));
 const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'));
 const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'));
 const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'));
+const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'));
 const Planner = lazyRoute('/planner', () => import('./pages/Planner'));
 const Notes = lazyRoute('/notes', () => import('./pages/Notes'));
 const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'));
@@ -170,12 +171,14 @@ const App = () => {
                 // First run remains offline-first, but an existing account can
                 // sign in from a fresh device before completing onboarding.
                 <>
+                  <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
                   <Route path="*" element={<Onboarding />} />
                 </>
               ) : (
                 <>
+                  <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
                   <Route
                     element={

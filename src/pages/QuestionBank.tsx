@@ -8,6 +8,7 @@ import QuestionAnalytics from '../components/QuestionAnalytics';
 import AddQuestionModal from '../components/AddQuestionModal';
 import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYPE_LABEL } from '../utils/questionBank';
 import { buildCourseQuestionPack, buildImportPlan, buildTopicQuestionPack, downloadQuestionPack, parseSharedQuestions } from '../utils/questionShare';
+import { buildQuickQuizPack, shareQuickQuizPack } from '../utils/quickQuizShare';
 
 
 const QuestionBank = () => {
@@ -161,6 +162,18 @@ const QuestionBank = () => {
     downloadQuestionPack(pack);
   };
 
+  const shareQuickQuiz = async (questions: ExamQuestion[], title: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const pack = buildQuickQuizPack(questions, { title });
+    if (!pack) { alert('No questions are available for a quick quiz yet.'); return; }
+    try {
+      const result = await shareQuickQuizPack(pack);
+      if (result === 'copied') alert('Quick quiz link copied. Send it to your students or classmates.');
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') alert(err?.message || 'Could not share this quick quiz link.');
+    }
+  };
+
   const openShareImport = (scope: 'course' | 'topic', courseId: string, topicId: string | undefined, e: React.MouseEvent) => {
     e.stopPropagation();
     const course = state.courses.find((c) => c.id === courseId);
@@ -259,20 +272,24 @@ const QuestionBank = () => {
   const uncategorizedQs = state.examQuestions.filter(q => !state.courses.find(c => c.id === q.courseId));
   const analytics = useMemo(() => bankAnalytics(state), [state]);
   const questionStats = useMemo(() => allQuestionPerformance(state), [state.examQuestions, state.quizHistory]);
+  const selectedQuestionsForQuickQuiz = useMemo(
+    () => state.examQuestions.filter((q) => selectedForAI.has(q.id)),
+    [selectedForAI, state.examQuestions],
+  );
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6 pb-12">
-      <div className="bg-gradient-to-r from-indigo-900 via-purple-800 to-fuchsia-800 rounded-[2rem] p-10 text-white shadow-2xl relative overflow-hidden">
+    <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6 pb-12">
+      <div className="bg-gradient-to-r from-indigo-900 via-purple-800 to-fuchsia-800 rounded-[1.5rem] sm:rounded-[2rem] p-5 sm:p-10 text-white shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 p-8 opacity-20"><FileQuestion size={120} /></div>
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-2"><span className="px-3 py-1 bg-white/20 rounded-full text-xs font-black tracking-widest uppercase backdrop-blur-md">Question Engine</span></div>
-          <h1 className="text-4xl font-black mb-3 tracking-tight">Question Bank</h1>
-          <p className="text-purple-200 text-lg max-w-xl leading-relaxed">Add or import questions. Generated questions are optional — the bank works without them.</p>
+          <h1 className="text-2xl sm:text-4xl font-black mb-2 sm:mb-3 tracking-tight">Question Bank</h1>
+          <p className="text-purple-200 text-sm sm:text-lg max-w-xl leading-relaxed">Add, import, practise, and share quick-start quizzes from your questions.</p>
         </div>
       </div>
 
-      <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex items-center gap-3 px-4">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+        <div className="flex items-center gap-3 sm:px-4">
            <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-bold text-lg">{state.examQuestions.length}</div>
            <div><p className="font-bold text-slate-800">Total Questions</p><p className="text-xs text-slate-500 uppercase font-semibold">Across all courses</p></div>
         </div>
@@ -281,10 +298,19 @@ const QuestionBank = () => {
             onClick={askAiAboutSelected}
             disabled={selectedForAI.size === 0}
             title={selectedForAI.size ? 'Send only these questions to the AI' : 'Tick a question first'}
-            className="bg-white border border-slate-200 text-slate-800 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 disabled:opacity-40"
+            className="bg-white border border-slate-200 text-slate-800 px-4 sm:px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 disabled:opacity-40"
           >
             <Sparkles size={18} />
             <span>Ask AI about {selectedForAI.size ? `${selectedForAI.size} selected` : 'questions'}</span>
+          </button>
+          <button
+            onClick={(e) => void shareQuickQuiz(selectedQuestionsForQuickQuiz, `Selected PharmaTRACK Questions (${selectedForAI.size})`, e)}
+            disabled={selectedForAI.size === 0}
+            title={selectedForAI.size ? 'Share selected questions as a link that opens straight into a quiz' : 'Tick questions first'}
+            className="bg-indigo-600 text-white px-4 sm:px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-indigo-700 disabled:opacity-40 disabled:hover:bg-indigo-600"
+          >
+            <Share2 size={18} />
+            <span>Quick share</span>
           </button>
           <button onClick={() => setShowAddModal(true)} className="bg-white border border-slate-200 text-slate-800 px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50">
             <Plus size={18} /><span>Add question</span>
@@ -312,15 +338,16 @@ const QuestionBank = () => {
                 tabIndex={0}
                 onClick={() => toggleCourse(course.id)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCourse(course.id); } }}
-                className="w-full flex items-center justify-between p-5 bg-slate-50 hover:bg-slate-100 transition-colors border-b border-slate-200 cursor-pointer"
+                className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 sm:p-5 bg-slate-50 hover:bg-slate-100 transition-colors border-b border-slate-200 cursor-pointer"
               >
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 sm:gap-4 min-w-0 w-full sm:w-auto">
                   <div className="w-12 h-12 bg-indigo-100 text-indigo-700 rounded-xl flex items-center justify-center"><BookOpen size={24} /></div>
-                  <div className="text-left"><h2 className="text-xl font-bold text-slate-800">{course.courseCode}: {course.courseName}</h2><p className="text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
+                  <div className="text-left min-w-0"><h2 className="text-base sm:text-xl font-bold text-slate-800 truncate">{course.courseCode}: {course.courseName}</h2><p className="text-xs sm:text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                  <button onClick={(e) => void shareQuickQuiz(course.topics.flatMap((t) => t.questions), `${course.courseCode} Quick Quiz`, e)} title="Share a link that opens this course as an instant quiz" className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-500 rounded-lg text-xs font-black uppercase transition-colors"><Share2 size={14} /> Quick Start</button>
                   <button onClick={(e) => handleExportCourse(course.id, e)} title="Export this course's questions to share" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-[#2D6A4F] hover:bg-green-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Download size={14} /> Export</button>
-                  <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Share2 size={14} /> Import</button>
+                  <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><FileUp size={14} /> Import</button>
                   <div className="p-2 bg-white rounded-full shadow-sm">{expandedCourses.has(course.id) ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}</div>
                 </div>
               </div>
@@ -329,15 +356,16 @@ const QuestionBank = () => {
                 <div className="p-4 space-y-4 bg-slate-50/50">
                   {course.topics.map(topic => (
                     <div key={topic.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                       <div className="w-full flex items-center justify-between p-4 bg-white hover:bg-slate-50 transition-colors cursor-pointer border-b border-slate-100" onClick={() => toggleTopic(topic.id)}>
-                         <div className="flex items-center gap-3">
+                       <div className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 bg-white hover:bg-slate-50 transition-colors cursor-pointer border-b border-slate-100" onClick={() => toggleTopic(topic.id)}>
+                         <div className="flex items-center gap-3 min-w-0">
                            <div className="w-8 h-8 bg-purple-100 text-purple-600 rounded-lg flex items-center justify-center"><Layers size={18} /></div>
-                           <h3 className="font-bold text-slate-700">{topic.topicName}</h3>
-                           <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
+                           <h3 className="font-bold text-slate-700 truncate">{topic.topicName}</h3>
+                           <span className="shrink-0 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
                          </div>
-                         <div className="flex items-center gap-2">
+                         <div className="flex flex-wrap items-center justify-end gap-2">
+                           <button onClick={(e) => void shareQuickQuiz(topic.questions, `${topic.topicName} Quick Quiz`, e)} title="Share a link that opens this topic as an instant quiz" className="text-white bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span>Quick Start</span></button>
                            <button onClick={(e) => handleExportTopic(topic.id, e)} title="Export this topic's questions to share" className="text-slate-500 hover:text-[#2D6A4F] hover:bg-green-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Download size={14}/> <span className="hidden sm:inline">Export</span></button>
-                           <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span className="hidden sm:inline">Import</span></button>
+                           <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><FileUp size={14}/> <span className="hidden sm:inline">Import</span></button>
                            <button onClick={(e) => handleDeleteTopicQuestions(topic.id, e)} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Trash2 size={14}/> <span className="hidden sm:inline">Clear Topic</span></button>
                            {expandedTopics.has(topic.id) ? <ChevronUp size={20} className="text-slate-400"/> : <ChevronDown size={20} className="text-slate-400"/>}
                          </div>
@@ -347,11 +375,11 @@ const QuestionBank = () => {
                          <div className="p-5 grid gap-4 bg-slate-50/30">
                            {topic.questions.map((q, idx) => (
                              <div key={q.id} ref={(el) => { questionRefs.current[q.id] = el; }} data-question-id={q.id} className={`bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition-shadow relative group ${questionId === q.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-slate-200'}`}>
-                                <div className="absolute top-4 right-4 flex opacity-0 group-hover:opacity-100 transition-opacity gap-2">
+                                <div className="mb-3 flex justify-end gap-2 opacity-100 transition-opacity sm:absolute sm:top-4 sm:right-4 sm:mb-0 sm:opacity-0 sm:group-hover:opacity-100">
                                    <button onClick={() => openEditModal(q)} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"><Edit2 size={16} /></button>
                                    <button onClick={() => handleDelete(q.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={16} /></button>
                                 </div>
-                                <div className="flex flex-wrap items-center gap-2 mb-3 pr-16">
+                                <div className="flex flex-wrap items-center gap-2 mb-3 sm:pr-16">
                                   <span className="bg-slate-800 text-white px-2.5 py-1 rounded text-xs font-black tracking-widest">Q{idx + 1}</span>
                                   <label className="flex items-center gap-1.5 bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase cursor-pointer select-none">
                                     <input
@@ -368,7 +396,7 @@ const QuestionBank = () => {
                                   <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1"><CheckCircle2 size={12} /> {sourceLabel(q)}</span>
                                   {questionStats.get(q.id)?.weak && <span className="bg-red-50 text-red-600 px-2 py-1 rounded text-[10px] font-black uppercase">Needs review</span>}
                                 </div>
-                                <h4 className="text-lg font-bold text-slate-800 mb-2 pr-20">{q.questionText}</h4>
+                                <h4 className="text-base sm:text-lg font-bold text-slate-800 mb-2 sm:pr-20 leading-relaxed">{q.questionText}</h4>
                                 <p className="text-xs font-semibold text-slate-500 mb-4">
                                   {questionStats.get(q.id)?.attempts
                                     ? `${questionStats.get(q.id)?.attempts} attempts · ${questionStats.get(q.id)?.accuracy}% accuracy · last ${new Date(questionStats.get(q.id)!.lastAttempted || '').toLocaleDateString()}`

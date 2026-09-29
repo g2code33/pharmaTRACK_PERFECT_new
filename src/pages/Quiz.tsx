@@ -12,6 +12,7 @@ import {
   quizReview,
   QUIZ_MODES,
 } from '../utils/questionBank';
+import { buildQuickQuizPack, shareQuickQuizPack } from '../utils/quickQuizShare';
 import {
   Brain,
   Play,
@@ -29,6 +30,7 @@ import {
   RotateCcw,
   BookOpen,
   FileQuestion,
+  Share2,
 } from 'lucide-react';
 
 interface QuizSettings {
@@ -131,10 +133,13 @@ const Quiz: React.FC = () => {
     reviewQuiz(history);
   }, [quizId, state.quizHistory]);
 
-  const startQuiz = () => {
-    // Shuffle and select questions
+  const selectQuizQuestions = () => {
     const shuffled = [...availableQuestions].sort(() => Math.random() - 0.5);
-    const selected = shuffled.slice(0, Math.min(settings.numQuestions, shuffled.length));
+    return shuffled.slice(0, Math.min(settings.numQuestions, shuffled.length));
+  };
+
+  const startQuiz = () => {
+    const selected = selectQuizQuestions();
 
     setQuizQuestions(selected);
     setCurrentIndex(0);
@@ -144,6 +149,25 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
+  };
+
+  const shareCurrentQuiz = async () => {
+    const selected = selectQuizQuestions();
+    const course = state.courses.find((c) => c.id === settings.courseId);
+    const topic = state.topics.find((t) => t.id === settings.topicId);
+    const title = `${modeHelp?.label || 'PharmaTRACK'} · ${topic?.topicName || course?.courseCode || 'Mixed'} (${selected.length})`;
+    const pack = buildQuickQuizPack(selected, {
+      title,
+      course: course ? { code: course.courseCode, name: course.courseName } : undefined,
+      topic: topic ? { name: topic.topicName } : undefined,
+    });
+    if (!pack) return;
+    try {
+      const result = await shareQuickQuizPack(pack);
+      if (result === 'copied') alert('Quick quiz link copied. Share it with anyone — it opens directly into the quiz.');
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') alert(err?.message || 'Could not share this quick quiz link.');
+    }
   };
 
   const saveAnswer = (questionId: string, answer: string) => {
@@ -218,7 +242,7 @@ const Quiz: React.FC = () => {
   // Setup screen
   if (!quizStarted) {
     return (
-      <div className="max-w-2xl mx-auto space-y-6">
+      <div className="max-w-2xl mx-auto space-y-4 sm:space-y-6">
         {/* Secure Examination Client Banner */}
         <div className="bg-gradient-to-r from-slate-900 to-[#1B4332] text-white rounded-2xl p-5 sm:p-6 shadow-md border border-emerald-900/40 text-left">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -247,7 +271,7 @@ const Quiz: React.FC = () => {
           </div>
           <h1 className="text-2xl font-bold text-gray-800">Quiz Mode</h1>
           <p className="text-gray-500">Test your knowledge with practice questions</p>
-          <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-center justify-center gap-2 mt-4">
             <Link
               to="/examinations/kiosk"
               className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-700 text-white rounded-lg font-bold"
@@ -481,15 +505,25 @@ const Quiz: React.FC = () => {
               )}
             </div>
 
-            {/* Start button */}
-            <button
-              onClick={startQuiz}
-              disabled={!modeReady || availableQuestions.length === 0}
-              className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg hover:from-blue-600 hover:to-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              <Play className="w-5 h-5" />
-              {modeHelp ? `Start ${modeHelp.label}` : 'Start Quiz'}
-            </button>
+            {/* Start / share buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                onClick={startQuiz}
+                disabled={!modeReady || availableQuestions.length === 0}
+                className="w-full py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white font-semibold rounded-lg hover:from-blue-600 hover:to-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <Play className="w-5 h-5" />
+                {modeHelp ? `Start ${modeHelp.label}` : 'Start Quiz'}
+              </button>
+              <button
+                onClick={() => void shareCurrentQuiz()}
+                disabled={!modeReady || availableQuestions.length === 0}
+                className="w-full py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <Share2 className="w-5 h-5" />
+                Share Quick Start
+              </button>
+            </div>
             {!modeReady && (
               <p className="text-xs text-amber-700">Choose the course or topic this mode needs.</p>
             )}
@@ -743,7 +777,7 @@ const Quiz: React.FC = () => {
         </div>
 
         {/* Actions */}
-        <div className="flex gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           <button
             onClick={() => {
               setQuizStarted(false);
@@ -771,12 +805,12 @@ const Quiz: React.FC = () => {
   return (
     <div className="max-w-3xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5 sm:mb-6">
         <div>
           <p className="text-sm text-gray-500">
             Question {currentIndex + 1} of {quizQuestions.length}
           </p>
-          <div className="w-48 h-2 bg-gray-200 rounded-full mt-2 overflow-hidden">
+          <div className="w-full sm:w-48 h-2 bg-gray-200 rounded-full mt-2 overflow-hidden">
             <div
               className="h-full bg-blue-500 transition-all"
               style={{ width: `${((currentIndex + 1) / quizQuestions.length) * 100}%` }}
@@ -797,7 +831,7 @@ const Quiz: React.FC = () => {
 
       {/* Question card */}
       {currentQuestion && (
-        <div className="bg-white rounded-xl p-6 border border-gray-100 shadow-sm mb-6">
+        <div className="bg-white rounded-xl p-4 sm:p-6 border border-gray-100 shadow-sm mb-5 sm:mb-6">
           {/* Question type badge */}
           <div className="flex items-center justify-between mb-4">
             <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-lg text-sm font-medium">
@@ -812,7 +846,7 @@ const Quiz: React.FC = () => {
           </div>
 
           {/* Question text */}
-          <p className="text-lg text-gray-800 font-medium mb-6">{currentQuestion.questionText}</p>
+          <p className="text-base sm:text-lg text-gray-800 font-medium mb-5 sm:mb-6 leading-relaxed">{currentQuestion.questionText}</p>
 
           {/* MCQ options */}
           {currentQuestion.questionType === 'mcq' && currentQuestion.options ? (
@@ -876,7 +910,7 @@ const Quiz: React.FC = () => {
       )}
 
       {/* Navigation */}
-      <div className="flex items-center justify-between">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:flex sm:items-center sm:justify-between">
         <button
           onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
           disabled={currentIndex === 0}
