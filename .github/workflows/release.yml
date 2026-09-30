@@ -237,8 +237,8 @@ jobs:
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          # The generated PKCS12 keystore uses the store password as the key password.
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PHARMA_ANDROID_SKIP_GRADLE_SIGNING: 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -249,12 +249,67 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
+            echo "Android Gradle failure summary:"
+            python3 - <<'PY' | sed 's/^/ANDROID_GRADLE_ROOT: /'
+          from pathlib import Path
+          lines = Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines()
+          needles = ('FAILURE:', '* What went wrong:', '* Try:', '* Exception is:', 'Execution failed', 'Caused by:', '> ')
+          picked = [line for line in lines if line.startswith(needles) or 'Execution failed' in line or 'Caused by:' in line]
+          for line in (picked[-120:] or lines[-120:]):
+              print(line)
+          PY
             echo "Last 160 lines from the Android Gradle failure:"
             tail -n 160 /tmp/pharmatrack-android-gradle.log | sed 's/^/ANDROID_GRADLE: /'
-            message="$(python3 -c "from pathlib import Path; text='\n'.join(Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines()[-80:]); print(text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))")"
+            message="$(python3 -c "from pathlib import Path; lines=Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines(); needles=('FAILURE:', '* What went wrong:', 'Execution failed', 'Caused by:', '> '); picked=[line for line in lines if line.startswith(needles) or 'Execution failed' in line or 'Caused by:' in line]; text='\n'.join((picked or lines)[-40:]); print(text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))")"
             echo "::error title=Android Gradle build failed::$message"
             exit "$status"
           fi
+
+          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$unsigned_apk" ]; then
+            unsigned_apk="$signed_apk"
+          fi
+          if [ ! -f "$unsigned_apk" ]; then
+            echo "::error title=Android unsigned APK missing::Gradle did not produce app-release-unsigned.apk or app-release.apk."
+            find app/build/outputs/apk -maxdepth 5 -type f 2>/dev/null || true
+            exit 1
+          fi
+          if [ "$unsigned_apk" = "$signed_apk" ]; then
+            cp "$unsigned_apk" /tmp/pharmatrack-release-to-sign.apk
+            unsigned_apk="/tmp/pharmatrack-release-to-sign.apk"
+          fi
+
+          rm -f "$signed_apk"
+          sign_ok=0
+          for candidate_name in ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD; do
+            keypass="${!candidate_name}"
+            [ -n "$keypass" ] || continue
+            echo "Signing release APK with apksigner using $candidate_name candidate."
+            if apksigner sign \
+              --ks app/release-keystore.p12 \
+              --ks-type PKCS12 \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+              --key-pass "pass:$keypass" \
+              --out "$signed_apk" \
+              "$unsigned_apk" > /tmp/pharmatrack-apksigner.log 2>&1; then
+              sign_ok=1
+              break
+            fi
+            rm -f "$signed_apk"
+            sed 's/^/APKSIGNER: /' /tmp/pharmatrack-apksigner.log
+          done
+          if [ "$sign_ok" -ne 1 ]; then
+            echo "::error title=Android APK manual signing failed::apksigner could not sign with ANDROID_KEY_PASSWORD or ANDROID_KEYSTORE_PASSWORD. Check that the keystore password, key alias, and key password secrets match the uploaded keystore."
+            exit 1
+          fi
+          if ! apksigner verify --print-certs "$signed_apk" >/tmp/pharmatrack-apksigner-verify.txt 2>&1; then
+            sed 's/^/APKSIGNER_VERIFY: /' /tmp/pharmatrack-apksigner-verify.txt
+            echo "::error title=Android APK signature verification failed::apksigner signed the APK but could not verify it."
+            exit 1
+          fi
+          echo "Android release APK signed successfully with apksigner."
 
       - name: Upload Android Gradle failure log
         if: failure()

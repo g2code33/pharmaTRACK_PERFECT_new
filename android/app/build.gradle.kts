@@ -37,11 +37,16 @@ val hasReleaseKeystore = releaseKeystore.exists()
 val androidKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD").orEmpty()
 val androidKeyAlias = System.getenv("ANDROID_KEY_ALIAS").orEmpty().ifBlank { "pharmatrack" }
 val configuredAndroidKeyPassword = System.getenv("ANDROID_KEY_PASSWORD").orEmpty()
-// keytool-created PKCS12 keystores use the store password as the private-key
-// password. Using the store password here prevents a stale/wrong key-password
-// secret from breaking update-compatible release signing. The workflow still
-// requires ANDROID_KEY_PASSWORD so existing secret setup remains explicit.
-val androidKeyPassword = androidKeystorePassword
+// CI can deliberately build an unsigned release APK and sign it with the
+// Android SDK apksigner afterward. That path is more reliable for PKCS12
+// keystores because it can try both the explicit key-password secret and the
+// store password without making Gradle fail inside packageRelease first.
+val skipGradleReleaseSigning = (
+    (project.findProperty("pharmaSkipGradleReleaseSigning") ?: System.getenv("PHARMA_ANDROID_SKIP_GRADLE_SIGNING") ?: "false")
+        .toString()
+        .lowercase(Locale.US)
+) in setOf("1", "true", "yes")
+val androidKeyPassword = configuredAndroidKeyPassword.ifBlank { androidKeystorePassword }
 val allowDebugSigning = (
     (project.findProperty("pharmaAllowDebugSigning") ?: System.getenv("PHARMA_ALLOW_DEBUG_SIGNING") ?: "false")
         .toString()
@@ -84,8 +89,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            if (hasReleaseKeystore) {
+            if (hasReleaseKeystore && !skipGradleReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
+            } else if (hasReleaseKeystore && skipGradleReleaseSigning) {
+                logger.lifecycle("Android release APK will be signed after assembleRelease with apksigner.")
             } else if (allowDebugSigning) {
                 logger.warn("WARNING: release APK is DEBUG-signed for local testing only. Never distribute this build.")
                 signingConfig = signingConfigs.getByName("debug")

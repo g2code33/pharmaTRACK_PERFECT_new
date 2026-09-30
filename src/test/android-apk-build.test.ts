@@ -78,6 +78,9 @@ describe('Android APK build and signing', () => {
     expect(workflow).toContain('EXPECTED_ANDROID_CERT_SHA256');
     expect(workflow).toContain('keytool -list -v');
     expect(workflow).toContain('Invalid ANDROID_KEYSTORE_BASE64');
+    expect(workflow).toContain('PHARMA_ANDROID_SKIP_GRADLE_SIGNING');
+    expect(workflow).toContain('apksigner sign');
+    expect(workflow).toContain('ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD');
     expect(workflow).toContain('Android Gradle build failed');
     expect(workflow).toContain('android-gradle-failure-log');
     expect(workflow).toContain('apksigner verify --print-certs');
