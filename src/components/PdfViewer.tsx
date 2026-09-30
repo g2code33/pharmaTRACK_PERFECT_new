@@ -150,6 +150,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const textTasks = useRef<Map<number, { cancel: () => void }>>(new Map());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const panState = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const panFrame = useRef<number | null>(null);
+  const panPointer = useRef<{ x: number; y: number } | null>(null);
 
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
@@ -584,15 +586,28 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   };
   useEffect(() => {
     if (tool !== 'hand') return;
+    const applyPan = () => {
+      panFrame.current = null;
+      if (!panState.current || !panPointer.current || !containerRef.current) return;
+      containerRef.current.scrollLeft = panState.current.left - (panPointer.current.x - panState.current.x);
+      containerRef.current.scrollTop = panState.current.top - (panPointer.current.y - panState.current.y);
+    };
     const move = (e: MouseEvent) => {
       if (!panState.current || !containerRef.current) return;
-      containerRef.current.scrollLeft = panState.current.left - (e.clientX - panState.current.x);
-      containerRef.current.scrollTop = panState.current.top - (e.clientY - panState.current.y);
+      panPointer.current = { x: e.clientX, y: e.clientY };
+      if (panFrame.current == null) panFrame.current = window.requestAnimationFrame(applyPan);
     };
-    const up = () => { panState.current = null; };
-    window.addEventListener('mousemove', move);
+    const up = () => {
+      panState.current = null;
+      panPointer.current = null;
+      if (panFrame.current != null) {
+        window.cancelAnimationFrame(panFrame.current);
+        panFrame.current = null;
+      }
+    };
+    window.addEventListener('mousemove', move, { passive: true });
     window.addEventListener('mouseup', up);
-    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); up(); };
   }, [tool]);
 
   /* ---------------- selection ---------------- */

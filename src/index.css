@@ -32,6 +32,50 @@ body { background-color: #F8FAFC; color: #0F172A; }
   scrollbar-gutter: stable;
 }
 
+/* Interaction performance guard -------------------------------------------------
+   Scrolling, dragging split panes and swiping through long lists must never
+   compete with decorative animations. The idle scheduler briefly adds the
+   `pharmatrack-input-active` class while real input is happening; reader split
+   panes add `pharmatrack-resizing` during a drag. */
+html.pharmatrack-input-active .transition-all,
+html.pharmatrack-input-active .transition,
+html.pharmatrack-input-active .transition-colors,
+html.pharmatrack-input-active .transition-opacity,
+html.pharmatrack-input-active .transition-shadow,
+html.pharmatrack-input-active .transition-transform,
+html.pharmatrack-resizing .transition-all,
+html.pharmatrack-resizing .transition,
+html.pharmatrack-resizing .transition-colors,
+html.pharmatrack-resizing .transition-opacity,
+html.pharmatrack-resizing .transition-shadow,
+html.pharmatrack-resizing .transition-transform {
+  transition-duration: 0ms !important;
+}
+html.pharmatrack-input-active *,
+html.pharmatrack-resizing * {
+  scroll-behavior: auto !important;
+}
+html.pharmatrack-resizing * {
+  cursor: col-resize !important;
+}
+
+.perf-deferred-card,
+.perf-deferred-row {
+  content-visibility: auto;
+}
+.perf-deferred-card {
+  contain-intrinsic-size: auto 16rem;
+}
+.perf-deferred-row {
+  contain-intrinsic-size: auto 3.75rem;
+}
+@supports not (content-visibility: auto) {
+  .perf-deferred-card,
+  .perf-deferred-row {
+    contain: layout paint style;
+  }
+}
+
 .android-native-shell {
   height: 100vh;
   height: 100dvh;
@@ -46,6 +90,25 @@ body { background-color: #F8FAFC; color: #0F172A; }
 .android-native-shell textarea,
 .android-native-shell button {
   touch-action: manipulation;
+}
+.android-native-shell .backdrop-blur-sm,
+.android-native-shell .backdrop-blur-md,
+.android-native-shell .backdrop-blur-lg,
+.android-native-shell .backdrop-blur-xl,
+.android-native-shell [class*="backdrop-blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.android-native-shell a,
+.android-native-shell button:not(.native-window-control),
+.android-native-shell [role="button"] {
+  transition-duration: 90ms;
+}
+@media (pointer: coarse) {
+  [class*="backdrop-blur"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
 }
 
 html.dark body { background-color: #0f172a; color: #f1f5f9; }

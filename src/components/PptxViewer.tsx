@@ -523,6 +523,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const [fs, setFs] = useState(false);
   /** In presentation mode the chrome fades out until the pointer moves. */
   const [fsChrome, setFsChrome] = useState(true);
+  const fsChromeVisibleRef = useRef(true);
   const [retryTick, setRetryTick] = useState(0);
   const [pageInput, setPageInput] = useState('1');
   const [selection, setSelection] = useState<{ anchor: { x: number; y: number }; text: string } | null>(null);
@@ -535,6 +536,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
 
   const total = deck?.slides.length ?? 0;
+
+  const setFsChromeVisible = useCallback((visible: boolean) => {
+    if (fsChromeVisibleRef.current === visible) return;
+    fsChromeVisibleRef.current = visible;
+    setFsChrome(visible);
+  }, []);
 
   /* ---------------- parse (once per file / retry) ---------------- */
   useEffect(() => {
@@ -660,7 +667,11 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect;
-      if (r) setContainerSize({ w: r.width, h: r.height });
+      if (!r) return;
+      setContainerSize((current) => {
+        if (Math.abs(current.w - r.width) < 1 && Math.abs(current.h - r.height) < 1) return current;
+        return { w: r.width, h: r.height };
+      });
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -683,24 +694,38 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   /* Presentation mode: chrome fades away, any pointer movement brings it back. */
   useEffect(() => {
     if (!fs) {
-      setFsChrome(true);
+      setFsChromeVisible(true);
       return;
     }
     let timer: number | undefined;
-    const reveal = () => {
-      setFsChrome(true);
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => setFsChrome(false), 2500);
+    let frame: number | undefined;
+    const hide = () => {
+      timer = undefined;
+      setFsChromeVisible(false);
     };
-    reveal();
-    window.addEventListener('mousemove', reveal);
-    window.addEventListener('touchstart', reveal);
+    const scheduleHide = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(hide, 2500);
+    };
+    const revealNow = () => {
+      frame = undefined;
+      setFsChromeVisible(true);
+      scheduleHide();
+    };
+    const reveal = () => {
+      if (frame !== undefined) return;
+      frame = window.requestAnimationFrame(revealNow);
+    };
+    revealNow();
+    window.addEventListener('pointermove', reveal, { passive: true });
+    window.addEventListener('touchstart', reveal, { passive: true });
     return () => {
       if (timer) window.clearTimeout(timer);
-      window.removeEventListener('mousemove', reveal);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', reveal);
       window.removeEventListener('touchstart', reveal);
     };
-  }, [fs]);
+  }, [fs, setFsChromeVisible]);
 
   /* Light-dismiss the toolbar dropdowns (Escape is handled separately). */
   useEffect(() => {

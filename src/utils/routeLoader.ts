@@ -222,14 +222,14 @@ export function scheduleRoutePrefetch(path: string): void {
   const cancel = scheduleBackgroundWork(
     () => {
       scheduledPrefetches.delete(path);
-      prefetchRoute(path);
+      if (pageCanPrefetch()) prefetchRoute(path);
     },
     {
-      delay: 150,
-      timeout: 3500,
-      retryDelay: 500,
-      quietWindowMs: 650,
-      minTimeRemaining: 10,
+      delay: 350,
+      timeout: 5_000,
+      retryDelay: 700,
+      quietWindowMs: 1_100,
+      minTimeRemaining: 12,
       runWhenTimedOut: false,
     },
   );
@@ -243,13 +243,35 @@ export function prefetchRoutes(paths: string[]): void {
 
 const scheduleIdle = (cb: () => void): void => {
   scheduleBackgroundWork(cb, {
-    timeout: 4500,
-    retryDelay: 650,
-    quietWindowMs: 1800,
-    minTimeRemaining: 14,
+    timeout: 12_000,
+    retryDelay: 900,
+    quietWindowMs: 2_500,
+    minTimeRemaining: 18,
     runWhenTimedOut: false,
   });
 };
+
+const INITIAL_BACKGROUND_PREFETCH_DELAY_MS = 7_000;
+const BACKGROUND_PREFETCH_STAGGER_MS = 1_800;
+const CONSTRAINED_BACKGROUND_PREFETCH_COUNT = 5;
+
+function connectionSaveData(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return connection?.saveData === true;
+}
+
+function constrainedMainThread(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { deviceMemory?: number };
+  const cores = navigator.hardwareConcurrency || 0;
+  return (cores > 0 && cores <= 2) || (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 2);
+}
+
+function pageCanPrefetch(): boolean {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+  return !connectionSaveData();
+}
 
 /**
  * After the first screen is idle, warm normal local-first app tabs one at a
@@ -275,12 +297,16 @@ export function prefetchLikelyRoutes(
   paths: string[] = [...DEFAULT_BACKGROUND_PREFETCH_ROUTES],
 ): void {
   if (typeof window === 'undefined') return;
-  const queue = [...paths];
+  if (!pageCanPrefetch()) return;
+  const queue = constrainedMainThread()
+    ? paths.slice(0, CONSTRAINED_BACKGROUND_PREFETCH_COUNT)
+    : [...paths];
   const warmNext = () => {
+    if (!pageCanPrefetch()) return;
     const next = queue.shift();
     if (!next) return;
     prefetchRoute(next);
-    if (queue.length) window.setTimeout(() => scheduleIdle(warmNext), 950);
+    if (queue.length) window.setTimeout(() => scheduleIdle(warmNext), BACKGROUND_PREFETCH_STAGGER_MS);
   };
-  window.setTimeout(() => scheduleIdle(warmNext), 3200);
+  window.setTimeout(() => scheduleIdle(warmNext), INITIAL_BACKGROUND_PREFETCH_DELAY_MS);
 }

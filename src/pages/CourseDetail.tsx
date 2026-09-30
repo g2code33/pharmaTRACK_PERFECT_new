@@ -1,6 +1,6 @@
 // PharmTrack - Course Detail Page
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -35,7 +35,19 @@ const CourseDetail: React.FC = () => {
   const { state, dispatch, getCourseProgress, getTopicsForCourse, getSlidesForTopic, addActivity } = useApp();
 
   const course = state.courses.find((c) => c.id === courseId);
-  const topics = courseId ? getTopicsForCourse(courseId) : [];
+  const topics = useMemo(
+    () => (courseId ? state.topics.filter((topic) => topic.courseId === courseId) : []),
+    [courseId, state.topics],
+  );
+  const slidesByTopic = useMemo(() => {
+    const byTopic = new Map<string, Slide[]>();
+    for (const slide of state.slides) {
+      const bucket = byTopic.get(slide.topicId);
+      if (bucket) bucket.push(slide);
+      else byTopic.set(slide.topicId, [slide]);
+    }
+    return byTopic;
+  }, [state.slides]);
   const progress = courseId ? getCourseProgress(courseId) : 0;
 
   // State
@@ -428,14 +440,14 @@ const CourseDetail: React.FC = () => {
           </div>
         ) : (
           topics.map((topic) => {
-            const slides = getSlidesForTopic(topic.id);
+            const slides = slidesByTopic.get(topic.id) || [];
             const isExpanded = expandedTopics.has(topic.id);
             const completedSlides = slides.filter((s) => s.status === 'completed').length;
             const topicProgressPct = slides.length > 0 ? Math.round((completedSlides / slides.length) * 100) : 0;
             const learning = topicProgress(state, topic.id);
 
             return (
-              <div key={topic.id} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              <div key={topic.id} className="perf-deferred-card bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
                 {/* Topic header */}
                 <div
                   className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-50 transition-colors"
@@ -518,7 +530,7 @@ const CourseDetail: React.FC = () => {
                         {slides.map((slide, slideIdx) => (
                           <div
                             key={slide.id}
-                            className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
+                            className="perf-deferred-row flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
                           >
                             <Link
                               to={`/read/${topic.id}?slide=${slideIdx}`}

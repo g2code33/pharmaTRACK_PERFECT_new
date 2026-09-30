@@ -164,6 +164,12 @@ describe('route prefetch', () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
+  it('does not register duplicate global mousemove tracking for background work', () => {
+    const events = idleSchedulerTesting.trackedInputEvents();
+    expect(events).toContain('pointermove');
+    expect(events).not.toContain('mousemove');
+  });
+
   it('queues hover/touch prefetch for idle time instead of parsing immediately', async () => {
     idleSchedulerTesting.resetInputTracking();
     vi.useFakeTimers();
@@ -174,7 +180,7 @@ describe('route prefetch', () => {
       expect(factory).not.toHaveBeenCalled();
 
       await act(async () => {
-        vi.advanceTimersByTime(200);
+        vi.advanceTimersByTime(1_000);
         vi.runOnlyPendingTimers();
         await Promise.resolve();
         await Promise.resolve();

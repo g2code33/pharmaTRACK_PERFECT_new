@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp } from 'lucide-react';
-import { ExamQuestion } from '../types';
+import type { Course, ExamQuestion, Topic } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import QuestionAnalytics from '../components/QuestionAnalytics';
 import AddQuestionModal from '../components/AddQuestionModal';
@@ -10,6 +10,9 @@ import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYP
 import { buildCourseQuestionPack, buildImportPlan, buildTopicQuestionPack, downloadQuestionPack, parseSharedQuestions } from '../utils/questionShare';
 import { buildQuickQuizPack, shareQuickQuizPack } from '../utils/quickQuizShare';
 
+
+type TopicWithQuestions = Topic & { questions: ExamQuestion[] };
+type CourseQuestionGroup = Course & { topics: TopicWithQuestions[]; totalQs: number };
 
 const QuestionBank = () => {
   const { state, dispatch } = useApp();
@@ -44,7 +47,10 @@ const QuestionBank = () => {
   const [shareFileName, setShareFileName] = useState('');
   const shareFileInputRef = useRef<HTMLInputElement>(null);
 
-  const filteredTopics = state.topics.filter(t => t.courseId === selectedCourseId);
+  const filteredTopics = useMemo(
+    () => state.topics.filter((t) => t.courseId === selectedCourseId),
+    [selectedCourseId, state.topics],
+  );
 
   useEffect(() => {
     if (!questionId || appliedQuestion.current === questionId) return;
@@ -261,17 +267,42 @@ const QuestionBank = () => {
     setEditingQuestion(null);
   };
 
-  // Group questions hierarchy
-  const groupedData = state.courses.map(course => {
-    const courseTopics = state.topics.filter(t => t.courseId === course.id).map(topic => {
-      return { ...topic, questions: state.examQuestions.filter(q => q.topicId === topic.id) };
-    }).filter(t => t.questions.length > 0);
-    return { ...course, topics: courseTopics, totalQs: courseTopics.reduce((sum, t) => sum + t.questions.length, 0) };
-  }).filter(c => c.totalQs > 0);
+  // Group questions hierarchy. Build indexes once per state change instead of
+  // filtering the full question list for every course/topic on every render.
+  const groupedData = useMemo<CourseQuestionGroup[]>(() => {
+    const questionsByTopic = new Map<string, ExamQuestion[]>();
+    const topicsByCourse = new Map<string, Topic[]>();
 
-  const uncategorizedQs = state.examQuestions.filter(q => !state.courses.find(c => c.id === q.courseId));
+    for (const question of state.examQuestions) {
+      if (!question.topicId) continue;
+      const bucket = questionsByTopic.get(question.topicId);
+      if (bucket) bucket.push(question);
+      else questionsByTopic.set(question.topicId, [question]);
+    }
+
+    for (const topic of state.topics) {
+      const bucket = topicsByCourse.get(topic.courseId);
+      if (bucket) bucket.push(topic);
+      else topicsByCourse.set(topic.courseId, [topic]);
+    }
+
+    return state.courses
+      .map((course) => {
+        const courseTopics = (topicsByCourse.get(course.id) || [])
+          .map((topic) => ({ ...topic, questions: questionsByTopic.get(topic.id) || [] }))
+          .filter((topic) => topic.questions.length > 0);
+        const totalQs = courseTopics.reduce((sum, topic) => sum + topic.questions.length, 0);
+        return { ...course, topics: courseTopics, totalQs };
+      })
+      .filter((course) => course.totalQs > 0);
+  }, [state.courses, state.examQuestions, state.topics]);
+
+  const uncategorizedQs = useMemo(() => {
+    const knownCourseIds = new Set(state.courses.map((course) => course.id));
+    return state.examQuestions.filter((question) => !knownCourseIds.has(question.courseId));
+  }, [state.courses, state.examQuestions]);
   const analytics = useMemo(() => bankAnalytics(state), [state]);
-  const questionStats = useMemo(() => allQuestionPerformance(state), [state.examQuestions, state.quizHistory]);
+  const questionStats = useMemo(() => allQuestionPerformance(state), [state]);
   const selectedQuestionsForQuickQuiz = useMemo(
     () => state.examQuestions.filter((q) => selectedForAI.has(q.id)),
     [selectedForAI, state.examQuestions],
@@ -332,7 +363,7 @@ const QuestionBank = () => {
           </div>
         ) : (
           groupedData.map(course => (
-            <div key={course.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div key={course.id} className="perf-deferred-card bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
               <div
                 role="button"
                 tabIndex={0}
@@ -355,7 +386,7 @@ const QuestionBank = () => {
               {expandedCourses.has(course.id) && (
                 <div className="p-4 space-y-4 bg-slate-50/50">
                   {course.topics.map(topic => (
-                    <div key={topic.id} className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                    <div key={topic.id} className="perf-deferred-card bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                        <div className="w-full flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 bg-white hover:bg-slate-50 transition-colors cursor-pointer border-b border-slate-100" onClick={() => toggleTopic(topic.id)}>
                          <div className="flex items-center gap-3 min-w-0">
                            <div className="w-8 h-8 bg-purple-100 text-purple-600 rounded-lg flex items-center justify-center"><Layers size={18} /></div>
@@ -373,8 +404,10 @@ const QuestionBank = () => {
 
                        {expandedTopics.has(topic.id) && (
                          <div className="p-5 grid gap-4 bg-slate-50/30">
-                           {topic.questions.map((q, idx) => (
-                             <div key={q.id} ref={(el) => { questionRefs.current[q.id] = el; }} data-question-id={q.id} className={`bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition-shadow relative group ${questionId === q.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-slate-200'}`}>
+                           {topic.questions.map((q, idx) => {
+                             const stats = questionStats.get(q.id);
+                             return (
+                             <div key={q.id} ref={(el) => { questionRefs.current[q.id] = el; }} data-question-id={q.id} className={`perf-deferred-card bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition-shadow relative group ${questionId === q.id ? 'border-[#2D6A4F] ring-2 ring-[#2D6A4F]/40' : 'border-slate-200'}`}>
                                 <div className="mb-3 flex justify-end gap-2 opacity-100 transition-opacity sm:absolute sm:top-4 sm:right-4 sm:mb-0 sm:opacity-0 sm:group-hover:opacity-100">
                                    <button onClick={() => openEditModal(q)} className="p-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors"><Edit2 size={16} /></button>
                                    <button onClick={() => handleDelete(q.id)} className="p-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors"><Trash2 size={16} /></button>
@@ -394,15 +427,15 @@ const QuestionBank = () => {
                                   <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-black uppercase">{q.difficulty}</span>
                                   <span className="bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-[10px] font-black uppercase">{q.semester || course.semester || 'Semester'}</span>
                                   <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-[10px] font-black uppercase flex items-center gap-1"><CheckCircle2 size={12} /> {sourceLabel(q)}</span>
-                                  {questionStats.get(q.id)?.weak && <span className="bg-red-50 text-red-600 px-2 py-1 rounded text-[10px] font-black uppercase">Needs review</span>}
+                                  {stats?.weak && <span className="bg-red-50 text-red-600 px-2 py-1 rounded text-[10px] font-black uppercase">Needs review</span>}
                                 </div>
                                 <h4 className="text-base sm:text-lg font-bold text-slate-800 mb-2 sm:pr-20 leading-relaxed">{q.questionText}</h4>
                                 <p className="text-xs font-semibold text-slate-500 mb-4">
-                                  {questionStats.get(q.id)?.attempts
-                                    ? `${questionStats.get(q.id)?.attempts} attempts · ${questionStats.get(q.id)?.accuracy}% accuracy · last ${new Date(questionStats.get(q.id)!.lastAttempted || '').toLocaleDateString()}`
+                                  {stats?.attempts
+                                    ? `${stats.attempts} attempts · ${stats.accuracy}% accuracy · last ${new Date(stats.lastAttempted || '').toLocaleDateString()}`
                                     : 'Not attempted yet'}
-                                  {questionStats.get(q.id)?.improvement != null && questionStats.get(q.id)?.improvement !== 0
-                                    ? ` · ${((questionStats.get(q.id)?.improvement || 0) > 0 ? '+' : '') + questionStats.get(q.id)?.improvement} pts`
+                                  {stats?.improvement != null && stats.improvement !== 0
+                                    ? ` · ${stats.improvement > 0 ? '+' : ''}${stats.improvement} pts`
                                     : ''}
                                 </p>
                                 {q.questionType !== 'mcq' && q.correctAnswer && <p className="text-sm text-green-800 mb-3"><strong>Correct answer:</strong> {q.correctAnswer}</p>}
@@ -414,18 +447,19 @@ const QuestionBank = () => {
                                   </div>
                                 )}
                                 {(q.explanation || q.modelAnswer) && <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 text-sm text-blue-900"><strong className="text-blue-700 uppercase text-xs tracking-widest block mb-1">Explanation</strong>{q.explanation || q.modelAnswer}</div>}
-                                {(questionStats.get(q.id)?.history.length || 0) > 0 && (
+                                {(stats?.history.length || 0) > 0 && (
                                   <details className="mt-3 text-sm text-slate-600">
                                     <summary className="cursor-pointer font-bold text-slate-500">Attempt history</summary>
                                     <ul className="mt-2 space-y-1">
-                                      {questionStats.get(q.id)?.history.slice().reverse().map((attempt) => (
+                                      {stats?.history.slice().reverse().map((attempt) => (
                                         <li key={`${attempt.quizId}-${attempt.at}`}>{new Date(attempt.at).toLocaleDateString()} · {attempt.isCorrect ? 'Correct' : 'Incorrect'}</li>
                                       ))}
                                     </ul>
                                   </details>
                                 )}
                              </div>
-                           ))}
+                             );
+                           })}
                          </div>
                        )}
                     </div>

@@ -117,6 +117,8 @@ const SlideReader: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
+  const resizeFrameRef = useRef<number | null>(null);
+  const pendingPanelWidthRef = useRef<number | null>(null);
 
   // The in-panel mini-browser is a plain <iframe> on every platform (see the
   // panel render below) — desktop no longer mounts a native child webview
@@ -722,27 +724,54 @@ const SlideReader: React.FC = () => {
   };
 
   useEffect(() => {
+    const applyPendingWidth = () => {
+      resizeFrameRef.current = null;
+      const nextWidth = pendingPanelWidthRef.current;
+      pendingPanelWidthRef.current = null;
+      if (nextWidth == null) return;
+      setPanelWidth((current) => (Math.abs(current - nextWidth) < 1 ? current : nextWidth));
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
       e.preventDefault();
-      const newWidth = window.innerWidth - e.clientX;
+      const newWidth = Math.round(window.innerWidth - e.clientX);
       if (newWidth > 200 && newWidth < window.innerWidth * 0.7) {
-        setPanelWidth(newWidth);
+        pendingPanelWidthRef.current = newWidth;
+        if (resizeFrameRef.current == null) {
+          resizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
+        }
       }
     };
     const handleMouseUp = () => {
+      if (resizeFrameRef.current != null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      applyPendingWidth();
       setIsResizing(false);
-      document.body.style.cursor = 'default';
+      document.documentElement.classList.remove('pharmatrack-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
     if (isResizing) {
-      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mousemove', handleMouseMove, { passive: false });
       window.addEventListener('mouseup', handleMouseUp);
+      document.documentElement.classList.add('pharmatrack-resizing');
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     }
     return () => {
+      if (resizeFrameRef.current != null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      pendingPanelWidthRef.current = null;
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      document.documentElement.classList.remove('pharmatrack-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
   }, [isResizing]);
 
