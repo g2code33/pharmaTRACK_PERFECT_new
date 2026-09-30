@@ -229,6 +229,23 @@ describe('stable layout', () => {
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });
 
+  it('does not force dark-mode native desktop backgrounds back to white', () => {
+    const darkShell = css.match(/\.dark \.native-desktop-shell \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkHeader = css.match(/\.dark \.native-desktop-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkPage = css.match(/\.dark \.native-desktop-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkSidebar = css.match(/\.dark \.native-desktop-shell \.mobile-sidebar \{([\s\S]*?)\}/)?.[1] ?? '';
+
+    expect(layout).toContain('app-header bg-white dark:bg-slate-900');
+    expect(layout).toContain('mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0');
+    expect(layout).toContain('dark:bg-slate-900');
+    expect(darkShell).toContain('background: #020617');
+    expect(darkHeader).toContain('background: #0f172a !important');
+    expect(darkPage).toContain('background: #0f172a !important');
+    expect(darkSidebar).toContain('background: #1e293b !important');
+    expect(darkHeader).not.toContain('background: #ffffff !important');
+    expect(darkPage).not.toContain('background: #f8fafc !important');
+  });
+
   it('does not apply expensive native hover filters/transforms that make pointer movement feel slow', () => {
     expect(css).not.toContain('filter: brightness(1.03)');
     expect(css).not.toContain('transform: translateY(1px) scale(0.99)');

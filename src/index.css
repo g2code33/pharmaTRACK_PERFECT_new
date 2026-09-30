@@ -468,6 +468,9 @@ html.dark select {
   .native-desktop-shell {
     background: #f8fafc;
   }
+  .dark .native-desktop-shell {
+    background: #020617;
+  }
   .native-desktop-shell .mobile-sidebar {
     margin: 0.75rem 0 0.75rem 0.75rem;
     border: 1px solid rgba(203, 213, 225, 0.95);
@@ -475,6 +478,11 @@ html.dark select {
     background: #ffffff !important;
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
     overflow: hidden;
+  }
+  .dark .native-desktop-shell .mobile-sidebar {
+    background: #1e293b !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
   .native-desktop-shell .app-header {
     margin: 0.75rem 1rem 0;
@@ -484,8 +492,9 @@ html.dark select {
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   }
   .dark .native-desktop-shell .app-header {
-    background: #ffffff !important;
-    border-color: rgba(203, 213, 225, 0.95);
+    background: #0f172a !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   }
   .native-desktop-shell .app-page-main {
     margin: 0.75rem 1rem 1rem;
@@ -495,9 +504,9 @@ html.dark select {
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
   }
   .dark .native-desktop-shell .app-page-main {
-    background: #f8fafc !important;
-    border-color: rgba(203, 213, 225, 0.95);
-    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    background: #0f172a !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
   .native-desktop-shell .app-page-main:has(.slide-reader-fullbleed) {
     display: flex;

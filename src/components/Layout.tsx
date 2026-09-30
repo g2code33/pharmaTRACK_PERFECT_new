@@ -18,7 +18,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.112';
+const APP_VERSION_FALLBACK = '1.1.113';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -442,8 +442,9 @@ const Layout: React.FC = () => {
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {/* z-[120] beats the reader's side panels (z-[110]); keep the header
-              solid white so the desktop shell does not repaint a costly blur. */}
-          <header className="app-header bg-white dark:bg-white border-b border-gray-200 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
+              a solid surface (white in light mode, slate in dark mode) so the
+              desktop shell does not repaint a costly blur. */}
+          <header className="app-header bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 lg:gap-6">
               <div className="flex items-center gap-2 sm:gap-4">
                 <button
@@ -628,7 +629,7 @@ const Layout: React.FC = () => {
         </div>
       </div>
 
-      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200 bg-white px-2 pt-2 shadow-[0_-8px_20px_rgba(15,23,42,0.10)] dark:border-slate-200 dark:bg-white">
+      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200 bg-white px-2 pt-2 shadow-[0_-8px_20px_rgba(15,23,42,0.10)] dark:border-slate-700 dark:bg-slate-900">
         <div className="mx-auto grid max-w-md grid-cols-5 sm:grid-cols-5 gap-1">
           {mobileNavItems.map((item) => {
             const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
