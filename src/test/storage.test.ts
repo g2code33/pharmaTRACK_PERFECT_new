@@ -23,7 +23,7 @@ vi.mock('idb-keyval', () => ({
   del: async (k: string) => { idbStore.delete(k); },
 }));
 
-import { saveState, loadState, loadSlideText, deleteSlideText, saveFile, loadFile, loadFileBytes } from '../utils/storage';
+import { saveState, loadState, loadSlideText, deleteSlideText, saveFile, loadFile, loadFileBytes, readWorkspaceRaw } from '../utils/storage';
 import type { AppState } from '../types';
 
 const LONG = 'Pharmacology lecture content. '.repeat(500); // ~15 KB
@@ -96,6 +96,18 @@ describe('slide text offload', () => {
     expect(restored.slides).toHaveLength(1);
     expect(restored.slides[0].title).toBe('Beta blockers');
     expect(restored.student?.name).toBe('Ama');
+  });
+
+  it('reuses the verified workspace status instead of reparsing on every render check', () => {
+    saveState(makeState(LONG));
+    const parseSpy = vi.spyOn(JSON, 'parse');
+    try {
+      expect(readWorkspaceRaw().status).toBe('ok');
+      expect(readWorkspaceRaw().status).toBe('ok');
+      expect(parseSpy).not.toHaveBeenCalled();
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   it('deletes offloaded text so nothing is orphaned', async () => {

@@ -7,7 +7,7 @@
  * opened. Large lists paint a window of rows. The list does not read file
  * bytes. Size and kind come from the record, or from the reader once opened.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { format, isValid, parseISO } from 'date-fns';
 import {
@@ -48,12 +48,6 @@ function countLabel(item: LibraryItem): string {
   return `${item.pageCount} ${unit}${item.pageCount === 1 ? '' : 's'}`;
 }
 
-async function asBytes(file: Blob | Uint8Array | string): Promise<Uint8Array | null> {
-  if (file instanceof Uint8Array) return file;
-  if (typeof Blob !== 'undefined' && file instanceof Blob) return new Uint8Array(await file.arrayBuffer());
-  return null;
-}
-
 const MaterialLibrary: React.FC = () => {
   const { state, dispatch } = useApp();
   const navigate = useNavigate();
@@ -72,6 +66,8 @@ const MaterialLibrary: React.FC = () => {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(640);
   const scroller = useRef<HTMLDivElement>(null);
+  const pendingScrollTop = useRef(0);
+  const scrollFrame = useRef<number | null>(null);
 
   const courses = useMemo(() => {
     const seen = new Map<string, string>();
@@ -91,6 +87,23 @@ const MaterialLibrary: React.FC = () => {
   const windowed = shown.length > WINDOW_AT;
   const range = windowed ? visibleRange(shown.length, scrollTop, viewport, ROW) : { start: 0, end: shown.length };
   const slice = shown.slice(range.start, range.end);
+
+  const handleLibraryScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const nextTop = event.currentTarget.scrollTop;
+    pendingScrollTop.current = nextTop;
+    if (scrollFrame.current !== null) return;
+    scrollFrame.current = window.requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      const target = pendingScrollTop.current;
+      setScrollTop((current) => (
+        Math.floor(current / ROW) === Math.floor(target / ROW) ? current : target
+      ));
+    });
+  }, []);
+
+  useEffect(() => () => {
+    if (scrollFrame.current !== null) window.cancelAnimationFrame(scrollFrame.current);
+  }, []);
 
   useEffect(() => {
     const el = scroller.current;
@@ -276,7 +289,7 @@ const MaterialLibrary: React.FC = () => {
         <div
           ref={scroller}
           data-testid="library-list"
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+          onScroll={handleLibraryScroll}
           className={windowed ? 'max-h-[70vh] overflow-y-auto' : ''}
         >
           <div style={windowed ? { height: shown.length * ROW, position: 'relative' } : undefined}>

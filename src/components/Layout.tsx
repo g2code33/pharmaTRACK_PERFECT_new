@@ -3,7 +3,8 @@ import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-d
 import { useApp } from '../context/AppContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import RouteLoading from './RouteLoading';
-import { prefetchRoute } from '../utils/routeLoader';
+import { scheduleRoutePrefetch } from '../utils/routeLoader';
+import { scheduleBackgroundWork } from '../utils/idleScheduler';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
@@ -18,7 +19,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.113';
+const APP_VERSION_FALLBACK = '1.1.114';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -311,18 +312,28 @@ const Layout: React.FC = () => {
     }
   };
 
-  // Check for updates shortly after launch so users get fixes without having to
-  // know the button exists. Runs once, only when online, and stays silent
-  // unless there is genuinely an update to offer. The delay keeps the network
-  // call away from the initial render.
+  const checkForUpdatesRef = useRef(checkForUpdates);
+  useEffect(() => {
+    checkForUpdatesRef.current = checkForUpdates;
+  });
+
+  // Check for updates only during a genuinely quiet/idle window so the native
+  // updater/service-worker work never competes with scrolling, pointer movement
+  // or first navigation. The button still performs an immediate manual check.
   const hasAutoCheckedRef = useRef(false);
   useEffect(() => {
     if (hasAutoCheckedRef.current) return;
     hasAutoCheckedRef.current = true;
     if (!navigator.onLine) return;
 
-    const timer = setTimeout(() => { void checkForUpdates(true); }, 3000);
-    return () => clearTimeout(timer);
+    return scheduleBackgroundWork(() => { void checkForUpdatesRef.current(true); }, {
+      delay: 6000,
+      timeout: 20000,
+      retryDelay: 1500,
+      quietWindowMs: 3000,
+      minTimeRemaining: 18,
+      runWhenTimedOut: false,
+    });
   }, []);
 
   if (kioskState.active) {
@@ -386,7 +397,7 @@ const Layout: React.FC = () => {
           </div>
         </div>
       )}
-      {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
+      {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
       {pwaUpdateAvailable && (
         <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
           <span>A newer PharmaTRACK web app is ready.</span>
@@ -419,7 +430,7 @@ const Layout: React.FC = () => {
             {navItems.map((item: any) => {
               const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
               return (
-                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => prefetchRoute(item.path)} onFocus={() => prefetchRoute(item.path)} onTouchStart={() => prefetchRoute(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-colors duration-150 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-sm' : item.highlight ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'}`}>
+                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => scheduleRoutePrefetch(item.path)} onFocus={() => scheduleRoutePrefetch(item.path)} onTouchStart={() => scheduleRoutePrefetch(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-colors duration-150 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-sm' : item.highlight ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'}`}>
                   <item.icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-[#FFB703]' : ''}`} />
                   {!sidebarCollapsed && <span className="text-sm font-bold tracking-tight">{item.label}</span>}
                 </Link>
@@ -492,7 +503,7 @@ const Layout: React.FC = () => {
                   {searchQuery ? (
                     <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
                   ) : (
-                    <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500 animate-pulse" /></div>
+                    <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500" /></div>
                   )}
                 </div>
 
@@ -589,11 +600,7 @@ const Layout: React.FC = () => {
                         ? 'Saved on this device only. Sign in to add a cloud backup.'
                         : 'Signed in — cloud backup available.'
                     } className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${status.bg} ${status.border}`}>
-                      <span className="relative flex w-2 h-2">
-                        {/* Silent "beep": a soft expanding ping, not a static dot. */}
-                        <span className={`absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping ${status.dot}`} />
-                        <span className={`relative inline-flex w-2 h-2 rounded-full ${status.dot}`} />
-                      </span>
+                      <span className={`inline-flex w-2 h-2 rounded-full ${status.dot}`} />
                       <span className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.label}</span>
                     </div>
                   );
@@ -637,7 +644,7 @@ const Layout: React.FC = () => {
               <Link
                 key={item.path}
                 to={item.path}
-                onTouchStart={() => prefetchRoute(item.path)}
+                onTouchStart={() => scheduleRoutePrefetch(item.path)}
                 className={`touch-manipulation flex min-h-[3.25rem] flex-col items-center justify-center rounded-2xl px-1 text-[10px] font-black transition-all ${
                   isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-emerald-900/20' : 'text-slate-500 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'
                 }`}

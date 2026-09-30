@@ -62,6 +62,11 @@ import { consumeAndroidPharmaExamLaunch } from './examination/androidAdapter';
 import { consumePharmaExamLaunches } from './examination/nativeKiosk';
 import { queuePharmaExamLaunch } from './examination/packageLaunch';
 
+const workspaceIsBlocked = (): boolean => {
+  const status = readWorkspaceRaw().status;
+  return status === 'malformed' || status === 'unavailable';
+};
+
 /** Central application gate: hiding links is not security. */
 const SecureExamRouteGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
@@ -174,11 +179,15 @@ const App = () => {
   const needsOnboarding = state.student === null;
   // An unreadable semester file must not look like a brand-new student.
   // Onboarding would invite them to start over, and the next save would be
-  // refused anyway. Show Storage until the file is readable again.
-  const storageBlocked = (() => {
-    const status = readWorkspaceRaw().status;
-    return status === 'malformed' || status === 'unavailable';
-  })();
+  // refused anyway. Check this once and on real storage events only. Parsing
+  // the whole local workspace during every React render made ordinary taps,
+  // typing and quiz answers feel delayed on large semester files.
+  const [storageBlocked, setStorageBlocked] = useState(() => workspaceIsBlocked());
+  useEffect(() => {
+    const refreshStorageStatus = () => setStorageBlocked(workspaceIsBlocked());
+    window.addEventListener('storage', refreshStorageStatus);
+    return () => window.removeEventListener('storage', refreshStorageStatus);
+  }, []);
 
   // AIProvider owns AI configuration + credentials for the whole app. It sits
   // inside the error boundary and outside the router, and is independent of the

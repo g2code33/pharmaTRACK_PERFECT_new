@@ -25,8 +25,10 @@ import {
   isChunkLoadError,
   prefetchRoute,
   registerRoute,
+  scheduleRoutePrefetch,
   lazyWithRetry,
 } from '../utils/routeLoader';
+import { __testing as idleSchedulerTesting } from '../utils/idleScheduler';
 
 // A minimal stand-in for the persistent shell: a sidebar/header that must stay
 // mounted, plus a Suspense boundary around the "route outlet" exactly as Layout
@@ -160,6 +162,27 @@ describe('route prefetch', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('queues hover/touch prefetch for idle time instead of parsing immediately', async () => {
+    idleSchedulerTesting.resetInputTracking();
+    vi.useFakeTimers();
+    try {
+      const factory = vi.fn(async () => ({ default: (() => null) as React.ComponentType }));
+      registerRoute('/idle-prefetch-test', factory);
+      scheduleRoutePrefetch('/idle-prefetch-test');
+      expect(factory).not.toHaveBeenCalled();
+
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        vi.runOnlyPendingTimers();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(factory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('lazyWithRetry renders the module on a successful import', async () => {

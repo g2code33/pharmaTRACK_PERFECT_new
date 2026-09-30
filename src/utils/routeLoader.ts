@@ -176,6 +176,7 @@ export function lazyWithRetry<T extends ComponentType<any>>(
 
 const registry = new Map<string, () => Promise<unknown>>();
 const prefetched = new Set<string>();
+const scheduledPrefetches = new Map<string, () => void>();
 
 /** Records a route's import so it can be prefetched later. */
 export function registerRoute(path: string, factory: () => Promise<unknown>): void {
@@ -198,6 +199,8 @@ export function lazyRoute<T extends ComponentType<any>>(
 export function prefetchRoute(path: string): void {
   const factory = registry.get(path);
   if (!factory || prefetched.has(path)) return;
+  scheduledPrefetches.get(path)?.();
+  scheduledPrefetches.delete(path);
   prefetched.add(path);
   void Promise.resolve()
     .then(factory)
@@ -206,6 +209,31 @@ export function prefetchRoute(path: string): void {
       // (which shows the fallback / retry) to try again.
       prefetched.delete(path);
     });
+}
+
+/**
+ * Queues a route warm-up for the next quiet/idle moment. Sidebar hover/focus
+ * and mobile touchstart should never parse a route chunk while the user is
+ * actively moving, scrolling or tapping; that was the opposite of CLINICAL Rx's
+ * instant-feeling shell. Real navigation still loads immediately on click.
+ */
+export function scheduleRoutePrefetch(path: string): void {
+  if (!registry.has(path) || prefetched.has(path) || scheduledPrefetches.has(path)) return;
+  const cancel = scheduleBackgroundWork(
+    () => {
+      scheduledPrefetches.delete(path);
+      prefetchRoute(path);
+    },
+    {
+      delay: 150,
+      timeout: 3500,
+      retryDelay: 500,
+      quietWindowMs: 650,
+      minTimeRemaining: 10,
+      runWhenTimedOut: false,
+    },
+  );
+  scheduledPrefetches.set(path, cancel);
 }
 
 /** Warms several routes. */

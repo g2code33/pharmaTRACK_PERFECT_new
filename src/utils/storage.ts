@@ -13,6 +13,7 @@ import {
 const STORAGE_KEY = 'pharmatrack_state';
 const WORKSPACE_VALIDATION_CACHE_MS = 30_000;
 let lastKnownWorkspaceRaw: string | null | undefined;
+let lastWorkspaceRawStatus: WorkspaceRawStatus | undefined;
 let lastWorkspaceValidationAt = 0;
 const offloadedTextSignatures = new Map<string, string>();
 
@@ -31,21 +32,37 @@ export function readWorkspaceRaw(): { raw: string | null; status: WorkspaceRawSt
   try {
     raw = localStorage.getItem(STORAGE_KEY);
   } catch {
+    lastKnownWorkspaceRaw = undefined;
+    lastWorkspaceRawStatus = 'unavailable';
+    lastWorkspaceValidationAt = Date.now();
     return { raw: null, status: 'unavailable' };
   }
+
+  const now = Date.now();
+  const validationFresh = now - lastWorkspaceValidationAt < WORKSPACE_VALIDATION_CACHE_MS;
+  if (validationFresh && raw === lastKnownWorkspaceRaw && lastWorkspaceRawStatus) {
+    return { raw, status: lastWorkspaceRawStatus };
+  }
+
   if (raw == null) {
     lastKnownWorkspaceRaw = null;
-    lastWorkspaceValidationAt = Date.now();
+    lastWorkspaceRawStatus = 'missing';
+    lastWorkspaceValidationAt = now;
     offloadedTextSignatures.clear();
     return { raw: null, status: 'missing' };
   }
   try {
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { raw, status: 'malformed' };
+    const status: WorkspaceRawStatus =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? 'ok' : 'malformed';
     lastKnownWorkspaceRaw = raw;
-    lastWorkspaceValidationAt = Date.now();
-    return { raw, status: 'ok' };
+    lastWorkspaceRawStatus = status;
+    lastWorkspaceValidationAt = now;
+    return { raw, status };
   } catch {
+    lastKnownWorkspaceRaw = raw;
+    lastWorkspaceRawStatus = 'malformed';
+    lastWorkspaceValidationAt = now;
     return { raw, status: 'malformed' };
   }
 }
@@ -143,6 +160,9 @@ const ensureWorkspaceCanBeWritten = (): boolean => {
   try {
     raw = localStorage.getItem(STORAGE_KEY);
   } catch {
+    lastKnownWorkspaceRaw = undefined;
+    lastWorkspaceRawStatus = 'unavailable';
+    lastWorkspaceValidationAt = Date.now();
     const reason = 'localStorage could not be read, so PharmaTRACK will not overwrite whatever is still stored.';
     blockWorkspacePersist(reason);
     console.error(`Refusing to save over stored data: ${reason}`);
@@ -150,9 +170,14 @@ const ensureWorkspaceCanBeWritten = (): boolean => {
   }
 
   const validationFresh = Date.now() - lastWorkspaceValidationAt < WORKSPACE_VALIDATION_CACHE_MS;
-  if (validationFresh && raw === lastKnownWorkspaceRaw) return true;
+  if (
+    validationFresh &&
+    raw === lastKnownWorkspaceRaw &&
+    (lastWorkspaceRawStatus === 'ok' || lastWorkspaceRawStatus === 'missing')
+  ) return true;
   if (raw == null) {
     lastKnownWorkspaceRaw = null;
+    lastWorkspaceRawStatus = 'missing';
     lastWorkspaceValidationAt = Date.now();
     offloadedTextSignatures.clear();
     return true;
@@ -161,9 +186,13 @@ const ensureWorkspaceCanBeWritten = (): boolean => {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Stored state is not an object.');
     lastKnownWorkspaceRaw = raw;
+    lastWorkspaceRawStatus = 'ok';
     lastWorkspaceValidationAt = Date.now();
     return true;
   } catch {
+    lastKnownWorkspaceRaw = raw;
+    lastWorkspaceRawStatus = 'malformed';
+    lastWorkspaceValidationAt = Date.now();
     const reason = 'Saved semester data could not be read, so it will not be overwritten.';
     blockWorkspacePersist(reason);
     console.error(`Refusing to save over stored data: ${reason}`);
@@ -208,6 +237,7 @@ export const saveState = (state: AppState): void => {
     );
     localStorage.setItem(STORAGE_KEY, serializedState);
     lastKnownWorkspaceRaw = serializedState;
+    lastWorkspaceRawStatus = 'ok';
     lastWorkspaceValidationAt = Date.now();
   } catch (err) {
     // A quota error here used to be invisible: saving just stopped and the

@@ -35,13 +35,27 @@ const INPUT_EVENTS = [
   'scroll',
 ] as const;
 
+const HIGH_FREQUENCY_INPUT_EVENTS = new Set<string>([
+  'pointermove',
+  'mousemove',
+  'wheel',
+  'touchmove',
+  'scroll',
+]);
+
 let trackingStarted = false;
 let lastInputAt = 0;
 
 const now = () => Date.now();
 
-const markInput = () => {
-  lastInputAt = now();
+const markInput = (event?: Event) => {
+  const t = now();
+  // Pointer/scroll/wheel events can fire dozens of times per second. The app
+  // only needs to know that input happened recently, not every pixel delta;
+  // throttling this global capture listener keeps it from becoming part of the
+  // scroll/mouse-move cost on slower WebViews.
+  if (event && HIGH_FREQUENCY_INPUT_EVENTS.has(event.type) && t - lastInputAt < 80) return;
+  lastInputAt = t;
 };
 
 export const startInputTracking = (): void => {
@@ -150,4 +164,7 @@ export const scheduleBackgroundWork = (
 
 export const __testing = {
   markInput,
+  resetInputTracking: () => {
+    lastInputAt = 0;
+  },
 };

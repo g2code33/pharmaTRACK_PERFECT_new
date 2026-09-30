@@ -246,9 +246,11 @@ describe('stable layout', () => {
     expect(darkPage).not.toContain('background: #f8fafc !important');
   });
 
-  it('does not apply expensive native hover filters/transforms that make pointer movement feel slow', () => {
+  it('does not apply expensive native hover filters/transforms or always-on shell animations', () => {
     expect(css).not.toContain('filter: brightness(1.03)');
     expect(css).not.toContain('transform: translateY(1px) scale(0.99)');
+    expect(layout).not.toContain('animate-ping');
+    expect(layout).not.toContain('animate-pulse');
   });
 
   it('lets the reader fill the available app page without a second page scroll or bottom void', () => {
