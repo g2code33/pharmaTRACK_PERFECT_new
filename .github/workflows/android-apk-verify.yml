@@ -1,0 +1,173 @@
+name: 'Verify Android APK'
+
+on:
+  push:
+    branches:
+      - arena/01a0ede1-pharmatrack-perfect-new
+  workflow_dispatch:
+
+jobs:
+  verify-android-apk:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      VITE_SUPABASE_URL: '${{ secrets.VITE_SUPABASE_URL }}'
+      VITE_SUPABASE_ANON_KEY: '${{ secrets.VITE_SUPABASE_ANON_KEY }}'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up JDK for Android
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+          find_sdkmanager() {
+            for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                     "$SDK/cmdline-tools/bin/sdkmanager" \
+                     "$SDK/tools/bin/sdkmanager"; do
+              if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+            done
+            return 1
+          }
+          if SDKMANAGER="$(find_sdkmanager)"; then
+            echo "Using runner-provided Android SDK at $SDK"
+          else
+            echo "No cmdline-tools found — installing fresh Android SDK"
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/build-tools/35.0.0" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          "$SDKMANAGER" --version
+
+      - name: Install and build web app
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Prepare Android release signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          EXPECTED_ANDROID_CERT_SHA256: '8C:26:79:8C:42:90:06:99:12:21:46:69:C3:04:54:C8:44:71:99:96:E8:6F:EF:EE:98:49:94:6A:DB:C8:18:28'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing Android signing secret::$name is empty or not configured."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+
+          mkdir -p android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n\t ' | base64 --decode > android/app/release-keystore.p12
+          keytool -list -v \
+            -storetype PKCS12 \
+            -keystore android/app/release-keystore.p12 \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > /tmp/pharmatrack-android-keystore.txt 2>&1
+          CERT_SHA256="$(sed -n 's/^.*SHA256: //p' /tmp/pharmatrack-android-keystore.txt | head -n 1 | tr -d '\r')"
+          echo "Android release certificate SHA-256: $CERT_SHA256"
+          if [ "$CERT_SHA256" != "$EXPECTED_ANDROID_CERT_SHA256" ]; then
+            echo "::error title=Android certificate mismatch::Expected $EXPECTED_ANDROID_CERT_SHA256 but got $CERT_SHA256."
+            exit 1
+          fi
+
+      - name: Build, sign, and verify release APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PHARMA_ANDROID_SKIP_GRADLE_SIGNING: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/pharmatrack-android-gradle.log
+
+          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$unsigned_apk" ]; then
+            unsigned_apk="$signed_apk"
+          fi
+          if [ ! -f "$unsigned_apk" ]; then
+            echo "::error title=Android unsigned APK missing::Gradle did not produce app-release-unsigned.apk or app-release.apk."
+            find app/build/outputs/apk -maxdepth 5 -type f 2>/dev/null || true
+            exit 1
+          fi
+          if [ "$unsigned_apk" = "$signed_apk" ]; then
+            cp "$unsigned_apk" /tmp/pharmatrack-release-to-sign.apk
+            unsigned_apk="/tmp/pharmatrack-release-to-sign.apk"
+          fi
+
+          rm -f "$signed_apk"
+          sign_ok=0
+          for candidate_name in ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD; do
+            keypass="${!candidate_name}"
+            [ -n "$keypass" ] || continue
+            echo "Signing release APK with apksigner using $candidate_name candidate."
+            if apksigner sign \
+              --ks app/release-keystore.p12 \
+              --ks-type PKCS12 \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+              --key-pass "pass:$keypass" \
+              --out "$signed_apk" \
+              "$unsigned_apk" > /tmp/pharmatrack-apksigner.log 2>&1; then
+              sign_ok=1
+              break
+            fi
+            rm -f "$signed_apk"
+            sed 's/^/APKSIGNER: /' /tmp/pharmatrack-apksigner.log
+          done
+          if [ "$sign_ok" -ne 1 ]; then
+            echo "::error title=Android APK manual signing failed::apksigner could not sign the APK."
+            exit 1
+          fi
+          apksigner verify --print-certs "$signed_apk" > /tmp/pharmatrack-apk-certs.txt
+          if grep -qi "CN=Android Debug" /tmp/pharmatrack-apk-certs.txt; then
+            echo "::error title=Debug-signed Android APK::The Android APK is debug-signed."
+            exit 1
+          fi
+          APP_VER="$(node -p "require('../package.json').version")"
+          BADGE_VERSION="$(aapt2 dump badging "$signed_apk" | head -n1 | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          if [ "$BADGE_VERSION" != "$APP_VER" ]; then
+            echo "::error title=Android version mismatch::APK versionName ($BADGE_VERSION) != package version ($APP_VER)."
+            exit 1
+          fi
+          cp "$signed_apk" "../PharmaTRACK-$APP_VER.apk"
+          echo "Verified signed Android APK: PharmaTRACK-$APP_VER.apk"
+
+      - name: Upload verified APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-android-apk
+          path: PharmaTRACK-*.apk
+          if-no-files-found: error
