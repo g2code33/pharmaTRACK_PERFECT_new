@@ -57,6 +57,7 @@ describe('Android APK build and signing', () => {
     expect(main).toContain('WebViewAssetLoader');
     expect(main).toContain('https://$APP_ASSET_DOMAIN');
     expect(main).toContain('onShowFileChooser');
+    expect(main).toContain('override fun onNewIntent(intent: Intent)');
     expect(main).toContain('emptyArray<Uri>()');
     expect(main).toContain('Uri::class.java');
     expect(main).toContain('settings.textZoom = 100');
