@@ -18,7 +18,9 @@ describe('Android APK build and signing', () => {
     expect(gradle).toContain('repositoryRoot.resolve("package.json")');
     expect(gradle).toContain('versionCode = pharmaVersionCode');
     expect(gradle).toContain('versionName = pharmaVersionName');
-    expect(gradle).toMatch(/versionParts\[0\] \* 10_000 \+ versionParts\[1\] \* 100 \+ versionParts\[2\]/);
+    expect(gradle).toMatch(
+      /versionParts\[0\] \* 10_000 \+ versionParts\[1\] \* 100 \+ versionParts\[2\]/,
+    );
   });
 
   it('fails closed for release signing and never commits the keystore', () => {
@@ -62,8 +64,14 @@ describe('Android APK build and signing', () => {
 
   it('publishes a verified release-signed APK in the GitHub release workflow', () => {
     const workflow = read('.github/workflows/release.yml');
+    expect(workflow).toContain('Prepare Android release signing key');
     expect(workflow).toContain('Build Android release APK (signed)');
     expect(workflow).toContain('ANDROID_KEYSTORE_BASE64');
+    expect(workflow).toContain('EXPECTED_ANDROID_CERT_SHA256');
+    expect(workflow).toContain('keytool -list -v');
+    expect(workflow).toContain('Invalid ANDROID_KEYSTORE_BASE64');
+    expect(workflow).toContain('Android Gradle build failed');
+    expect(workflow).toContain('android-gradle-failure-log');
     expect(workflow).toContain('apksigner verify --print-certs');
     expect(workflow).toContain('The Android APK is debug-signed. Refusing to publish it.');
     expect(workflow).toContain('aapt2 dump badging');
