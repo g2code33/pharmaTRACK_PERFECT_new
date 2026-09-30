@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.pharmatrack.app",
+      "sha256_cert_fingerprints": [
+        "8C:26:79:8C:42:90:06:99:12:21:46:69:C3:04:54:C8:44:71:99:96:E8:6F:EF:EE:98:49:94:6A:DB:C8:18:28"
+      ]
+    }
+  }
+]
