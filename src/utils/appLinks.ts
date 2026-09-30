@@ -12,12 +12,14 @@ const normalizeRoute = (route: string): string => {
 
 const isQuickQuizRoute = (route: string): boolean => {
   const normalized = normalizeRoute(route);
-  return QUICK_QUIZ_ROUTE_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(prefix));
+  return QUICK_QUIZ_ROUTE_PREFIXES.some(
+    (prefix) => normalized === prefix || normalized.startsWith(prefix),
+  );
 };
 
-const isAndroidBrowser = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
-  return /android/i.test(navigator.userAgent || '');
+export const shouldUseAndroidApkIntent = (userAgent?: string): boolean => {
+  const agent = userAgent ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent || '');
+  return /android/i.test(agent);
 };
 
 const safeEncodeParam = (value: string): string => encodeURIComponent(value).replace(/'/g, '%27');
@@ -80,9 +82,17 @@ export const androidIntentForRoute = (route: string, fallbackHref?: string): str
   return `intent://${hostAndPath}#Intent;scheme=${PHARMATRACK_PROTOCOL};package=${ANDROID_PACKAGE_NAME};S.browser_fallback_url=${safeEncodeParam(fallback)};end`;
 };
 
-export const pwaProtocolLinkForRoute = (route: string): string => (
-  `web+pharmatrack:${safeEncodeParam(appDeepLinkForRoute(route))}`
-);
+export const pwaProtocolLinkForRoute = (route: string): string =>
+  `web+pharmatrack:${safeEncodeParam(appDeepLinkForRoute(route))}`;
+
+export const appLaunchTargetForRoute = (
+  route: string,
+  fallbackHref?: string,
+  userAgent?: string,
+): string =>
+  shouldUseAndroidApkIntent(userAgent)
+    ? androidIntentForRoute(route, fallbackHref)
+    : appDeepLinkForRoute(route);
 
 export const routeFromPharmaTrackDeepLink = (value: string): string | null => {
   try {
@@ -119,13 +129,15 @@ export const openRouteInInstalledApp = (
   route: string,
   options: { fallbackHref?: string; automatic?: boolean } = {},
 ): string => {
-  const fallback = options.fallbackHref || (typeof window !== 'undefined' ? window.location.href : DEFAULT_WEB_FALLBACK);
-  const target = isAndroidBrowser() ? androidIntentForRoute(route, fallback) : appDeepLinkForRoute(route);
+  const fallback =
+    options.fallbackHref ||
+    (typeof window !== 'undefined' ? window.location.href : DEFAULT_WEB_FALLBACK);
+  const target = appLaunchTargetForRoute(route, fallback);
   const pwaTarget = pwaProtocolLinkForRoute(route);
 
   if (typeof window === 'undefined' || typeof document === 'undefined') return target;
 
-  if (isAndroidBrowser()) {
+  if (shouldUseAndroidApkIntent()) {
     window.location.href = target;
     return target;
   }

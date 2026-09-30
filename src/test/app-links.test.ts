@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   androidIntentForRoute,
   appDeepLinkForRoute,
+  appLaunchTargetForRoute,
   getQuickQuizRouteFromHref,
   pwaProtocolLinkForRoute,
   routeFromPharmaTrackDeepLink,
@@ -14,9 +15,29 @@ describe('app-first quick quiz links', () => {
   });
 
   it('builds Android intent URLs with a web fallback for devices without the APK installed', () => {
-    const intent = androidIntentForRoute('/q/AbC234xyz9', 'https://example.com/app/index.html#/q/AbC234xyz9');
-    expect(intent).toContain('intent://q/AbC234xyz9#Intent;scheme=pharmatrack;package=com.pharmatrack.app;');
-    expect(intent).toContain('S.browser_fallback_url=https%3A%2F%2Fexample.com%2Fapp%2Findex.html%23%2Fq%2FAbC234xyz9;end');
+    const intent = androidIntentForRoute(
+      '/q/AbC234xyz9',
+      'https://example.com/app/index.html#/q/AbC234xyz9',
+    );
+    expect(intent).toContain(
+      'intent://q/AbC234xyz9#Intent;scheme=pharmatrack;package=com.pharmatrack.app;',
+    );
+    expect(intent).toContain(
+      'S.browser_fallback_url=https%3A%2F%2Fexample.com%2Fapp%2Findex.html%23%2Fq%2FAbC234xyz9;end',
+    );
+  });
+
+  it('chooses the Android APK intent target before the web fallback on Android browsers', () => {
+    const fallback = 'https://pharmatrack-web.pages.dev/#/q/AbC234xyz9';
+    const target = appLaunchTargetForRoute(
+      '/q/AbC234xyz9',
+      fallback,
+      'Mozilla/5.0 (Linux; Android 14)',
+    );
+
+    expect(target).toBe(androidIntentForRoute('/q/AbC234xyz9', fallback));
+    expect(target).toContain('package=com.pharmatrack.app');
+    expect(target).toContain(`S.browser_fallback_url=${encodeURIComponent(fallback)};end`);
   });
 
   it('builds PWA protocol links that installed browser apps can claim', () => {
@@ -26,9 +47,15 @@ describe('app-first quick quiz links', () => {
   });
 
   it('extracts quick quiz routes from public web links and installed-app links', () => {
-    expect(getQuickQuizRouteFromHref('https://pharmatrack-web.pages.dev/#/q/Short42')).toBe('/q/Short42');
-    expect(getQuickQuizRouteFromHref('https://pharmatrack-web.pages.dev/#/quick-quiz?p=zPACK')).toBe('/quick-quiz?p=zPACK');
+    expect(getQuickQuizRouteFromHref('https://pharmatrack-web.pages.dev/#/q/Short42')).toBe(
+      '/q/Short42',
+    );
+    expect(
+      getQuickQuizRouteFromHref('https://pharmatrack-web.pages.dev/#/quick-quiz?p=zPACK'),
+    ).toBe('/quick-quiz?p=zPACK');
     expect(routeFromPharmaTrackDeepLink('pharmatrack://q/Short42')).toBe('/q/Short42');
-    expect(routeFromPharmaTrackDeepLink('pharmatrack://quick-quiz?p=zPACK')).toBe('/quick-quiz?p=zPACK');
+    expect(routeFromPharmaTrackDeepLink('pharmatrack://quick-quiz?p=zPACK')).toBe(
+      '/quick-quiz?p=zPACK',
+    );
   });
 });
