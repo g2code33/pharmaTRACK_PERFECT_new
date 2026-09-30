@@ -1,7 +1,7 @@
-name: "Build & Release PharmaTRACK"
+name: 'Build & Release PharmaTRACK'
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -14,8 +14,8 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
       win_sig: ${{ steps.win_sig.outputs.sig }}
     env:
-      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+      VITE_SUPABASE_URL: '${{ secrets.VITE_SUPABASE_URL }}'
+      VITE_SUPABASE_ANON_KEY: '${{ secrets.VITE_SUPABASE_ANON_KEY }}'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,11 +40,11 @@ jobs:
       - name: Build Windows App
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          TAURI_SIGNING_PRIVATE_KEY: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}'
         with:
           tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
+          releaseName: 'PharmaTRACK v__VERSION__'
           releaseDraft: true
           prerelease: false
 
@@ -73,8 +73,8 @@ jobs:
       contents: write
     runs-on: ubuntu-22.04
     env:
-      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+      VITE_SUPABASE_URL: '${{ secrets.VITE_SUPABASE_URL }}'
+      VITE_SUPABASE_ANON_KEY: '${{ secrets.VITE_SUPABASE_ANON_KEY }}'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -92,11 +92,11 @@ jobs:
       - name: Build Linux App
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+          TAURI_SIGNING_PRIVATE_KEY: '${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}'
         with:
           tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
+          releaseName: 'PharmaTRACK v__VERSION__'
           releaseDraft: true
           prerelease: false
 
@@ -140,11 +140,99 @@ jobs:
           }
           EOF
 
-      # Explicitly force GitHub to attach latest.json to your release assets and publish the release
-      - name: Force Upload latest.json Asset
+      # Android APK: release signing fails closed. Android updates only work when
+      # every APK is signed by the SAME private certificate, so the keystore is
+      # injected from secrets and is never committed to git.
+      - name: Set up JDK for Android
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+          find_sdkmanager() {
+            for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                     "$SDK/cmdline-tools/bin/sdkmanager" \
+                     "$SDK/tools/bin/sdkmanager"; do
+              if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+            done
+            return 1
+          }
+          if SDKMANAGER="$(find_sdkmanager)"; then
+            echo "Using runner-provided Android SDK at $SDK"
+          else
+            echo "No cmdline-tools found — installing fresh Android SDK"
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/build-tools/35.0.0" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          "$SDKMANAGER" --version
+
+      - name: Build Android release APK (signed)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Android release signing secrets are incomplete. Set ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
+            echo "::error::A production APK will not be debug-signed, because updates would break."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release-keystore.p12
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Verify Android APK signature and version
+        env:
+          APP_VER: ${{ needs.build-windows.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::Release APK missing: $APK"
+            exit 1
+          fi
+          apksigner verify --print-certs "$APK" > /tmp/pharmatrack-apk-certs.txt
+          if grep -qi "CN=Android Debug" /tmp/pharmatrack-apk-certs.txt; then
+            echo "::error::The Android APK is debug-signed. Refusing to publish it."
+            exit 1
+          fi
+          BADGE_VERSION="$(aapt2 dump badging "$APK" | head -n1 | sed -n 's/.*versionName='\''\([^'\'']*\)'\''.*/\1/p')"
+          if [ "$BADGE_VERSION" != "$APP_VER" ]; then
+            echo "::error::APK versionName ($BADGE_VERSION) != release version ($APP_VER)."
+            exit 1
+          fi
+          cp "$APK" "PharmaTRACK-$APP_VER.apk"
+          echo "Android APK verified: release-signed and versionName $BADGE_VERSION"
+
+      # Explicitly force GitHub to attach latest.json and the signed APK to the release.
+      - name: Force Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build-windows.outputs.version }}
-          files: latest.json
+          files: |
+            latest.json
+            PharmaTRACK-${{ needs.build-windows.outputs.version }}.apk
           draft: false
           make_latest: true

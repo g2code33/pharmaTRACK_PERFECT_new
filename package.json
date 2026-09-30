@@ -1,7 +1,7 @@
 {
   "name": "pharmatrack",
   "private": true,
-  "version": "1.1.114",
+  "version": "1.1.115",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -26,7 +26,10 @@
     "version:check": "node scripts/set-version.mjs check",
     "tauri": "tauri",
     "tauri:dev": "env -u LD_LIBRARY_PATH WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 GDK_BACKEND=x11 tauri dev",
-    "tauri:build": "env -u LD_LIBRARY_PATH tauri build"
+    "tauri:build": "env -u LD_LIBRARY_PATH tauri build",
+    "android:debug": "npm run build && cd android && ./gradlew assembleDebug --no-daemon",
+    "android:release": "npm run build && cd android && ./gradlew assembleRelease --no-daemon",
+    "android:bundle": "npm run build && cd android && ./gradlew bundleRelease --no-daemon"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",

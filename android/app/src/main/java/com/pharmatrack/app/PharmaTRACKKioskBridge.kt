@@ -22,7 +22,12 @@ class PharmaTRACKKioskBridge(private val activity: MainActivity) {
     private var externalIntentsRestricted = false
     private var screenCaptureBlocked = false
     private var pendingPharmaExamBytes: ByteArray? = null
-    private val allowedHosts = mutableSetOf("localhost", "127.0.0.1", "10.0.2.2")
+    private val allowedHosts = mutableSetOf(
+        "localhost",
+        "127.0.0.1",
+        "10.0.2.2",
+        "pharmatrack.appassets.androidplatform.net",
+    )
 
     fun isExternalIntentsRestricted(): Boolean = externalIntentsRestricted
     fun isSecureExamActive(): Boolean = lockTaskActive

@@ -5,6 +5,8 @@
  * Supabase, AI, examination records, and all other user data remain outside its
  * caches and continue to use the app's existing localStorage/IndexedDB stores.
  */
+import { hasAndroidNativeBridge } from './platform/runtime';
+
 export const PWA_UPDATE_EVENT = 'pharmatrack:pwa-update';
 
 export { isPWAStandalone as isPwaStandalone } from './platform/runtime';
@@ -16,7 +18,8 @@ function canRegister(): boolean {
   return (
     import.meta.env.PROD &&
     typeof window !== 'undefined' &&
-    'serviceWorker' in navigator
+    'serviceWorker' in navigator &&
+    !hasAndroidNativeBridge()
   );
 }
 

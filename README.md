@@ -32,22 +32,22 @@ This is the core design decision, so it's worth stating plainly:
 
 ## Tech stack
 
-| Layer | Tech |
-|-------|------|
-| Frontend | React 18 + Vite + Tailwind CSS v4 |
-| Desktop shell | Tauri v2 (Rust) |
-| State | React Context + `useReducer` (`src/context/AppContext.tsx`) |
-| Auth & sync | Supabase |
-| Local storage | `localStorage` + IndexedDB (`idb-keyval`) |
-| Charts | Recharts |
-| Tests | Vitest + Testing Library + jsdom |
+| Layer         | Tech                                                        |
+| ------------- | ----------------------------------------------------------- |
+| Frontend      | React 18 + Vite + Tailwind CSS v4                           |
+| Desktop shell | Tauri v2 (Rust)                                             |
+| State         | React Context + `useReducer` (`src/context/AppContext.tsx`) |
+| Auth & sync   | Supabase                                                    |
+| Local storage | `localStorage` + IndexedDB (`idb-keyval`)                   |
+| Charts        | Recharts                                                    |
+| Tests         | Vitest + Testing Library + jsdom                            |
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 20+
 - [Rust](https://rustup.rs/) stable toolchain
 - **Linux:** `libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget
-  file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
+file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
 - **Windows:** MSVC Build Tools
 
 > **Linux note:** if VS Code is installed as a snap, its injected
@@ -76,14 +76,14 @@ of launching a blank window or an empty session.
 
 ## Commands
 
-| Command | What it does |
-|---------|--------------|
-| `npm run tauri:dev` | Run the desktop app in dev mode |
-| `npm run tauri:build` | Build production installers |
-| `npm test` | Run the test suite |
-| `npm run test:watch` | Tests in watch mode |
-| `npm run version:check` | Verify the version matches in all 5 files |
-| `npm run version:set 1.1.83` | Set the version everywhere at once |
+| Command                      | What it does                              |
+| ---------------------------- | ----------------------------------------- |
+| `npm run tauri:dev`          | Run the desktop app in dev mode           |
+| `npm run tauri:build`        | Build production installers               |
+| `npm test`                   | Run the test suite                        |
+| `npm run test:watch`         | Tests in watch mode                       |
+| `npm run version:check`      | Verify the version matches in all 5 files |
+| `npm run version:set 1.1.83` | Set the version everywhere at once        |
 
 ## Releasing
 
@@ -128,13 +128,27 @@ supabase/       security-rls.sql — run this in the Supabase SQL editor
 - The embedded webview navigates via parsed URLs rather than `eval`-ing
   JavaScript built from user input.
 
+## Android APK
+
+PharmaTRACK includes a native Android WebView shell in `android/`.
+
+```bash
+npm run android:debug
+npm run android:release
+```
+
+Release APKs are signed fail-closed. Configure `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` in
+GitHub secrets so Android can install future versions over the old one. See
+[`docs/ANDROID_APK_RELEASE.md`](./docs/ANDROID_APK_RELEASE.md).
+
 ## Troubleshooting
 
 ### "`@layer base` is used but no matching `@tailwind base` directive is present"
 
 This project uses **Tailwind v4** (via `@tailwindcss/vite`), which has no
 `@tailwind base` directive — that error is thrown by **Tailwind v3**. If you
-see it, an old v3 install is being loaded from *outside* this project: Vite's
+see it, an old v3 install is being loaded from _outside_ this project: Vite's
 postcss loader searches **upwards** through parent folders for a postcss
 config, so a stray `postcss.config.js` (or a `package.json` with a `"postcss"`
 key) in your home directory or any ancestor folder will be picked up, and its

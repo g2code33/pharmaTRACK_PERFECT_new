@@ -5,14 +5,20 @@ node_modules/
 dist/
 dist-ssr/
 src-tauri/target/
+android/.gradle/
+android/build/
+android/app/build/
 *.local
 
-# Environment — never commit real keys
+# Environment and signing material — never commit real keys
 .env
 .env.local
 .env.*.local
 .dev.vars
 .wrangler/
+android/app/release-keystore.p12
+android/app/*.jks
+android/app/*.keystore
 
 # Logs
 logs/

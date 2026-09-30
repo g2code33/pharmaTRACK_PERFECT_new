@@ -19,7 +19,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.114';
+const APP_VERSION_FALLBACK = '1.1.115';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -342,7 +342,7 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${runtime.platform === 'android-native' ? 'android-native-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {runtime.nativeWebview && (
         <div className="native-titlebar flex h-11 flex-shrink-0 items-center border-b border-slate-200 bg-white text-slate-900 shadow-sm">
           <div

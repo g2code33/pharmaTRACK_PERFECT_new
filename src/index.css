@@ -32,6 +32,22 @@ body { background-color: #F8FAFC; color: #0F172A; }
   scrollbar-gutter: stable;
 }
 
+.android-native-shell {
+  height: 100vh;
+  height: 100dvh;
+  touch-action: pan-x pan-y;
+}
+.android-native-shell .app-page-main {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+.android-native-shell input,
+.android-native-shell select,
+.android-native-shell textarea,
+.android-native-shell button {
+  touch-action: manipulation;
+}
+
 html.dark body { background-color: #0f172a; color: #f1f5f9; }
 html.dark ::-webkit-scrollbar-track { background: #1e293b; }
 html.dark ::-webkit-scrollbar-thumb { background: #475569; }
