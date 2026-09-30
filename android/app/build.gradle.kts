@@ -34,6 +34,9 @@ val pharmaVersionCode = maxOf(
 // local opt-in for testing; CI never enables it.
 val releaseKeystore = layout.projectDirectory.file("release-keystore.p12").asFile
 val hasReleaseKeystore = releaseKeystore.exists()
+val androidKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD").orEmpty()
+val androidKeyAlias = System.getenv("ANDROID_KEY_ALIAS").orEmpty().ifBlank { "pharmatrack" }
+val androidKeyPassword = System.getenv("ANDROID_KEY_PASSWORD").orEmpty()
 val allowDebugSigning = (
     (project.findProperty("pharmaAllowDebugSigning") ?: System.getenv("PHARMA_ALLOW_DEBUG_SIGNING") ?: "false")
         .toString()
@@ -48,9 +51,9 @@ android {
         create("release") {
             if (hasReleaseKeystore) {
                 storeFile = releaseKeystore
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "pharmatrack"
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+                storePassword = androidKeystorePassword
+                keyAlias = androidKeyAlias
+                keyPassword = androidKeyPassword
                 storeType = "PKCS12"
             }
         }
@@ -131,6 +134,19 @@ tasks.matching { task ->
                     "For a local-only test release, run: ./gradlew assembleRelease -PpharmaAllowDebugSigning=true\n" +
                     "A debug-signed production APK will not be built by default.",
             )
+        }
+        if (hasReleaseKeystore) {
+            val missingSigningEnv = listOf(
+                "ANDROID_KEYSTORE_PASSWORD" to androidKeystorePassword,
+                "ANDROID_KEY_ALIAS" to androidKeyAlias,
+                "ANDROID_KEY_PASSWORD" to androidKeyPassword,
+            ).filter { it.second.isBlank() }.joinToString { it.first }
+            if (missingSigningEnv.isNotBlank()) {
+                throw GradleException(
+                    "Android release keystore exists, but Gradle did not receive signing env vars: $missingSigningEnv. " +
+                        "Pass ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD to ./gradlew assembleRelease.",
+                )
+            }
         }
     }
 }

@@ -30,6 +30,9 @@ describe('Android APK build and signing', () => {
     expect(gradle).toContain('ANDROID_KEYSTORE_PASSWORD');
     expect(gradle).toContain('ANDROID_KEY_ALIAS');
     expect(gradle).toContain('ANDROID_KEY_PASSWORD');
+    expect(gradle).toContain(
+      'Android release keystore exists, but Gradle did not receive signing env vars',
+    );
     expect(gradle).toContain('Production Android release signing is REQUIRED');
     expect(gradle).toContain('pharmaAllowDebugSigning');
     expect(ignore).toContain('android/app/release-keystore.p12');
@@ -67,6 +70,11 @@ describe('Android APK build and signing', () => {
     expect(workflow).toContain('Prepare Android release signing key');
     expect(workflow).toContain('Build Android release APK (signed)');
     expect(workflow).toContain('ANDROID_KEYSTORE_BASE64');
+    expect(workflow).toMatch(
+      /Build Android release APK \(signed\)[\s\S]*ANDROID_KEYSTORE_PASSWORD/,
+    );
+    expect(workflow).toMatch(/Build Android release APK \(signed\)[\s\S]*ANDROID_KEY_ALIAS/);
+    expect(workflow).toMatch(/Build Android release APK \(signed\)[\s\S]*ANDROID_KEY_PASSWORD/);
     expect(workflow).toContain('EXPECTED_ANDROID_CERT_SHA256');
     expect(workflow).toContain('keytool -list -v');
     expect(workflow).toContain('Invalid ANDROID_KEYSTORE_BASE64');
