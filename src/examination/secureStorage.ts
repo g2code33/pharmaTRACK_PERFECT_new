@@ -11,6 +11,14 @@ interface EncryptedRecord {
   ciphertext: string;
 }
 
+interface RawDeviceKeyRecord {
+  format: 'raw-aes-gcm-256';
+  key: string;
+  createdAt: string;
+}
+
+type StoredDeviceKey = CryptoKey | RawDeviceKeyRecord | string;
+
 function base64(bytes: Uint8Array): string {
   let value = '';
   for (const byte of bytes) value += String.fromCharCode(byte);
@@ -21,15 +29,57 @@ function bytes(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
 
-async function deviceKey(): Promise<CryptoKey> {
-  const existing = await idb.get<CryptoKey>(EXAM_DEVICE_KEY);
-  if (existing) return existing;
-  const created = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+function isCryptoKey(value: unknown): value is CryptoKey {
+  return (
+    typeof CryptoKey !== 'undefined' &&
+    value instanceof CryptoKey &&
+    value.type === 'secret' &&
+    value.algorithm?.name === 'AES-GCM'
+  );
+}
+
+function isRawDeviceKeyRecord(value: unknown): value is RawDeviceKeyRecord {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    (value as RawDeviceKeyRecord).format === 'raw-aes-gcm-256' &&
+    typeof (value as RawDeviceKeyRecord).key === 'string',
+  );
+}
+
+async function importRawKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', asCryptoBuffer(raw), { name: 'AES-GCM' }, false, [
     'encrypt',
     'decrypt',
   ]);
-  await idb.set(EXAM_DEVICE_KEY, created);
-  return created;
+}
+
+async function createRawDeviceKey(): Promise<CryptoKey> {
+  const raw = randomBytes(32);
+  const record: RawDeviceKeyRecord = {
+    format: 'raw-aes-gcm-256',
+    key: base64(raw),
+    createdAt: new Date().toISOString(),
+  };
+  await idb.set(EXAM_DEVICE_KEY, record);
+  return importRawKey(raw);
+}
+
+async function deviceKey(): Promise<CryptoKey> {
+  const existing = await idb.get<StoredDeviceKey>(EXAM_DEVICE_KEY);
+  if (isCryptoKey(existing)) {
+    // Legacy WebCrypto CryptoKeys can be read on some engines. Keep using it
+    // for records encrypted with it, but new installs use the raw wrapped form
+    // below because WebKit/Tauri can fail to structured-clone CryptoKey values.
+    return existing;
+  }
+  if (isRawDeviceKeyRecord(existing)) {
+    return importRawKey(bytes(existing.key));
+  }
+  if (typeof existing === 'string' && existing) {
+    return importRawKey(bytes(existing));
+  }
+  return createRawDeviceKey();
 }
 
 export async function saveEncryptedJson<T>(key: string, value: T): Promise<void> {

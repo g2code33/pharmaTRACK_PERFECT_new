@@ -48,19 +48,27 @@ export function studentForAuthenticatedUser(userId: string, student: Student): S
  */
 export async function linkLocalWorkspaceToAccount(userId: string, student: Student): Promise<Student> {
   const linked = studentForAuthenticatedUser(userId, student);
-  const { error } = await supabase.from('profiles').upsert(
-    {
-      id: userId,
-      full_name: linked.name,
-      university: linked.university,
-      level: linked.level,
-      program: linked.program,
-      semester: linked.semester,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'id' },
-  );
-  if (error) throw error;
+
+  // A profile row is helpful for cloud account UX, but it must never block the
+  // local workspace link. Some deployed Supabase projects are temporarily
+  // missing optional profile columns/RLS policies, which returns 400; the app is
+  // local-first and can retry profile sync later.
+  try {
+    const { error } = await supabase.from('profiles').upsert(
+      {
+        id: userId,
+        full_name: linked.name,
+        university: linked.university,
+        level: linked.level,
+        program: linked.program,
+        semester: linked.semester,
+      },
+      { onConflict: 'id' },
+    );
+    if (error) console.warn('Cloud profile could not be updated during local link:', error.message);
+  } catch (error) {
+    console.warn('Cloud profile update failed during local link; local workspace was linked.', error);
+  }
 
   const state = loadState();
   saveState({ ...state, student: linked });

@@ -89,19 +89,24 @@ export const AISettingsPanel: React.FC = () => {
 
   const save = async (provider: ProviderRow) => {
     const patch = crud(provider.id);
-    await ai.saveProvider({
-      ...provider,
-      ...patch,
-      id: provider.id,
-      kind: provider.kind,
-      protocol: provider.protocol,
-      label: patch.label ?? provider.label,
-      // `undefined` apiKey means "keep the stored one".
-      apiKey: patch.apiKey,
-    } as ProviderConfig & { apiKey?: string });
-    setEditing((current) => ({ ...current, [provider.id]: {} }));
-    setNotice(`${provider.label} saved.`);
-    setTimeout(() => setNotice(null), 2500);
+    try {
+      await ai.saveProvider({
+        ...provider,
+        ...patch,
+        id: provider.id,
+        kind: provider.kind,
+        protocol: provider.protocol,
+        label: patch.label ?? provider.label,
+        // `undefined` apiKey means "keep the stored one".
+        apiKey: patch.apiKey,
+      } as ProviderConfig & { apiKey?: string });
+      setEditing((current) => ({ ...current, [provider.id]: {} }));
+      setNotice(`${provider.label} saved.`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Provider could not be saved.');
+    } finally {
+      setTimeout(() => setNotice(null), 4000);
+    }
   };
 
   const runTest = async (provider: ProviderRow) => {
@@ -147,6 +152,33 @@ export const AISettingsPanel: React.FC = () => {
     }
   };
 
+  const addProvider = async (kind: ProviderConfig['kind']) => {
+    try {
+      await ai.saveProvider(
+        blankProvider(
+          kind,
+          ai.providers.map((p) => p.id),
+        ),
+      );
+      setNotice('Provider added.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Provider could not be added.');
+    } finally {
+      setTimeout(() => setNotice(null), 4000);
+    }
+  };
+
+  const removeProvider = async (id: ProviderId) => {
+    try {
+      await ai.removeProvider(id);
+      setNotice('Provider removed from this device.');
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : 'Provider could not be removed.');
+    } finally {
+      setTimeout(() => setNotice(null), 4000);
+    }
+  };
+
   return (
     <div className="space-y-6" data-testid="ai-settings">
       {notice && (
@@ -159,14 +191,7 @@ export const AISettingsPanel: React.FC = () => {
       <AccountSyncCard />
       <ProvidersCard
         providers={ai.providers}
-        onAdd={(kind) =>
-          void ai.saveProvider(
-            blankProvider(
-              kind,
-              ai.providers.map((p) => p.id),
-            ),
-          )
-        }
+        onAdd={(kind) => void addProvider(kind)}
         expanded={expanded}
         setExpanded={setExpanded}
         crud={crud}
@@ -178,7 +203,7 @@ export const AISettingsPanel: React.FC = () => {
         onSave={save}
         onTest={runTest}
         onFetchModels={fetchModels}
-        onRemove={(id) => void ai.removeProvider(id)}
+        onRemove={(id) => void removeProvider(id)}
       />
       <ProfilesCard />
       <FallbackCard />

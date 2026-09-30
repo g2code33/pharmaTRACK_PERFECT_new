@@ -594,6 +594,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // React has a chance to re-render.
   const hasSignedOutRef = useRef(false);
   const warmedSlideFilesRef = useRef('');
+  const profileSyncWarningShownRef = useRef(false);
 
   /**
    * Ends the session for real.
@@ -700,65 +701,90 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const fetchProfile = async (userId: string) => {
+    const currentLocalStudent = loadState().student;
+
+    if (currentLocalStudent && currentLocalStudent.id !== userId) {
+      // Do not silently attach an existing local workspace to whichever
+      // account was just authenticated. Login shows the explicit migration
+      // confirmation and links it only after the user accepts.
+      return;
+    }
+
+    const applyLocalFallback = () => {
+      if (currentLocalStudent) return;
+      dispatch({
+        type: 'SET_STUDENT',
+        payload: {
+          id: userId,
+          name: 'Student',
+          level: '100',
+          semester: '1st',
+          program: 'Pharmacy',
+          university: 'UCC',
+          createdAt: new Date().toISOString(),
+        },
+      });
+    };
+
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('id,full_name,university,level,program,semester,avatar_url,created_at')
+        .select('*')
         .eq('id', userId)
-        .single();
-      const currentLocalStudent = loadState().student;
+        .maybeSingle();
 
-      if (currentLocalStudent && currentLocalStudent.id !== userId) {
-        // Do not silently attach an existing local workspace to whichever
-        // account was just authenticated. Login shows the explicit migration
-        // confirmation and links it only after the user accepts.
+      if (error) {
+        if (!profileSyncWarningShownRef.current) {
+          profileSyncWarningShownRef.current = true;
+          console.warn('Cloud profile is unavailable; continuing with the local profile.', error.message);
+        }
+        applyLocalFallback();
         return;
       }
 
-      if (data && !error) {
+      if (data) {
+        const profile = data as Record<string, string | null | undefined>;
         // The Supabase auth UUID is the only stable account identity. Local
         // onboarding IDs are never copied into a cloud profile.
         dispatch({
           type: 'SET_STUDENT',
           payload: {
             id: userId,
-            name: data.full_name || 'Student',
-            level: data.level || '100',
-            semester: data.semester || '1st',
-            program: data.program || 'Pharmacy',
-            university: data.university || 'UCC',
-            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url,
-            createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
+            name: profile.full_name || profile.name || 'Student',
+            level: profile.level || '100',
+            semester: profile.semester || '1st',
+            program: profile.program || 'Pharmacy',
+            university: profile.university || 'UCC',
+            avatar_url: profile.avatar_url || currentLocalStudent?.avatar_url,
+            createdAt: profile.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
           },
         });
-      } else if (!currentLocalStudent) {
-        // The signup trigger normally creates this row. This fallback keeps
-        // older projects usable until the SQL migration has been applied.
-        const fallback = {
-          id: userId,
-          full_name: 'Student',
-          level: '100',
-          updated_at: new Date().toISOString(),
-        };
-        const { error: createError } = await supabase.from('profiles').upsert(fallback, { onConflict: 'id' });
-        if (createError) console.warn('Profile row is not available yet:', createError.message);
-        dispatch({
-          type: 'SET_STUDENT',
-          payload: {
-            id: userId,
-            name: 'Student',
-            level: '100',
-            semester: '1st',
-            program: 'Pharmacy',
-            university: 'UCC',
-            createdAt: new Date().toISOString(),
-          },
-        });
+        return;
+      }
+
+      // The signup trigger normally creates this row. This fallback keeps older
+      // projects usable until the SQL migration has been applied; only the two
+      // most stable columns are sent so schema drift/RLS problems do not break
+      // the local-first app.
+      if (!currentLocalStudent) {
+        const { error: createError } = await supabase.from('profiles').upsert(
+          { id: userId, full_name: 'Student' },
+          { onConflict: 'id' },
+        );
+        if (createError && !profileSyncWarningShownRef.current) {
+          profileSyncWarningShownRef.current = true;
+          console.warn('Cloud profile row could not be created; using the local profile.', createError.message);
+        }
+        applyLocalFallback();
       }
       // A mismatched local student is deliberately left untouched here. Login
       // performs an explicit migration prompt before linking that workspace.
     } catch (e) {
-      console.error('Profile fetch failed:', e);
+      if (!profileSyncWarningShownRef.current) {
+        profileSyncWarningShownRef.current = true;
+        console.warn('Profile sync failed; continuing with local data.', e);
+      }
+      applyLocalFallback();
     }
   };
 

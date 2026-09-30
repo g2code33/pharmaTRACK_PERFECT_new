@@ -16,6 +16,7 @@ let lastKnownWorkspaceRaw: string | null | undefined;
 let lastWorkspaceRawStatus: WorkspaceRawStatus | undefined;
 let lastWorkspaceValidationAt = 0;
 const offloadedTextSignatures = new Map<string, string>();
+const loggedSlideTextOffloadFailures = new Set<string>();
 
 export {
   allowWorkspacePersist,
@@ -49,6 +50,7 @@ export function readWorkspaceRaw(): { raw: string | null; status: WorkspaceRawSt
     lastWorkspaceRawStatus = 'missing';
     lastWorkspaceValidationAt = now;
     offloadedTextSignatures.clear();
+    loggedSlideTextOffloadFailures.clear();
     return { raw: null, status: 'missing' };
   }
   try {
@@ -143,6 +145,9 @@ export const loadSlideText = async (slideId: string): Promise<string | null> => 
 
 export const deleteSlideText = async (slideId: string): Promise<void> => {
   offloadedTextSignatures.delete(slideId);
+  for (const key of Array.from(loggedSlideTextOffloadFailures)) {
+    if (key.startsWith(`${slideId}:`)) loggedSlideTextOffloadFailures.delete(key);
+  }
   try {
     await idb.del(fullTextKey(slideId));
   } catch (err) {
@@ -153,6 +158,25 @@ export const deleteSlideText = async (slideId: string): Promise<void> => {
 const textSignature = (text: string): string => (
   `${text.length}:${text.charCodeAt(0) || 0}:${text.charCodeAt(Math.floor(text.length / 2)) || 0}:${text.charCodeAt(text.length - 1) || 0}`
 );
+
+const slideTextOffloadErrorMessage = (err: unknown): string => {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err.trim()) return err;
+  try {
+    return JSON.stringify(err) || 'IndexedDB rejected the write.';
+  } catch {
+    return 'IndexedDB rejected the write.';
+  }
+};
+
+const noteSlideTextOffloadFailure = (slideId: string, signature: string, err: unknown): void => {
+  const key = `${slideId}:${signature}`;
+  if (loggedSlideTextOffloadFailures.has(key)) return;
+  loggedSlideTextOffloadFailures.add(key);
+  console.warn(
+    `Slide text could not be cached in background for ${slideId}; the slide itself was still saved. ${slideTextOffloadErrorMessage(err)}`,
+  );
+};
 
 const ensureWorkspaceCanBeWritten = (): boolean => {
   if (isWorkspacePersistBlocked()) return false;
@@ -180,6 +204,7 @@ const ensureWorkspaceCanBeWritten = (): boolean => {
     lastWorkspaceRawStatus = 'missing';
     lastWorkspaceValidationAt = Date.now();
     offloadedTextSignatures.clear();
+    loggedSlideTextOffloadFailures.clear();
     return true;
   }
   try {
@@ -223,10 +248,18 @@ export const saveState = (state: AppState): void => {
       const signature = textSignature(text);
       if (offloadedTextSignatures.get(slide.id) !== signature) {
         offloadedTextSignatures.set(slide.id, signature);
-        idb.set(fullTextKey(slide.id), text).catch((err) => {
-          offloadedTextSignatures.delete(slide.id);
-          console.error(`Error offloading slide text ${slide.id}:`, err);
-        });
+        idb.set(fullTextKey(slide.id), text)
+          .then(() => loggedSlideTextOffloadFailures.delete(`${slide.id}:${signature}`))
+          .catch((err) => {
+            // Do not delete the signature on failure. IndexedDB can be wedged
+            // temporarily in WebView/Tauri, and deleting it made every autosave
+            // retry the same doomed fire-and-forget write, producing a stream of
+            // "Error offloading slide text ...: null" console errors. The
+            // localStorage copy is already persisted with a searchable excerpt;
+            // opening the source file remains possible, and a new/changed text
+            // signature (or app restart) will try the cache again.
+            noteSlideTextOffloadFailure(slide.id, signature, err);
+          });
       }
 
       return { ...slide, contentText: text.slice(0, CONTENT_TEXT_SEARCH_LIMIT) };

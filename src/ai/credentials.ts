@@ -60,6 +60,23 @@ type MetadataMap = Record<ProviderId, CredentialMetadata>;
 
 let cache: CredentialMap | null = null;
 let metadataCache: MetadataMap | null = null;
+let readWarningShown = false;
+let saveWarningShown = false;
+let clearWarningShown = false;
+
+function warnOnce(kind: 'read' | 'save' | 'clear', message: string): void {
+  if (kind === 'read') {
+    if (readWarningShown) return;
+    readWarningShown = true;
+  } else if (kind === 'save') {
+    if (saveWarningShown) return;
+    saveWarningShown = true;
+  } else if (kind === 'clear') {
+    if (clearWarningShown) return;
+    clearWarningShown = true;
+  }
+  console.warn(message);
+}
 
 function isCredentialMap(value: unknown): value is CredentialMap {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -135,8 +152,13 @@ async function read(): Promise<CredentialMap> {
     cache = encrypted;
     return cache;
   } catch {
-    // Never include a record or value in diagnostics.
-    console.error('AI credentials could not be securely read.');
+    // Never include a record or value in diagnostics. Secure storage can be
+    // temporarily unavailable in WebView/IndexedDB; local-first AI settings must
+    // keep rendering instead of throwing or spamming the console.
+    warnOnce(
+      'read',
+      'Encrypted key vault is temporarily unavailable; continuing without provider keys.',
+    );
     cache = {};
     return cache;
   }
@@ -282,7 +304,7 @@ export async function saveCredentials(
         });
     }
   } catch (error) {
-    console.error('AI credentials could not be securely saved.');
+    warnOnce('save', 'Encrypted key vault save failed; provider keys were not changed.');
     const metadata = await readMetadata();
     await persistMetadata({
       ...metadata,
@@ -374,7 +396,7 @@ export async function clearAllCredentials(): Promise<void> {
     await idb.del(CREDENTIAL_STORAGE_KEY);
     await idb.del(CREDENTIAL_METADATA_KEY);
   } catch {
-    console.error('AI credentials could not be cleared.');
+    warnOnce('clear', 'Encrypted key vault cleanup failed.');
   }
   notifyCredentialChange();
 }
