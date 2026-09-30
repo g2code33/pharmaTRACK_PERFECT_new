@@ -36,7 +36,12 @@ val releaseKeystore = layout.projectDirectory.file("release-keystore.p12").asFil
 val hasReleaseKeystore = releaseKeystore.exists()
 val androidKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD").orEmpty()
 val androidKeyAlias = System.getenv("ANDROID_KEY_ALIAS").orEmpty().ifBlank { "pharmatrack" }
-val androidKeyPassword = System.getenv("ANDROID_KEY_PASSWORD").orEmpty()
+val configuredAndroidKeyPassword = System.getenv("ANDROID_KEY_PASSWORD").orEmpty()
+// keytool-created PKCS12 keystores use the store password as the private-key
+// password. Using the store password here prevents a stale/wrong key-password
+// secret from breaking update-compatible release signing. The workflow still
+// requires ANDROID_KEY_PASSWORD so existing secret setup remains explicit.
+val androidKeyPassword = androidKeystorePassword
 val allowDebugSigning = (
     (project.findProperty("pharmaAllowDebugSigning") ?: System.getenv("PHARMA_ALLOW_DEBUG_SIGNING") ?: "false")
         .toString()
@@ -139,7 +144,7 @@ tasks.matching { task ->
             val missingSigningEnv = listOf(
                 "ANDROID_KEYSTORE_PASSWORD" to androidKeystorePassword,
                 "ANDROID_KEY_ALIAS" to androidKeyAlias,
-                "ANDROID_KEY_PASSWORD" to androidKeyPassword,
+                "ANDROID_KEY_PASSWORD" to configuredAndroidKeyPassword,
             ).filter { it.second.isBlank() }.joinToString { it.first }
             if (missingSigningEnv.isNotBlank()) {
                 throw GradleException(
