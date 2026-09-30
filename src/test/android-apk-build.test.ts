@@ -18,6 +18,7 @@ describe('Android APK build and signing', () => {
     expect(gradle).toContain('repositoryRoot.resolve("package.json")');
     expect(gradle).toContain('versionCode = pharmaVersionCode');
     expect(gradle).toContain('versionName = pharmaVersionName');
+    expect(gradle).toContain('buildConfig = true');
     expect(gradle).toMatch(
       /versionParts\[0\] \* 10_000 \+ versionParts\[1\] \* 100 \+ versionParts\[2\]/,
     );
@@ -56,6 +57,8 @@ describe('Android APK build and signing', () => {
     expect(main).toContain('WebViewAssetLoader');
     expect(main).toContain('https://$APP_ASSET_DOMAIN');
     expect(main).toContain('onShowFileChooser');
+    expect(main).toContain('emptyArray<Uri>()');
+    expect(main).toContain('Uri::class.java');
     expect(main).toContain('settings.textZoom = 100');
     expect(client).toContain('assetLoader.shouldInterceptRequest');
     expect(manifest).toContain('android:hardwareAccelerated="true"');

@@ -253,14 +253,14 @@ jobs:
             python3 - <<'PY' | sed 's/^/ANDROID_GRADLE_ROOT: /'
           from pathlib import Path
           lines = Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines()
-          needles = ('FAILURE:', '* What went wrong:', '* Try:', '* Exception is:', 'Execution failed', 'Caused by:', '> ')
+          needles = ('e:', 'w:', 'FAILURE:', '* What went wrong:', '* Try:', '* Exception is:', 'Execution failed', 'Caused by:', '> ')
           picked = [line for line in lines if line.startswith(needles) or 'Execution failed' in line or 'Caused by:' in line]
-          for line in (picked[-120:] or lines[-120:]):
+          for line in (picked[-160:] or lines[-160:]):
               print(line)
           PY
             echo "Last 160 lines from the Android Gradle failure:"
             tail -n 160 /tmp/pharmatrack-android-gradle.log | sed 's/^/ANDROID_GRADLE: /'
-            message="$(python3 -c "from pathlib import Path; lines=Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines(); needles=('FAILURE:', '* What went wrong:', 'Execution failed', 'Caused by:', '> '); picked=[line for line in lines if line.startswith(needles) or 'Execution failed' in line or 'Caused by:' in line]; text='\n'.join((picked or lines)[-40:]); print(text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))")"
+            message="$(python3 -c "from pathlib import Path; lines=Path('/tmp/pharmatrack-android-gradle.log').read_text(errors='replace').splitlines(); needles=('e:', 'w:', 'FAILURE:', '* What went wrong:', 'Execution failed', 'Caused by:', '> '); picked=[line for line in lines if line.startswith(needles) or 'Execution failed' in line or 'Caused by:' in line]; text='\n'.join((picked or lines)[-60:]); print(text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))")"
             echo "::error title=Android Gradle build failed::$message"
             exit "$status"
           fi

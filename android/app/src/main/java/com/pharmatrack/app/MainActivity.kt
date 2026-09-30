@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
-        filePathCallback?.onReceiveValue(uris ?: emptyArray())
+        filePathCallback?.onReceiveValue(uris ?: emptyArray<Uri>())
         filePathCallback = null
     }
 
@@ -311,9 +311,18 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
+    private fun extraStreamUri(intent: Intent): Uri? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+        }
+    }
+
     private fun handleIncomingFileIntent(intent: Intent) {
         val action = intent.action
-        val uri: Uri? = intent.data ?: intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        val uri: Uri? = intent.data ?: extraStreamUri(intent)
         if ((Intent.ACTION_VIEW == action || Intent.ACTION_SEND == action) && uri != null) {
             try {
                 contentResolver.openInputStream(uri)?.use { stream: InputStream ->

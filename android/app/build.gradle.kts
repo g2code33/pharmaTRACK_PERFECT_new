@@ -77,6 +77,10 @@ android {
         versionName = pharmaVersionName
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
