@@ -20,7 +20,7 @@ import { quickQuizRouteFromAnyText } from '../utils/appLinks';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.2';
+const APP_VERSION_FALLBACK = '1.2.0';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
