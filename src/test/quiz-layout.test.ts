@@ -21,4 +21,11 @@ describe('standard quiz responsive layout', () => {
     expect(quiz).toContain('aria-label="Jump to question"');
     expect(quiz).toContain('data-quiz-jump-grid="right-fixed"');
   });
+
+  it('lets a reviewed quiz be resat with the same questions', () => {
+    expect(quiz).toContain('const resitCurrentQuiz = () =>');
+    expect(quiz).toContain('Resit quiz');
+    expect(quiz).toContain('setIsReviewMode(true);');
+    expect(quiz).toContain('setIsReviewMode(false);');
+  });
 });

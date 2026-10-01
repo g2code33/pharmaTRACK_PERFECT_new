@@ -534,6 +534,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const deckRef = useRef<PptxDocument | null>(null);
   const jumpAppliedRef = useRef(false);
   const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const resumeFrameRef = useRef<number | null>(null);
 
   const total = deck?.slides.length ?? 0;
 
@@ -676,6 +677,26 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     ro.observe(el);
     return () => ro.disconnect();
   }, [deck, mode, error, fs]);
+
+  useEffect(() => {
+    const onResume = () => {
+      setMediaEpoch((epoch) => epoch + 1);
+      if (resumeFrameRef.current != null) window.cancelAnimationFrame(resumeFrameRef.current);
+      resumeFrameRef.current = window.requestAnimationFrame(() => {
+        resumeFrameRef.current = null;
+        const stage = stageRef.current;
+        if (!stage) return;
+        stage.style.willChange = 'transform';
+        stage.getBoundingClientRect();
+        window.requestAnimationFrame(() => { stage.style.willChange = ''; });
+      });
+    };
+    window.addEventListener('pharmatrack:resume', onResume);
+    return () => {
+      window.removeEventListener('pharmatrack:resume', onResume);
+      if (resumeFrameRef.current != null) window.cancelAnimationFrame(resumeFrameRef.current);
+    };
+  }, []);
 
   /* Ctrl/⌘ + wheel zooms (trackpad pinch on laptops), like a PDF page. */
   useEffect(() => {
@@ -1322,7 +1343,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           onMouseUp={handleMouseUp}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
-          className={`relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
+          className={`pptx-viewer-scroll relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
           data-testid="pptx-stage"
         >
           <div className="flex min-h-full min-w-full items-center justify-center p-4">
@@ -1333,7 +1354,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
               >
                 <div
                   ref={stageRef}
-                  className="absolute left-0 top-0 origin-top-left shadow-2xl ring-1 ring-black/50"
+                  className="pptx-slide-stage absolute left-0 top-0 origin-top-left shadow-2xl ring-1 ring-black/50"
                   style={{ transform: `scale(${scale})`, width: deck.slideWidth, height: deck.slideHeight }}
                 >
                   {currentSlide ? (

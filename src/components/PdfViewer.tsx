@@ -79,12 +79,12 @@ const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
  * Pages rendered around the viewport. Wide enough that normal scrolling always
  * lands on an already-painted page.
  */
-const RENDER_WINDOW = 1;
+const RENDER_WINDOW = 2;
 /**
  * Beyond this, canvases are released. One page at high DPI can be tens of MB,
  * so an unbounded cache makes the desktop WebView feel frozen on lecture decks.
  */
-const KEEP_WINDOW = 5;
+const KEEP_WINDOW = 8;
 
 const yieldToMainThread = () => new Promise<void>((resolve) => {
   if (typeof window === 'undefined') { resolve(); return; }
@@ -152,6 +152,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const panState = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const panFrame = useRef<number | null>(null);
   const panPointer = useRef<{ x: number; y: number } | null>(null);
+  const currentPageRef = useRef(1);
+  const scrollFrame = useRef<number | null>(null);
 
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
@@ -167,6 +169,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   useEffect(() => {
     searchRef.current = { query, matchCase, wholeWords, all: highlightAllMatches };
   }, [query, matchCase, wholeWords, highlightAllMatches]);
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
 
   const scaledSize = useCallback((pageNum: number) => {
     const base = baseSizes[pageNum - 1];
@@ -445,24 +450,76 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     })();
   }, [doc, numPages, renderPage]);
 
+  useEffect(() => {
+    const onResume = () => {
+      if (!doc || !numPages) return;
+      const centre = currentPageRef.current;
+      for (let page = Math.max(1, centre - 1); page <= Math.min(numPages, centre + 1); page += 1) {
+        renderedKey.current.delete(page);
+        void renderPage(page, true);
+      }
+      renderWindow(centre);
+    };
+    window.addEventListener('pharmatrack:resume', onResume);
+    return () => window.removeEventListener('pharmatrack:resume', onResume);
+  }, [doc, numPages, renderPage, renderWindow]);
+
   /* ---------------- viewport tracking ---------------- */
   useEffect(() => {
     if (!doc || !numPages || !baseSizes.length) return;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
-            const pageNum = Number((entry.target as HTMLElement).dataset.page);
+          if (!entry.isIntersecting) continue;
+          const pageNum = Number((entry.target as HTMLElement).dataset.page);
+          renderWindow(pageNum);
+          if (entry.intersectionRatio > 0.45) {
+            currentPageRef.current = pageNum;
             setCurrentPage(pageNum);
             setPageInput(String(pageNum));
           }
         }
       },
-      { root: containerRef.current, threshold: [0.5] },
+      { root: containerRef.current, rootMargin: '900px 0px', threshold: [0.01, 0.45, 0.7] },
     );
     pageRefs.current.slice(0, numPages).forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
-  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode]);
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, renderWindow]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!doc || !el || !numPages || !baseSizes.length) return;
+    const findNearestPage = () => {
+      scrollFrame.current = null;
+      const rootRect = el.getBoundingClientRect();
+      const probeX = rootRect.left + rootRect.width * 0.5;
+      const probeY = scrollMode === 'horizontal'
+        ? rootRect.top + rootRect.height * 0.5
+        : rootRect.top + rootRect.height * 0.42;
+      const hit = typeof document.elementsFromPoint === 'function'
+        ? document.elementsFromPoint(probeX, probeY).find((node) => (node as HTMLElement).closest?.('[data-page]')) as HTMLElement | undefined
+        : undefined;
+      const pageElement = hit?.closest?.('[data-page]') as HTMLElement | null | undefined;
+      let best = pageElement?.dataset.page ? Number(pageElement.dataset.page) : currentPageRef.current;
+      if (!Number.isFinite(best) || best < 1 || best > numPages) best = currentPageRef.current;
+      renderWindow(best);
+      if (best !== currentPageRef.current) {
+        currentPageRef.current = best;
+        setCurrentPage(best);
+        setPageInput(String(best));
+      }
+    };
+    const onScroll = () => {
+      if (scrollFrame.current == null) scrollFrame.current = window.requestAnimationFrame(findNearestPage);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (scrollFrame.current != null) window.cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    };
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, renderWindow]);
 
   // Keep the render window centred on wherever the user is.
   useEffect(() => { renderWindow(currentPage); }, [currentPage, renderWindow]);
@@ -1034,7 +1091,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         <div
           ref={containerRef}
           onMouseDown={onPanStart}
-          className={`flex-1 min-h-0 py-4 px-2 ${
+          className={`pdf-viewer-scroll flex-1 min-h-0 py-4 px-2 ${
             scrollMode === 'horizontal' ? 'overflow-x-auto overflow-y-hidden flex items-start gap-4'
               : scrollMode === 'wrapped' ? 'overflow-auto flex flex-wrap justify-center items-start gap-4 content-start'
               : 'overflow-y-scroll overflow-x-auto'
@@ -1061,7 +1118,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 key={n}
                 data-page={n}
                 ref={(el) => { pageRefs.current[n - 1] = el; }}
-                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mb-4'}`}
+                className={`pdf-page-shell bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mb-4'}`}
                 // Sized from the measured viewport before any pixels are drawn,
                 // so the scrollbar is correct and jumps land precisely.
                 // marginInline:auto rather than mx-auto so the value is stable

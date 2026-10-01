@@ -110,8 +110,10 @@ const Quiz: React.FC = () => {
   }, [quizStarted, settings.timed, timeRemaining, quizFinished]);
 
   const reviewQuiz = (history: QuizHistory) => {
-    const qs = state.examQuestions.filter((q) => history.questionsUsed.includes(q.id));
+    const byId = new Map(state.examQuestions.map((q) => [q.id, q]));
+    const qs = history.questionsUsed.map((id) => byId.get(id)).filter(Boolean) as ExamQuestion[];
     setQuizQuestions(qs);
+    setIsReviewMode(true);
 
     // We recreate the answers map exactly as it was during the quiz so the Results screen can read it
     const prevAnswers = new Map();
@@ -146,6 +148,7 @@ const Quiz: React.FC = () => {
     setCurrentIndex(0);
     setAnswers(new Map());
     setTimeRemaining(settings.timeLimit * 60);
+    setIsReviewMode(false);
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
@@ -183,6 +186,24 @@ const Quiz: React.FC = () => {
     const existing = newAnswers.get(questionId) || { answer: '', flagged: false };
     newAnswers.set(questionId, { ...existing, flagged: !existing.flagged });
     setAnswers(newAnswers);
+  };
+
+  const resitCurrentQuiz = () => {
+    const sourceIds = results?.questionsUsed?.length ? results.questionsUsed : quizQuestions.map((q) => q.id);
+    const byId = new Map(state.examQuestions.map((q) => [q.id, q]));
+    const selected = sourceIds
+      .map((id) => byId.get(id) || quizQuestions.find((q) => q.id === id))
+      .filter(Boolean) as ExamQuestion[];
+    if (!selected.length) return;
+    setQuizQuestions(selected);
+    setCurrentIndex(0);
+    setAnswers(new Map());
+    setTimeRemaining(settings.timeLimit * 60);
+    setIsReviewMode(false);
+    setQuizStarted(true);
+    setQuizFinished(false);
+    setResults(null);
+    window.requestAnimationFrame(() => activeSetRef.current?.scrollIntoView({ block: 'start' }));
   };
 
   const finishQuiz = () => {
@@ -794,16 +815,24 @@ const Quiz: React.FC = () => {
         </div>
 
         {/* Actions */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+          <button
+            onClick={resitCurrentQuiz}
+            className="flex-1 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+          >
+            <RotateCcw className="w-5 h-5" />
+            Resit quiz
+          </button>
           <button
             onClick={() => {
               setQuizStarted(false);
               setQuizFinished(false);
               setResults(null);
+              setIsReviewMode(false);
             }}
             className="flex-1 py-3 border border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 flex items-center justify-center gap-2"
           >
-            <RotateCcw className="w-5 h-5" />
+            <Brain className="w-5 h-5" />
             New Quiz
           </button>
           <Link
@@ -937,7 +966,7 @@ const Quiz: React.FC = () => {
           </div>
 
           {/* Navigation appears after the third question in the current set. */}
-          <div className="grid grid-cols-3 gap-2 rounded-2xl border border-gray-100 bg-white p-2 shadow-sm" data-quiz-set-navigation>
+          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)] gap-2 rounded-2xl border border-gray-100 bg-white p-2 shadow-sm" data-quiz-set-navigation>
             <button
               onClick={() => goToQuestion(setStart - QUIZ_SET_SIZE)}
               disabled={!canGoPreviousSet}

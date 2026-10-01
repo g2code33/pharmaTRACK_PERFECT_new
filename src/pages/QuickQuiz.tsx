@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import {
   AlertTriangle,
@@ -124,6 +124,7 @@ type PackState = {
 const QuickQuiz: React.FC = () => {
   const { state, dispatch, addActivity } = useApp();
   const runtime = detectRuntimeCapabilities();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const { code: routeCode } = useParams<{ code?: string }>();
   const paramsKey = `${params.toString()}|${routeCode || ''}`;
@@ -400,6 +401,10 @@ const QuickQuiz: React.FC = () => {
     const opened = openCurrentQuickQuizInInstalledApp(false);
     if (!opened && typeof window !== 'undefined') window.location.href = appHomeHref;
   };
+  const handleBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);
+    else navigate('/');
+  };
 
   useEffect(() => {
     if (!showWebAppCta || typeof window === 'undefined') return undefined;
@@ -499,6 +504,13 @@ const QuickQuiz: React.FC = () => {
       <div className="min-h-[100dvh] bg-slate-100">
         {webAppCta}
         <div className="mx-auto max-w-3xl space-y-4 safe-area-x pt-safe pb-safe p-4">
+          <button
+            type="button"
+            onClick={handleBack}
+            className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-black text-slate-700 shadow-sm ring-1 ring-slate-200"
+          >
+            <ChevronLeft className="h-4 w-4" /> Back
+          </button>
           <div className="rounded-[2rem] bg-gradient-to-br from-[#0F172A] to-[#2D6A4F] p-6 text-white shadow-xl">
             <div className="flex items-center gap-3 mb-4">
               <div className="h-14 w-14 rounded-2xl bg-white/15 flex items-center justify-center">
@@ -634,6 +646,15 @@ const QuickQuiz: React.FC = () => {
       <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-1.5 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-2 sm:pt-3">
         <div className="mx-auto max-w-7xl rounded-2xl bg-[#0F172A] p-2.5 text-white shadow-lg sm:p-3">
           <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={handleBack}
+              className="flex h-9 shrink-0 items-center justify-center gap-1 rounded-xl bg-white/10 px-2 text-[11px] font-black uppercase text-white hover:bg-white/15 sm:h-10 sm:px-3"
+              aria-label="Back"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              <span className="hidden sm:inline">Back</span>
+            </button>
             <div className="min-w-0 flex-1">
               <p className="text-[8px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">
                 PharmaTRACK Quick Quiz
@@ -765,7 +786,7 @@ const QuickQuiz: React.FC = () => {
               })}
             </div>
 
-            <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm" data-quick-quiz-set-navigation>
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)] gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm" data-quick-quiz-set-navigation>
               <button
                 onClick={() => goToQuestionSet(setStart - QUIZ_SET_SIZE)}
                 disabled={!canGoPreviousSet}

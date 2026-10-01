@@ -15,7 +15,9 @@ const viewer = fs.readFileSync(
 );
 const css = fs.readFileSync(path.resolve(__dirname, '../index.css'), 'utf8');
 const reader = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const pptxViewer = fs.readFileSync(path.resolve(__dirname, '../components/PptxViewer.tsx'), 'utf8');
 const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx'), 'utf8');
+const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
 const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
 const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
 const studyMaterials = fs.readFileSync(path.resolve(__dirname, '../pages/StudyMaterials.tsx'), 'utf8');
@@ -146,7 +148,7 @@ describe('instant page navigation', () => {
   });
 
   it('pre-renders a small sequential window around the viewport', () => {
-    expect(viewer).toContain('const RENDER_WINDOW = 1');
+    expect(viewer).toContain('const RENDER_WINDOW = 2');
     expect(viewer).toMatch(/const renderWindow = useCallback/);
     expect(viewer).toContain('await renderPage(p);');
     expect(viewer).toContain('await yieldToMainThread();');
@@ -154,7 +156,7 @@ describe('instant page navigation', () => {
 
   it('evicts distant canvases so long documents stay bounded', () => {
     // A single high-DPR page canvas is many MB; keeping 100 would exhaust memory.
-    expect(viewer).toContain('const KEEP_WINDOW = 5');
+    expect(viewer).toContain('const KEEP_WINDOW = 8');
     expect(viewer).toMatch(/Math\.abs\(p - centre\) > KEEP_WINDOW/);
   });
 
@@ -229,6 +231,12 @@ describe('stable layout', () => {
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });
 
+  it('adds a universal back button to the app header on non-home routes', () => {
+    expect(layout).toContain("const showBackButton = location.pathname !== '/';");
+    expect(layout).toContain('aria-label="Go back"');
+    expect(layout).toContain("if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);");
+  });
+
   it('does not force dark-mode native desktop backgrounds back to white', () => {
     const darkShell = css.match(/\.dark \.native-desktop-shell \{([\s\S]*?)\}/)?.[1] ?? '';
     const darkHeader = css.match(/\.dark \.native-desktop-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
@@ -277,6 +285,29 @@ describe('stable layout', () => {
     // An appearing/disappearing scrollbar changed the track width, which moved
     // every centred page horizontally.
     expect(viewer).toContain('overflow-y-scroll');
+  });
+
+  it('renders ahead during PDF scrolling and repaints canvases after app resume', () => {
+    expect(viewer).toContain('const RENDER_WINDOW = 2;');
+    expect(viewer).toContain("rootMargin: '900px 0px'");
+    expect(viewer).toContain("addEventListener('scroll', onScroll, { passive: true })");
+    expect(viewer).toContain("window.addEventListener('pharmatrack:resume', onResume)");
+    expect(css).toContain('.pdf-viewer-scroll');
+    expect(css).toContain('.pdf-page-shell');
+  });
+
+  it('has a resume-paint watchdog so returning to the app cannot leave a black frame', () => {
+    expect(app).toContain('ResumePaintRecovery');
+    expect(app).toContain("window.dispatchEvent(new CustomEvent('pharmatrack:resume'))");
+    expect(app).toContain("window.addEventListener('pageshow', repaint)");
+    expect(css).toContain('html.pharmatrack-resume-paint #root');
+  });
+
+  it('also refreshes the slide viewer surface after resume', () => {
+    expect(pptxViewer).toContain("window.addEventListener('pharmatrack:resume', onResume)");
+    expect(pptxViewer).toContain('pptx-viewer-scroll');
+    expect(pptxViewer).toContain('pptx-slide-stage');
+    expect(css).toContain('.pptx-viewer-scroll');
   });
 
   it('centres pages with a stable margin rather than a utility class', () => {

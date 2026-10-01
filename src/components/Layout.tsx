@@ -19,7 +19,7 @@ import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa'
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.124';
+const APP_VERSION_FALLBACK = '1.1.125';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -95,6 +95,11 @@ const Layout: React.FC = () => {
   });
   const runtime = detectRuntimeCapabilities();
   const isReaderRoute = location.pathname.startsWith('/read/');
+  const showBackButton = location.pathname !== '/';
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);
+    else navigate('/');
+  };
   const nativePlatformLabel = runtime.nativeWebview && typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
     ? 'Windows App'
     : 'Desktop App';
@@ -467,10 +472,34 @@ const Layout: React.FC = () => {
                   <Menu className="w-6 h-6" />
                 </button>
 
+                {showBackButton && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="hidden sm:flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-black text-slate-600 shadow-sm transition-all hover:bg-slate-50 hover:text-[#2D6A4F] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    title="Back"
+                    aria-label="Go back"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                    <span className="hidden xl:inline">Back</span>
+                  </button>
+                )}
+
                 {/* Universal Home Button */}
                 <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
                    <Home className="w-5 h-5" />
                 </Link>
+                {showBackButton && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="sm:hidden touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    title="Back"
+                    aria-label="Go back"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                )}
                 <Link to="/" className="sm:hidden touch-target flex items-center justify-center bg-[#2D6A4F]/10 text-[#2D6A4F] rounded-2xl transition-all shadow-sm" title="Go Home">
                    <Home className="w-5 h-5" />
                 </Link>

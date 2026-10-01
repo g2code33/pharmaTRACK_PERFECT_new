@@ -23,6 +23,12 @@ describe('quick quiz responsive layout', () => {
     );
   });
 
+  it('adds an explicit back action to standalone quick quiz screens', () => {
+    expect(quickQuiz).toContain('const handleBack = () =>');
+    expect(quickQuiz).toContain('onClick={handleBack}');
+    expect(quickQuiz).toContain('aria-label="Back"');
+  });
+
   it('pins the question jump selection to the right on desktop while staying scrollable', () => {
     expect(quickQuiz).toContain('lg:grid-cols-[minmax(0,1fr)_18rem]');
     expect(quickQuiz).toContain('lg:sticky lg:top-3');

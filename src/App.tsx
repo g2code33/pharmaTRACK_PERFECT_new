@@ -155,6 +155,52 @@ const AppLinkRedirect: React.FC = () => {
   return <PageLoading />;
 };
 
+/**
+ * Some Android/PWA/desktop WebViews can resume from sleep with a stale GPU
+ * surface: the app is still running, but the compositor shows a black frame.
+ * On every real resume/focus we force a tiny root repaint and tell heavy
+ * viewers (PDF canvases, slide renderers) to repaint their visible content.
+ */
+const ResumePaintRecovery: React.FC = () => {
+  useEffect(() => {
+    let timer: number | undefined;
+    let guardTimer: number | undefined;
+    const repaint = () => {
+      if (typeof document === 'undefined' || typeof window === 'undefined') return;
+      const root = document.getElementById('root');
+      if (!root) return;
+      window.clearTimeout(timer);
+      window.clearTimeout(guardTimer);
+      document.documentElement.classList.add('pharmatrack-resume-paint');
+      root.style.transform = 'translateZ(0)';
+      root.getBoundingClientRect();
+      window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
+      timer = window.setTimeout(() => {
+        root.style.transform = '';
+        document.documentElement.classList.remove('pharmatrack-resume-paint');
+      }, 360);
+      guardTimer = window.setTimeout(() => {
+        const style = window.getComputedStyle(root);
+        if (!root.childElementCount || style.display === 'none' || style.visibility === 'hidden') {
+          window.location.reload();
+        }
+      }, 1200);
+    };
+    const onVisible = () => { if (document.visibilityState === 'visible') repaint(); };
+    window.addEventListener('pageshow', repaint);
+    window.addEventListener('focus', repaint);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(guardTimer);
+      window.removeEventListener('pageshow', repaint);
+      window.removeEventListener('focus', repaint);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  return null;
+};
+
 /** Shown only for the few hundred milliseconds a page chunk takes to arrive. */
 const PageLoading: React.FC = () => (
   <div className="flex items-center justify-center py-16" data-testid="page-loading">
@@ -197,6 +243,7 @@ const App = () => {
     return (
       <ErrorBoundary>
         <HashRouter>
+          <ResumePaintRecovery />
           <div className="min-h-screen bg-slate-50">
             <StorageNoticeBanner />
             <main className="p-4 sm:p-8">
@@ -214,6 +261,7 @@ const App = () => {
     <ErrorBoundary>
       <AIProvider>
         <HashRouter>
+          <ResumePaintRecovery />
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />
             <NativeAppLinkRouter />

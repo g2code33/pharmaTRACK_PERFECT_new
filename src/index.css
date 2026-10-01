@@ -58,6 +58,11 @@ html.pharmatrack-resizing * {
 html.pharmatrack-resizing * {
   cursor: col-resize !important;
 }
+html.pharmatrack-resume-paint #root,
+html.pharmatrack-resume-paint .app-shell {
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
 
 .perf-deferred-card,
 .perf-deferred-row {
@@ -443,6 +448,35 @@ html.dark select {
    canvas. This is what makes a canvas-rendered PDF selectable, copyable and
    highlightable; without it the page is just pixels.
    --------------------------------------------------------------------------- */
+.pdf-viewer-scroll {
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+  scroll-behavior: auto;
+  contain: layout paint;
+}
+.pdf-page-shell {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: auto 900px;
+}
+.pdf-page-shell canvas {
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+.pptx-viewer-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+}
+.pptx-slide-stage {
+  backface-visibility: hidden;
+  contain: layout paint style;
+}
+html.pharmatrack-input-active .pdf-text-layer,
+html.pharmatrack-resizing .pdf-text-layer {
+  pointer-events: none !important;
+}
+
 .pdf-text-layer {
   overflow: hidden;
   opacity: 1;
