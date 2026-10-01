@@ -1,3 +1,5 @@
+import { hasAndroidNativeBridge, isPWAStandalone, isTauriRuntime } from '../platform/runtime';
+
 const PHARMATRACK_PROTOCOL = 'pharmatrack';
 const ANDROID_PACKAGE_NAME = 'com.pharmatrack.app';
 const DEFAULT_WEB_FALLBACK = 'https://pharmatrack-web.pages.dev/#/';
@@ -313,6 +315,132 @@ export const openCurrentQuickQuizInInstalledApp = (automatic = false): string | 
   const route = getQuickQuizRouteFromHref(window.location.href);
   if (!route) return null;
   return openRouteInInstalledApp(route, { fallbackHref: window.location.href, automatic });
+};
+
+/** True when this page is already running inside an installed PharmaTRACK app. */
+export const isRunningInsideInstalledApp = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return isTauriRuntime() || hasAndroidNativeBridge() || isPWAStandalone();
+};
+
+export type AppLaunchOutcome = 'already-in-app' | 'installed-app' | 'store';
+
+const clickHiddenLink = (href: string): void => {
+  const link = document.createElement('a');
+  link.href = href;
+  link.rel = 'noopener noreferrer';
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  window.setTimeout(() => link.remove(), 1000);
+};
+
+/**
+ * Resolves `true` as soon as the OS hands the window over to another app (the
+ * page is hidden or loses focus), and `false` when nothing claimed the link.
+ */
+const waitForInstalledAppTakeover = (timeoutMs: number): Promise<boolean> =>
+  new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (launched: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onLeft);
+      window.removeEventListener('pagehide', onLeft);
+      resolve(launched);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') finish(true);
+    };
+    const onLeft = () => finish(true);
+    const timer = window.setTimeout(() => finish(false), timeoutMs);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onLeft);
+    window.addEventListener('pagehide', onLeft);
+  });
+
+/**
+ * "Get app" behaviour for every platform: try the copy of PharmaTRACK already
+ * installed on this device first — Android APK, Windows EXE, Linux DEB or an
+ * installed PWA — and only send the user to the public store page when nothing
+ * on the device claims the link. The store page serves all of those builds, so
+ * it is the final fallback rather than the first stop.
+ */
+export const openInstalledAppOrStore = async (
+  route = '/',
+  options: {
+    storeUrl?: string;
+    timeoutMs?: number;
+    /** Top-level navigation that hands the launch to the installed app. */
+    navigate?: (url: string) => void;
+    /** How a desktop install is pinged; a hidden link keeps error pages away. */
+    pingInstalledApp?: (url: string) => void;
+    /** How the store page is opened once nothing on the device answered. */
+    openStore?: (url: string) => void;
+  } = {},
+): Promise<AppLaunchOutcome> => {
+  const storeUrl = options.storeUrl || APP_STORE_URL;
+  const timeoutMs = options.timeoutMs ?? 1200;
+
+  if (typeof window === 'undefined' || typeof document === 'undefined') return 'store';
+
+  const navigate = options.navigate || ((url: string) => {
+    window.location.href = url;
+  });
+  const pingInstalledApp = options.pingInstalledApp || clickHiddenLink;
+  const goToStore = () => {
+    if (options.openStore) {
+      options.openStore(storeUrl);
+      return;
+    }
+    const opened = window.open(storeUrl, '_blank', 'noopener,noreferrer');
+    if (!opened) window.location.href = storeUrl;
+  };
+
+  // Already inside the installed app — there is nothing to download, so stay
+  // where the user is instead of bouncing them out to a store page.
+  if (isRunningInsideInstalledApp()) return 'already-in-app';
+
+  // The installed app finds the quiz on its next launch even when the OS
+  // refuses to hand the link over.
+  if (isQuickQuizRoute(route)) rememberPendingQuickQuiz(route);
+
+  // iPhone and iPad cannot launch an installed app from a link, and unknown
+  // schemes only raise a Safari error sheet, so the store page is the one
+  // place that can actually help there.
+  if (isAppleMobileBrowser()) {
+    goToStore();
+    return 'store';
+  }
+
+  // Android decides this natively: the intent opens the installed APK, and
+  // Android itself follows the fallback URL to the store when it is missing.
+  if (shouldUseAndroidApkIntent()) {
+    navigate(androidIntentForRoute(route, storeUrl));
+    return 'installed-app';
+  }
+
+  // An installed PWA claims web+pharmatrack: through the manifest, but only a
+  // top-level navigation hands the launch over, so it is used exclusively when
+  // the browser confirms the app is installed.
+  if ((await isInstalledPwaDetected()) === true) {
+    navigate(pwaProtocolLinkForRoute(route));
+    return 'installed-app';
+  }
+
+  // Windows EXE and Linux DEB installs register the pharmatrack: scheme.
+  const takeover = waitForInstalledAppTakeover(timeoutMs);
+  pingInstalledApp(appDeepLinkForRoute(route));
+  if (await takeover) return 'installed-app';
+
+  goToStore();
+  return 'store';
 };
 
 /**

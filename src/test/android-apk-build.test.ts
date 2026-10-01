@@ -92,4 +92,17 @@ describe('Android APK build and signing', () => {
     expect(workflow).toContain('aapt2 dump badging');
     expect(workflow).toContain('PharmaTRACK-${{ needs.build-windows.outputs.version }}.apk');
   });
+
+  it('attaches release assets with the GitHub CLI so a reused tag cannot fail the build', () => {
+    const workflow = read('.github/workflows/release.yml');
+    // softprops/action-gh-release PATCHes the release before uploading, which
+    // GitHub refuses with "Resource not accessible by integration" as soon as
+    // the tag already has an older published release.
+    expect(workflow).not.toMatch(/uses:\s*softprops\/action-gh-release/);
+    expect(workflow).toMatch(/Force Upload release assets[\s\S]*gh release upload "\$TAG" latest\.json "\$APK_NAME" --clobber/);
+    expect(workflow).toMatch(/Force Upload release assets[\s\S]*gh release edit "\$TAG" --draft=false --latest/);
+    expect(workflow).toContain('Release asset missing');
+    expect(workflow).toContain('Release asset not attached');
+    expect(workflow).toContain('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
+  });
 });

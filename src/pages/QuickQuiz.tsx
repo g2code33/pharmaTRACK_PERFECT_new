@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -34,6 +35,7 @@ import {
   APP_STORE_URL,
   getQuickQuizRouteFromHref,
   openCurrentQuickQuizInInstalledApp,
+  openInstalledAppOrStore,
   rememberPendingQuickQuiz,
 } from '../utils/appLinks';
 import { gradeAnswer } from '../utils/questionBank';
@@ -572,6 +574,19 @@ const QuickQuiz: React.FC = () => {
     const opened = openCurrentQuickQuizInInstalledApp(false);
     if (!opened && typeof window !== 'undefined') window.location.href = appHomeHref;
   };
+
+  // "Get app" never jumps straight to the store: the copy of PharmaTRACK
+  // already installed on this device (APK, Windows EXE, Linux DEB or PWA) gets
+  // the first chance, and the store page is only used when nothing answers.
+  const handleGetApp = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    const route =
+      (typeof window === 'undefined' ? null : getQuickQuizRouteFromHref(window.location.href)) ||
+      '/';
+    void openInstalledAppOrStore(route);
+  };
+
   const handleBack = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);
     else navigate('/');
@@ -644,6 +659,7 @@ const QuickQuiz: React.FC = () => {
             href={APP_STORE_URL}
             target="_blank"
             rel="noreferrer"
+            onClick={handleGetApp}
             className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
           >
             <Download className="h-4 w-4" /> Get the app
@@ -689,6 +705,8 @@ const QuickQuiz: React.FC = () => {
             href={APP_STORE_URL}
             target="_blank"
             rel="noreferrer"
+            onClick={handleGetApp}
+            title="Opens PharmaTRACK if it is already installed, otherwise the download page"
             className="inline-flex items-center gap-2 rounded-full border border-white/30 px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-white/10"
           >
             <Download className="h-4 w-4" /> Get app

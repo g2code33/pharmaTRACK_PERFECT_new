@@ -344,12 +344,69 @@ jobs:
           echo "Android APK verified: release-signed and versionName $BADGE_VERSION"
 
       # Explicitly force GitHub to attach latest.json and the signed APK to the release.
+      #
+      # softprops/action-gh-release PATCHes the release before it uploads anything,
+      # echoing the release's own raw target_commitish SHA back to GitHub. When the
+      # tag already has an older published release (which happens as soon as a
+      # version number is reused), that update is refused with
+      # "Resource not accessible by integration" even though the job has
+      # contents: write, and the whole release job fails after a successful build.
+      # The GitHub CLI only touches the asset endpoint plus a minimal release
+      # PATCH, so republishing an existing tag keeps working.
       - name: Force Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.build-windows.outputs.version }}
-          files: |
-            latest.json
-            PharmaTRACK-${{ needs.build-windows.outputs.version }}.apk
-          draft: false
-          make_latest: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          APP_VER: ${{ needs.build-windows.outputs.version }}
+          APK_NAME: PharmaTRACK-${{ needs.build-windows.outputs.version }}.apk
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$APP_VER"
+
+          for asset in latest.json "$APK_NAME"; do
+            if [ ! -s "$asset" ]; then
+              echo "::error title=Release asset missing::$asset was not produced by this run."
+              exit 1
+            fi
+          done
+
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "Reusing existing release $TAG."
+          else
+            echo "No release found for $TAG — creating it."
+            gh release create "$TAG" \
+              --title "PharmaTRACK $TAG" \
+              --notes "PharmaTRACK update release $TAG" \
+              --target "$COMMIT_SHA" \
+              --draft
+          fi
+
+          # Asset uploads only need contents: write, so they succeed on brand new
+          # drafts and on releases that already carry an older copy of the file.
+          gh release upload "$TAG" latest.json "$APK_NAME" --clobber
+
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          if [ "$IS_DRAFT" = "true" ]; then
+            if ! gh release edit "$TAG" --draft=false --latest; then
+              echo "Publishing with --latest failed; retrying without the latest flag."
+              if ! gh release edit "$TAG" --draft=false; then
+                echo "::error title=Release still a draft::$TAG kept its draft state, so the downloads stay hidden. Check that the workflow token may update releases for this tag."
+                exit 1
+              fi
+              echo "::warning title=Release not marked latest::$TAG was published but could not be flagged as the latest release. The desktop updater reads releases/latest/download/latest.json."
+            fi
+          elif ! gh release edit "$TAG" --latest; then
+            echo "::warning title=Release not marked latest::$TAG already exists and could not be flagged as the latest release. The desktop updater reads releases/latest/download/latest.json."
+          fi
+
+          gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/pharmatrack-release-assets.txt
+          sed 's/^/RELEASE ASSET: /' /tmp/pharmatrack-release-assets.txt
+          for asset in latest.json "$APK_NAME"; do
+            if ! grep -Fxq "$asset" /tmp/pharmatrack-release-assets.txt; then
+              echo "::error title=Release asset not attached::$asset is missing from release $TAG."
+              exit 1
+            fi
+          done
+          echo "Release $TAG published with latest.json and $APK_NAME."

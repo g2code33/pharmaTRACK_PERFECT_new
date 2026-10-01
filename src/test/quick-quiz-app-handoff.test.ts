@@ -7,6 +7,8 @@ import {
   consumePendingQuickQuiz,
   isAppleMobileBrowser,
   isInstalledPwaDetected,
+  isRunningInsideInstalledApp,
+  openInstalledAppOrStore,
   openRouteInInstalledApp,
   readPendingQuickQuiz,
   rememberPendingQuickQuiz,
@@ -26,6 +28,101 @@ describe('downloading PharmaTRACK', () => {
     expect(APP_STORE_URL).toBe('https://rx-store-web.pages.dev/app/pharmatrack');
     expect(quickQuiz).toContain('href={APP_STORE_URL}');
     expect(quickQuiz).not.toContain('github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest');
+  });
+
+  it('wires the "get app" buttons through the installed-app-first launcher', () => {
+    expect(quickQuiz).toContain('const handleGetApp = (event: ReactMouseEvent<HTMLAnchorElement>)');
+    expect(quickQuiz).toContain('void openInstalledAppOrStore(route)');
+    expect(quickQuiz).toContain('onClick={handleGetApp}');
+    expect(quickQuiz.match(/onClick=\{handleGetApp\}/g)?.length).toBe(2);
+  });
+});
+
+const stubBrowser = (userAgent: string, extra: Record<string, unknown> = {}) => {
+  vi.stubGlobal('navigator', {
+    userAgent,
+    maxTouchPoints: 0,
+    ...extra,
+  } as unknown as Navigator);
+};
+
+describe('"get app" opens the installed app before the store', () => {
+  it('stays put when the page already runs inside the installed app', async () => {
+    vi.stubGlobal('__TAURI_INTERNALS__', {});
+    const openStore = vi.fn();
+    const navigate = vi.fn();
+    expect(isRunningInsideInstalledApp()).toBe(true);
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { openStore, navigate, timeoutMs: 5 }),
+    ).resolves.toBe('already-in-app');
+    expect(openStore).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('lets Android hand the link to the installed APK, with the store as the OS fallback', async () => {
+    stubBrowser('Mozilla/5.0 (Linux; Android 14) Chrome/120');
+    const navigate = vi.fn();
+    const openStore = vi.fn();
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { navigate, openStore, timeoutMs: 5 }),
+    ).resolves.toBe('installed-app');
+    const target = navigate.mock.calls[0][0] as string;
+    expect(target.startsWith('intent://q/Short42')).toBe(true);
+    expect(target).toContain('package=com.pharmatrack.app');
+    expect(target).toContain(`S.browser_fallback_url=${encodeURIComponent(APP_STORE_URL)}`);
+    expect(openStore).not.toHaveBeenCalled();
+    expect(readPendingQuickQuiz()).toBe('/q/Short42');
+  });
+
+  it('hands the launch to a confirmed installed PWA instead of the store', async () => {
+    stubBrowser('Mozilla/5.0 (X11; Linux x86_64) Chrome/120', {
+      getInstalledRelatedApps: async () => [{ platform: 'webapp', id: 'pharmatrack' }],
+    });
+    const navigate = vi.fn();
+    const openStore = vi.fn();
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { navigate, openStore, timeoutMs: 5 }),
+    ).resolves.toBe('installed-app');
+    expect(navigate).toHaveBeenCalledWith('web+pharmatrack:pharmatrack%3A%2F%2Fq%2FShort42');
+    expect(openStore).not.toHaveBeenCalled();
+  });
+
+  it('pings an installed desktop build first and keeps the store unopened when it answers', async () => {
+    stubBrowser('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120');
+    const openStore = vi.fn();
+    const pingInstalledApp = vi.fn(() => {
+      // Windows and Linux installs steal the window focus when they launch.
+      window.dispatchEvent(new Event('blur'));
+    });
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { openStore, pingInstalledApp, timeoutMs: 50 }),
+    ).resolves.toBe('installed-app');
+    expect(pingInstalledApp).toHaveBeenCalledWith('pharmatrack://q/Short42');
+    expect(openStore).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the Rx store page only when nothing on the device answers', async () => {
+    stubBrowser('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120');
+    const openStore = vi.fn();
+    const pingInstalledApp = vi.fn();
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { openStore, pingInstalledApp, timeoutMs: 20 }),
+    ).resolves.toBe('store');
+    expect(pingInstalledApp).toHaveBeenCalledWith('pharmatrack://q/Short42');
+    expect(openStore).toHaveBeenCalledWith(APP_STORE_URL);
+  });
+
+  it('sends iPhone and iPad straight to the store, because no link can launch their app', async () => {
+    stubBrowser('Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) Safari/605.1.15', {
+      maxTouchPoints: 5,
+    });
+    const openStore = vi.fn();
+    const pingInstalledApp = vi.fn();
+    await expect(
+      openInstalledAppOrStore('/q/Short42', { openStore, pingInstalledApp, timeoutMs: 20 }),
+    ).resolves.toBe('store');
+    expect(pingInstalledApp).not.toHaveBeenCalled();
+    expect(openStore).toHaveBeenCalledWith(APP_STORE_URL);
   });
 });
 
