@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Copy,
   Download,
   ExternalLink,
   Home,
@@ -15,6 +16,7 @@ import {
   RotateCcw,
   Save,
   Share2,
+  Smartphone,
   Trophy,
   UserPlus,
   X,
@@ -28,12 +30,16 @@ import {
   shareQuickQuizPack,
   type QuickQuizPack,
 } from '../utils/quickQuizShare';
-import { openCurrentQuickQuizInInstalledApp } from '../utils/appLinks';
+import {
+  APP_STORE_URL,
+  getQuickQuizRouteFromHref,
+  openCurrentQuickQuizInInstalledApp,
+  rememberPendingQuickQuiz,
+} from '../utils/appLinks';
 import { gradeAnswer } from '../utils/questionBank';
 import type { SharedQuestion } from '../utils/questionShare';
 
 const SHARED_QUICK_COURSE_ID = 'shared-quick-quizzes';
-const APP_DOWNLOAD_URL = 'https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest';
 const QUIZ_SET_SIZE = 3;
 const QUICK_QUIZ_PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';
 
@@ -172,6 +178,8 @@ const QuickQuiz: React.FC = () => {
   const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
   const [pausedAttempt, setPausedAttempt] = useState<PausedQuickQuizState | null>(null);
   const [isPaused, setIsPaused] = useState(false);
+  const [appleHandoffOpen, setAppleHandoffOpen] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const [localName, setLocalName] = useState('');
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
   const savedHistoryRef = useRef<string | null>(null);
@@ -523,11 +531,44 @@ const QuickQuiz: React.FC = () => {
 
   const showWebAppCta = runtime.platform === 'web' && !runtime.isPWA;
   const shouldTryAndroidApkFirst = showWebAppCta && runtime.device === 'android';
+  // iOS cannot launch an installed Home Screen app from a link, so Apple
+  // devices get a copy-and-paste handoff into the installed PharmaTRACK app.
+  const needsAppleHandoff = showWebAppCta && runtime.isIOS;
   const appHomeHref =
     typeof window !== 'undefined'
       ? `${window.location.origin}${window.location.pathname}#/`
       : '/#/';
+  const quizShareHref = typeof window === 'undefined' ? '' : window.location.href;
+
+  const copyQuizLink = useCallback(async (): Promise<boolean> => {
+    if (typeof window === 'undefined') return false;
+    const link = window.location.href;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+        return true;
+      }
+    } catch {
+      // Fall through to the manual prompt below.
+    }
+    try {
+      window.prompt('Copy this quick quiz link:', link);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleOpenInApp = () => {
+    if (typeof window !== 'undefined') {
+      const route = getQuickQuizRouteFromHref(window.location.href);
+      if (route) rememberPendingQuickQuiz(route);
+    }
+    if (needsAppleHandoff) {
+      setAppleHandoffOpen(true);
+      void copyQuizLink().then((copied) => setLinkCopied(copied));
+      return;
+    }
     const opened = openCurrentQuickQuizInInstalledApp(false);
     if (!opened && typeof window !== 'undefined') window.location.href = appHomeHref;
   };
@@ -537,7 +578,9 @@ const QuickQuiz: React.FC = () => {
   };
 
   useEffect(() => {
-    if (!showWebAppCta || typeof window === 'undefined') return undefined;
+    // Apple devices cannot be auto-handed to the installed app, and firing an
+    // unknown scheme only produces a Safari error sheet over the quiz.
+    if (!showWebAppCta || needsAppleHandoff || typeof window === 'undefined') return undefined;
     const attemptKey = `${paramsKey}|${window.location.href}`;
     const storageKey = `pharmatrack:auto-open:${hashString(attemptKey)}`;
     try {
@@ -555,9 +598,75 @@ const QuickQuiz: React.FC = () => {
       shouldTryAndroidApkFirst ? 0 : 250,
     );
     return () => window.clearTimeout(timer);
-  }, [paramsKey, shouldTryAndroidApkFirst, showWebAppCta]);
+  }, [needsAppleHandoff, paramsKey, shouldTryAndroidApkFirst, showWebAppCta]);
+
+  const appleHandoffSheet = appleHandoffOpen ? (
+    <div
+      className="fixed inset-0 z-[300] flex items-end justify-center bg-slate-950/60 p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Open this quiz in the installed PharmaTRACK app"
+    >
+      <div className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl safe-area-bottom sm:rounded-3xl">
+        <div className="mb-3 flex items-start gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#2D6A4F] text-white">
+            <Smartphone className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-black text-slate-900">Open this quiz in your PharmaTRACK app</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              iPhone and iPad cannot hand a link to an installed app automatically, so PharmaTRACK copied the
+              quiz link for you. Paste it in the app search bar and the quiz opens instantly.
+            </p>
+          </div>
+        </div>
+
+        <ol className="mb-4 space-y-2 rounded-2xl bg-slate-50 p-3 text-sm font-semibold text-slate-700">
+          <li className="flex gap-2"><span className="font-black text-[#2D6A4F]">1.</span> Link copied{linkCopied ? ' ✓' : ' — tap “Copy quiz link” below'}</li>
+          <li className="flex gap-2"><span className="font-black text-[#2D6A4F]">2.</span> Open PharmaTRACK from your Home Screen</li>
+          <li className="flex gap-2"><span className="font-black text-[#2D6A4F]">3.</span> Tap the search bar at the top and paste the link</li>
+          <li className="flex gap-2"><span className="font-black text-[#2D6A4F]">4.</span> Press Enter or tap “Open Quick Quiz link”</li>
+        </ol>
+
+        <p className="mb-4 break-all rounded-2xl border border-slate-200 bg-white p-3 text-[11px] font-bold text-slate-500">
+          {quizShareHref}
+        </p>
+
+        <div className="grid gap-2">
+          <button
+            type="button"
+            onClick={() => void copyQuizLink().then((copied) => setLinkCopied(copied))}
+            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#2D6A4F] px-4 py-3 text-sm font-black text-white hover:bg-[#1B4332]"
+          >
+            <Copy className="h-4 w-4" /> {linkCopied ? 'Link copied' : 'Copy quiz link'}
+          </button>
+          <a
+            href={APP_STORE_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+          >
+            <Download className="h-4 w-4" /> Get the app
+          </a>
+          <button
+            type="button"
+            onClick={() => setAppleHandoffOpen(false)}
+            className="rounded-2xl px-4 py-3 text-sm font-black text-slate-500 hover:bg-slate-100"
+          >
+            Continue in this browser
+          </button>
+        </div>
+
+        <p className="mt-3 text-[11px] font-bold text-slate-400">
+          Not installed yet? In Safari tap Share, then “Add to Home Screen”, or use “Get the app”.
+        </p>
+      </div>
+    </div>
+  ) : null;
 
   const webAppCta = showWebAppCta ? (
+    <>
+    {appleHandoffSheet}
     <div className="safe-area-x shrink-0 bg-emerald-950 px-3 py-1.5 text-white shadow-lg">
       <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-2">
         <div>
@@ -577,7 +686,7 @@ const QuickQuiz: React.FC = () => {
             <ExternalLink className="h-4 w-4" /> Open in app
           </button>
           <a
-            href={APP_DOWNLOAD_URL}
+            href={APP_STORE_URL}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-2 rounded-full border border-white/30 px-3 py-2 text-xs font-black uppercase tracking-wider text-white hover:bg-white/10"
@@ -587,6 +696,7 @@ const QuickQuiz: React.FC = () => {
         </div>
       </div>
     </div>
+    </>
   ) : null;
 
   if (packResult.loading) {

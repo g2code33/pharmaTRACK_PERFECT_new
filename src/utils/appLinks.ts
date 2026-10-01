@@ -2,6 +2,17 @@ const PHARMATRACK_PROTOCOL = 'pharmatrack';
 const ANDROID_PACKAGE_NAME = 'com.pharmatrack.app';
 const DEFAULT_WEB_FALLBACK = 'https://pharmatrack-web.pages.dev/#/';
 
+/** Public store page used by every "Get app" action across the product. */
+export const APP_STORE_URL = 'https://rx-store-web.pages.dev/app/pharmatrack';
+
+/**
+ * A quick quiz the user asked to continue inside the installed app. Browsers
+ * and installed PWAs share storage on Android and desktop, so the app can pick
+ * the quiz up on its next launch even when the OS cannot hand the link over.
+ */
+const PENDING_QUICK_QUIZ_KEY = 'pharmatrack:pending-quick-quiz';
+const PENDING_QUICK_QUIZ_TTL_MS = 30 * 60 * 1000;
+
 const QUICK_QUIZ_ROUTE_PREFIXES = ['/quick-quiz', '/q/'];
 
 const normalizeRoute = (route: string): string => {
@@ -20,6 +31,64 @@ const isQuickQuizRoute = (route: string): boolean => {
 export const shouldUseAndroidApkIntent = (userAgent?: string): boolean => {
   const agent = userAgent ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent || '');
   return /android/i.test(agent);
+};
+
+/**
+ * iOS cannot launch an installed Home Screen app from a link, and unknown
+ * custom schemes raise a Safari error dialog. Detect it so those attempts are
+ * replaced with a working copy-and-paste handoff instead.
+ */
+export const isAppleMobileBrowser = (userAgent?: string, maxTouchPoints?: number): boolean => {
+  const agent = userAgent ?? (typeof navigator === 'undefined' ? '' : navigator.userAgent || '');
+  if (/iphone|ipad|ipod/i.test(agent)) return true;
+  const touchPoints =
+    maxTouchPoints ?? (typeof navigator === 'undefined' ? 0 : navigator.maxTouchPoints || 0);
+  return /macintosh/i.test(agent) && touchPoints > 1;
+};
+
+export const rememberPendingQuickQuiz = (route: string): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      PENDING_QUICK_QUIZ_KEY,
+      JSON.stringify({ route: normalizeRoute(route), at: Date.now() }),
+    );
+  } catch {
+    // Private browsing or a full quota must never break the quiz link itself.
+  }
+};
+
+export const clearPendingQuickQuiz = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(PENDING_QUICK_QUIZ_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+export const readPendingQuickQuiz = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(PENDING_QUICK_QUIZ_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { route?: string; at?: number };
+    const route = typeof parsed.route === 'string' ? parsed.route : '';
+    const at = typeof parsed.at === 'number' ? parsed.at : 0;
+    if (!route || !isQuickQuizRoute(route) || Date.now() - at > PENDING_QUICK_QUIZ_TTL_MS) {
+      clearPendingQuickQuiz();
+      return null;
+    }
+    return normalizeRoute(route);
+  } catch {
+    return null;
+  }
+};
+
+export const consumePendingQuickQuiz = (): string | null => {
+  const route = readPendingQuickQuiz();
+  if (route) clearPendingQuickQuiz();
+  return route;
 };
 
 const safeEncodeParam = (value: string): string => encodeURIComponent(value).replace(/'/g, '%27');
@@ -153,7 +222,7 @@ export const routeFromPharmaTrackDeepLink = (value: string): string | null => {
 export const openRouteInInstalledApp = (
   route: string,
   options: { fallbackHref?: string; automatic?: boolean } = {},
-): string => {
+): string | null => {
   const fallback =
     options.fallbackHref ||
     (typeof window !== 'undefined' ? window.location.href : DEFAULT_WEB_FALLBACK);
@@ -161,6 +230,15 @@ export const openRouteInInstalledApp = (
   const pwaTarget = pwaProtocolLinkForRoute(route);
 
   if (typeof window === 'undefined' || typeof document === 'undefined') return target;
+
+  // The quiz is remembered first: if the OS cannot hand the link over, the
+  // installed app still finds it on its next launch.
+  if (isQuickQuizRoute(route)) rememberPendingQuickQuiz(route);
+
+  // iOS never launches an installed Home Screen app from a link, and unknown
+  // schemes raise a Safari error sheet. Callers handle iOS with an explicit
+  // copy-and-paste handoff instead of a launch attempt that cannot work.
+  if (isAppleMobileBrowser()) return null;
 
   if (shouldUseAndroidApkIntent()) {
     window.location.href = target;
@@ -193,7 +271,17 @@ export const openRouteInInstalledApp = (
   document.body.appendChild(link);
   link.click();
   window.setTimeout(() => link.remove(), 1000);
-  window.setTimeout(() => openHiddenProtocol(pwaTarget), 150);
+  // Installed PWAs claim web+pharmatrack: through the manifest protocol
+  // handler. A top-level navigation is what actually hands the launch over —
+  // hidden frames are blocked by Chromium for protocol handlers.
+  window.setTimeout(() => {
+    if (document.visibilityState === 'hidden') return;
+    try {
+      window.location.href = pwaTarget;
+    } catch {
+      openHiddenProtocol(pwaTarget);
+    }
+  }, 700);
   return target;
 };
 
@@ -202,4 +290,22 @@ export const openCurrentQuickQuizInInstalledApp = (automatic = false): string | 
   const route = getQuickQuizRouteFromHref(window.location.href);
   if (!route) return null;
   return openRouteInInstalledApp(route, { fallbackHref: window.location.href, automatic });
+};
+
+/**
+ * Ask the browser to let this installed PWA own `web+pharmatrack:` links, so a
+ * quick quiz opened anywhere can be handed to the installed app window.
+ */
+export const registerQuickQuizProtocolHandler = (): boolean => {
+  if (typeof navigator === 'undefined' || typeof window === 'undefined') return false;
+  const register = (navigator as Navigator & {
+    registerProtocolHandler?: (scheme: string, url: string) => void;
+  }).registerProtocolHandler;
+  if (typeof register !== 'function') return false;
+  try {
+    register.call(navigator, 'web+pharmatrack', `${window.location.origin}/#/app-link?url=%s`);
+    return true;
+  } catch {
+    return false;
+  }
 };

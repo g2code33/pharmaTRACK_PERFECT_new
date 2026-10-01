@@ -57,6 +57,26 @@ describe('platform app-link registration', () => {
     expect(manifest.protocol_handlers).toEqual([
       { protocol: 'web+pharmatrack', url: './index.html#/app-link?url=%s' },
     ]);
-    expect(manifest.launch_handler).toEqual({ client_mode: 'navigate-existing' });
+    expect(manifest.launch_handler).toEqual({
+      client_mode: ['focus-existing', 'navigate-existing', 'auto'],
+    });
+    expect(manifest.related_applications).toEqual([
+      { platform: 'webapp', url: 'https://pharmatrack-web.pages.dev/manifest.webmanifest' },
+    ]);
+    expect(manifest.prefer_related_applications).toBe(false);
+  });
+
+  it('keeps Android versionCode above every previously published build', () => {
+    const gradle = readSource('android/app/build.gradle.kts');
+    const pkg = JSON.parse(readSource('package.json')) as { version: string };
+    const offsetMatch = gradle.match(/val pharmaVersionCodeOffset = ([\d_]+)/);
+    expect(offsetMatch).not.toBeNull();
+
+    const offset = Number((offsetMatch?.[1] || '0').replace(/_/g, ''));
+    const [major, minor, patch] = pkg.version.split('.').map((part) => Number(part) || 0);
+    const versionCode = offset + major * 10_000 + minor * 100 + patch;
+
+    // 1.1.126 shipped as versionCode 10_226; a lower code cannot install over it.
+    expect(versionCode).toBeGreaterThan(10_226);
   });
 });

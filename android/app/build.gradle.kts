@@ -17,9 +17,14 @@ val parsedPackage = try {
 }
 val pharmaVersionName = (parsedPackage["version"] as? String)?.takeIf { it.isNotBlank() } ?: "1.0.0"
 val versionParts = Regex("\\d+").findAll(pharmaVersionName).map { it.value.toInt() }.toList()
+// Published builds already reached versionCode 10_226 (app version 1.1.126)
+// before the public numbering restarted at 1.1.2. Android refuses to install a
+// lower versionCode over an existing install, so every generated code is
+// lifted past that high-water mark while staying strictly ordered.
+val pharmaVersionCodeOffset = 1_000
 val pharmaVersionCode = maxOf(
     2,
-    when {
+    pharmaVersionCodeOffset + when {
         versionParts.size >= 3 -> versionParts[0] * 10_000 + versionParts[1] * 100 + versionParts[2]
         versionParts.size >= 2 -> versionParts[0] * 10_000 + versionParts[1] * 100
         versionParts.size == 1 -> versionParts[0]

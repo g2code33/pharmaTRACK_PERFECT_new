@@ -50,8 +50,17 @@ const SecureExamination = lazyRoute('/examination/secure', () => import('./pages
 const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
-import { routeFromPharmaTrackDeepLink } from './utils/appLinks';
-import { listenNative, nativeInvoke } from './platform/runtime';
+import {
+  consumePendingQuickQuiz,
+  registerQuickQuizProtocolHandler,
+  routeFromPharmaTrackDeepLink,
+} from './utils/appLinks';
+import {
+  detectRuntimeCapabilities,
+  isPWAStandalone,
+  listenNative,
+  nativeInvoke,
+} from './platform/runtime';
 import { AIProvider } from './ai/state';
 import {
   getSecureKioskState,
@@ -153,6 +162,45 @@ const AppLinkRedirect: React.FC = () => {
     navigate(route, { replace: true });
   }, [location.search, navigate]);
   return <PageLoading />;
+};
+
+/**
+ * A quick quiz opened in the browser can be continued inside the installed
+ * app. Installed PWAs and desktop apps share storage with the browser profile
+ * that handed the quiz over, so the first launch after "Open in app" lands
+ * straight on the quiz instead of the dashboard.
+ */
+const PendingQuickQuizLauncher: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const runtime = detectRuntimeCapabilities();
+    // Only the installed experiences claim a pending quiz; a plain browser tab
+    // already has the link it was opened with.
+    if (!runtime.isPWA && !runtime.nativeHost) return;
+    const alreadyOnQuiz =
+      location.pathname.startsWith('/quick-quiz') || location.pathname.startsWith('/q/');
+    if (alreadyOnQuiz) return;
+    const pending = consumePendingQuickQuiz();
+    if (pending) navigate(pending, { replace: true });
+    // Only the first render of a launch should claim a pending quiz.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!isPWAStandalone()) return;
+    try {
+      if (window.localStorage.getItem('pharmatrack:protocol-handler') === 'registered') return;
+      if (registerQuickQuizProtocolHandler()) {
+        window.localStorage.setItem('pharmatrack:protocol-handler', 'registered');
+      }
+    } catch {
+      // Registration is an enhancement; failures must not break startup.
+    }
+  }, []);
+
+  return null;
 };
 
 /**
@@ -265,6 +313,7 @@ const App = () => {
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />
             <NativeAppLinkRouter />
+            <PendingQuickQuizLauncher />
             <Routes>
               {needsOnboarding ? (
                 // First run remains offline-first, but an existing account can

@@ -6,9 +6,17 @@
   "start_url": "./index.html#/",
   "scope": "./",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui", "browser"],
+  "display_override": [
+    "standalone",
+    "minimal-ui",
+    "browser"
+  ],
   "launch_handler": {
-    "client_mode": "navigate-existing"
+    "client_mode": [
+      "focus-existing",
+      "navigate-existing",
+      "auto"
+    ]
   },
   "handle_links": "preferred",
   "protocol_handlers": [
@@ -17,6 +25,13 @@
       "url": "./index.html#/app-link?url=%s"
     }
   ],
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "https://pharmatrack-web.pages.dev/manifest.webmanifest"
+    }
+  ],
+  "prefer_related_applications": false,
   "orientation": "any",
   "background_color": "#f8fafc",
   "theme_color": "#0f172a",
