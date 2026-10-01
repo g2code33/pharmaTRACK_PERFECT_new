@@ -267,11 +267,31 @@ export function decodeQuickQuizPack(encoded: string): QuickQuizPack {
 function apiBase(): string | null {
   const configured = (import.meta.env.VITE_CLOUDFLARE_API_BASE_URL || '').replace(/\/$/, '');
   if (configured) return configured;
+  // The desktop app (tauri://localhost) and the Android APK (app asset origin)
+  // serve the bundle from a local origin with no API behind it, so a relative
+  // URL there asks the bundle for /api/... and short links silently fail.
+  // Those runtimes always talk to the public web app instead.
+  if (isNativeShellOrigin()) return PUBLIC_APP_URL_FALLBACK.replace(/\/$/, '');
   return import.meta.env.PROD ? '' : null;
 }
 
 function isNativeAppUrl(url: URL): boolean {
-  return url.protocol === 'tauri:' || url.hostname === 'tauri.localhost';
+  return (
+    url.protocol === 'tauri:' ||
+    url.hostname === 'tauri.localhost' ||
+    url.protocol === 'file:' ||
+    url.hostname.endsWith('appassets.androidplatform.net')
+  );
+}
+
+/** True when the page is served by an app shell rather than the public web app. */
+function isNativeShellOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return isNativeAppUrl(new URL(window.location.href));
+  } catch {
+    return false;
+  }
 }
 
 function shareBaseUrl(href: string): URL {
@@ -360,38 +380,6 @@ export function quickQuizCodeUrl(code: string, href: string = window.location.hr
   return buildHashUrl(`/q/${encodeURIComponent(code.trim())}`, href);
 }
 
-function abortShare(): never {
-  const error = new Error('Quick quiz sharing cancelled before a time setting was chosen.');
-  error.name = 'AbortError';
-  throw error;
-}
-
-export function chooseQuickQuizShareTiming(defaultMinutes?: number): number | undefined {
-  const promptText = [
-    'Set the time before sharing this Quick Quiz.',
-    'Type "never" for no time limit, or enter a timed duration in minutes (for example: 10, 15, 30, 60).',
-  ].join('\n');
-
-  const normalizedDefault = normalizeTimeLimitMinutes(defaultMinutes);
-  while (true) {
-    const answer = window.prompt(promptText, normalizedDefault ? String(normalizedDefault) : 'never');
-    if (answer === null) abortShare();
-    const cleaned = answer.trim().toLowerCase();
-    if (['never', 'none', 'no limit', 'no time limit', 'untimed', '0'].includes(cleaned)) return undefined;
-    const minutes = normalizeTimeLimitMinutes(cleaned);
-    if (minutes) return minutes;
-    window.alert('Please choose a time setting: type "never" or enter a positive number of minutes.');
-  }
-}
-
-export function applyQuickQuizShareTiming(pack: QuickQuizPack): QuickQuizPack {
-  const timeLimitMinutes = chooseQuickQuizShareTiming(pack.timeLimitMinutes);
-  return {
-    ...pack,
-    ...(timeLimitMinutes ? { timeLimitMinutes } : { timeLimitMinutes: undefined }),
-  };
-}
-
 export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = window.location.href): Promise<ShareUrlResult> {
   const code = await createShortQuickQuizCode(pack);
   if (code) return { url: quickQuizCodeUrl(code, href), mode: 'short-code' };
@@ -401,18 +389,7 @@ export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = wind
   throw new Error('Could not create a short quick quiz link. Check your internet connection and try again — this quiz is too large for a safe offline fallback link.');
 }
 
-export async function shareQuickQuizPack(pack: QuickQuizPack): Promise<'shared' | 'copied'> {
-  const timedPack = applyQuickQuizShareTiming(pack);
-  const { url } = await quickQuizShareUrl(timedPack);
-  const title = `PharmaTRACK Quick Quiz: ${timedPack.title}`;
-  if (navigator.share) {
-    await navigator.share({ title, url });
-    return 'shared';
-  }
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(url);
-    return 'copied';
-  }
-  window.prompt('Copy this quick quiz link:', url);
-  return 'copied';
+/** Normalises a chosen share duration; anything invalid means "no time limit". */
+export function quickQuizShareTiming(minutes: number | undefined): number | undefined {
+  return normalizeTimeLimitMinutes(minutes);
 }

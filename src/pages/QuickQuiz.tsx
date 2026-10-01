@@ -28,9 +28,11 @@ import { detectRuntimeCapabilities } from '../platform/runtime';
 import {
   decodeQuickQuizPack,
   fetchQuickQuizPackByCode,
-  shareQuickQuizPack,
   type QuickQuizPack,
 } from '../utils/quickQuizShare';
+import { useQuickQuizShare } from '../components/QuickQuizShareDialog';
+import { useQuizAutosave } from '../hooks/useQuizAutosave';
+import { copyTextToClipboard } from '../utils/clipboard';
 import {
   APP_STORE_URL,
   getQuickQuizRouteFromHref,
@@ -47,6 +49,8 @@ const QUICK_QUIZ_PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';
 
 type PausedQuickQuizState = {
   version: 1;
+  /** 'auto' is a background autosave; 'paused' means the student tapped Pause. */
+  reason?: 'auto' | 'paused';
   savedAt: string;
   packKey: string;
   answers: Record<string, string>;
@@ -181,6 +185,8 @@ const QuickQuiz: React.FC = () => {
   const [pausedAttempt, setPausedAttempt] = useState<PausedQuickQuizState | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const [appleHandoffOpen, setAppleHandoffOpen] = useState(false);
+  const [autoResumed, setAutoResumed] = useState(false);
+  const { startShare, shareDialog } = useQuickQuizShare();
   const [linkCopied, setLinkCopied] = useState(false);
   const [localName, setLocalName] = useState('');
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
@@ -267,11 +273,34 @@ const QuickQuiz: React.FC = () => {
     setTimeExpired(false);
   }, [packResult.loading, packResult.pack, packResult.packKey, timeLimitSeconds]);
 
+  // Reopening the link (or refreshing the page) restores the saved attempt.
+  // An explicit Pause still shows the pause screen; an autosave simply drops
+  // the student back on the question they were answering.
   useEffect(() => {
     if (!packResult.packKey || packResult.loading) return;
-    const paused = loadPausedQuickQuiz(packResult.packKey);
-    setPausedAttempt(paused);
-    setIsPaused(Boolean(paused));
+    const saved = loadPausedQuickQuiz(packResult.packKey);
+    setPausedAttempt(saved);
+    if (!saved) {
+      setIsPaused(false);
+      setAutoResumed(false);
+      return;
+    }
+    if (saved.reason === 'paused') {
+      setIsPaused(true);
+      setAutoResumed(false);
+      return;
+    }
+    setAnswers(saved.answers || {});
+    setCurrentIndex(
+      Math.min(Math.max(0, saved.currentIndex), Math.max(0, packResult.questions.length - 1)),
+    );
+    setTimeRemainingSeconds(saved.timeRemainingSeconds ?? null);
+    setTimeExpired(saved.timeExpired);
+    setIsPaused(false);
+    setAutoResumed(true);
+    // packResult.questions is read for clamping only; the attempt must restore
+    // once per loaded pack, not on every question re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [packResult.loading, packResult.packKey]);
 
   const scrollQuestionToTop = () => {
@@ -318,15 +347,8 @@ const QuickQuiz: React.FC = () => {
     };
   }, [answers, packResult.questions]);
 
-  const shareCurrentPack = async () => {
-    if (!packResult.pack) return;
-    try {
-      const result = await shareQuickQuizPack(packResult.pack);
-      if (result === 'copied') alert('Quick quiz link copied.');
-    } catch (err: any) {
-      if (err?.name !== 'AbortError')
-        alert(err?.message || 'Could not share this quick quiz link.');
-    }
+  const shareCurrentPack = () => {
+    startShare(packResult.pack);
   };
 
   const ensureLocalStudent = useCallback((): Student => {
@@ -455,6 +477,7 @@ const QuickQuiz: React.FC = () => {
     if (!packResult.packKey || !packResult.questions.length) return;
     const payload: PausedQuickQuizState = {
       version: 1,
+      reason: 'paused',
       savedAt: new Date().toISOString(),
       packKey: packResult.packKey,
       answers,
@@ -476,34 +499,39 @@ const QuickQuiz: React.FC = () => {
     setTimeExpired(pausedAttempt.timeExpired);
     setSubmitReviewOpen(false);
     setIsPaused(false);
+    setAutoResumed(false);
     scrollQuestionToTop();
   };
 
-  // Safety net: closing the tab or leaving the shared quiz keeps the attempt so
-  // reopening the same link offers Continue instead of restarting.
-  const autoPauseRef = useRef<PausedQuickQuizState | null>(null);
-  useEffect(() => {
+  // Autosave: a refresh, a closed tab or a killed app all come back to the
+  // same question with the same answers and the same remaining time.
+  const autosaveSnapshot = useMemo(() => {
     const hasProgress = Object.values(answers).some((value) => (value || '').trim().length > 0);
-    autoPauseRef.current =
-      !finished && packResult.packKey && packResult.questions.length && (hasProgress || currentIndex > 0)
-        ? {
-            version: 1,
-            savedAt: new Date().toISOString(),
-            packKey: packResult.packKey,
-            answers,
-            currentIndex,
-            timeRemainingSeconds: timerSeconds,
-            timeExpired,
-          }
-        : null;
-  }, [answers, currentIndex, finished, packResult.packKey, packResult.questions.length, timeExpired, timerSeconds]);
+    if (finished || isPaused || !packResult.packKey || !packResult.questions.length) return null;
+    if (!hasProgress && currentIndex === 0) return null;
+    return {
+      version: 1 as const,
+      reason: 'auto' as const,
+      packKey: packResult.packKey,
+      answers,
+      currentIndex,
+      timeRemainingSeconds: timerSeconds,
+      timeExpired,
+    };
+  }, [
+    answers,
+    currentIndex,
+    finished,
+    isPaused,
+    packResult.packKey,
+    packResult.questions.length,
+    timeExpired,
+    timerSeconds,
+  ]);
 
-  useEffect(
-    () => () => {
-      if (autoPauseRef.current) savePausedQuickQuiz(autoPauseRef.current);
-    },
-    [],
-  );
+  useQuizAutosave(autosaveSnapshot, (snapshot) => {
+    savePausedQuickQuiz({ ...snapshot, savedAt: new Date().toISOString() });
+  });
 
   const discardPausedQuickQuiz = () => {
     removePausedQuickQuiz(packResult.packKey);
@@ -544,21 +572,9 @@ const QuickQuiz: React.FC = () => {
 
   const copyQuizLink = useCallback(async (): Promise<boolean> => {
     if (typeof window === 'undefined') return false;
-    const link = window.location.href;
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(link);
-        return true;
-      }
-    } catch {
-      // Fall through to the manual prompt below.
-    }
-    try {
-      window.prompt('Copy this quick quiz link:', link);
-      return true;
-    } catch {
-      return false;
-    }
+    // The link is always shown in the sheet, so a blocked clipboard simply
+    // means "copy it by hand" instead of a native dialog over the quiz.
+    return copyTextToClipboard(window.location.href);
   }, []);
 
   const handleOpenInApp = () => {
@@ -721,6 +737,7 @@ const QuickQuiz: React.FC = () => {
     return (
       <div className="min-h-[100dvh] bg-slate-950 text-white">
         {webAppCta}
+      {shareDialog}
         <div className="safe-area-x pt-safe pb-safe flex min-h-[calc(100dvh-4rem)] items-center justify-center p-4">
           <div className="max-w-md w-full rounded-3xl bg-white/10 p-6 text-center shadow-2xl backdrop-blur">
             <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin text-emerald-300" />
@@ -740,6 +757,7 @@ const QuickQuiz: React.FC = () => {
     return (
       <div className="min-h-[100dvh] bg-slate-950 text-white">
         {webAppCta}
+      {shareDialog}
         <div className="safe-area-x pt-safe pb-safe flex min-h-[calc(100dvh-4rem)] items-center justify-center p-4">
           <div className="max-w-md w-full rounded-3xl bg-white text-slate-900 p-6 shadow-2xl">
             <AlertTriangle className="w-12 h-12 text-amber-500 mb-4" />
@@ -761,6 +779,7 @@ const QuickQuiz: React.FC = () => {
     return (
       <div className="min-h-[100dvh] bg-slate-100">
         {webAppCta}
+      {shareDialog}
         <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-2xl items-center safe-area-x pt-safe pb-safe p-4">
           <div className="w-full rounded-[2rem] border border-blue-200 bg-white p-6 shadow-xl">
             <div className="mb-4 flex items-start gap-3">
@@ -808,6 +827,7 @@ const QuickQuiz: React.FC = () => {
     return (
       <div className="min-h-[100dvh] bg-slate-100">
         {webAppCta}
+      {shareDialog}
         <div className="mx-auto max-w-3xl space-y-4 safe-area-x pt-safe pb-safe p-4">
           <button
             type="button"
@@ -947,6 +967,7 @@ const QuickQuiz: React.FC = () => {
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
       {webAppCta}
+      {shareDialog}
 
       <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-1.5 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-2 sm:pt-3">
         <div className="mx-auto max-w-7xl rounded-2xl bg-[#0F172A] p-2.5 text-white shadow-lg sm:p-3">
@@ -1014,6 +1035,21 @@ const QuickQuiz: React.FC = () => {
       >
         <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
           <section className="min-w-0 space-y-3">
+            {autoResumed && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-3 py-2">
+                <p className="text-xs font-bold text-blue-900 sm:text-sm">
+                  Resumed automatically — your answers were saved on this device.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setAutoResumed(false)}
+                  className="rounded-xl px-2.5 py-1 text-[11px] font-black uppercase tracking-wider text-blue-700 hover:bg-blue-100"
+                >
+                  Got it
+                </button>
+              </div>
+            )}
+
             {!state.student && (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 shadow-sm sm:p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end">

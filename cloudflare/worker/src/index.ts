@@ -92,9 +92,21 @@ function allowedOrigins(env: Env): Set<string> {
   );
 }
 
+// App shells ship with the product, so their fixed origins are always allowed:
+// the desktop build runs on tauri://localhost and the Android APK serves the
+// bundle from its own WebViewAssetLoader domain. Without this, sharing a quick
+// quiz from the installed apps fails CORS and silently falls back to a link
+// that is too long to send.
+const APP_SHELL_ORIGINS = new Set([
+  'tauri://localhost',
+  'https://tauri.localhost',
+  'http://tauri.localhost',
+  'https://pharmatrack.appassets.androidplatform.net',
+]);
+
 function originIsAllowed(request: Request, env: Env): boolean {
   const origin = request.headers.get('Origin');
-  return !origin || origin === 'tauri://localhost' || origin === 'https://tauri.localhost' || origin === 'http://tauri.localhost' || allowedOrigins(env).has(origin);
+  return !origin || APP_SHELL_ORIGINS.has(origin) || allowedOrigins(env).has(origin);
 }
 
 function corsHeaders(request: Request, env: Env): Headers {

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   buildQuickQuizPack,
   decodeQuickQuizPack,
@@ -7,7 +9,6 @@ import {
   quickQuizCodeUrl,
   quickQuizShareUrl,
   quickQuizUrl,
-  shareQuickQuizPack,
 } from '../utils/quickQuizShare';
 import type { ExamQuestion } from '../types';
 
@@ -72,25 +73,35 @@ describe('quick quiz sharing', () => {
     expect(url).toBe('https://example.com/app/index.html#/q/AbC234xyz9');
   });
 
-  it('requires the sharer to choose timing before a link is copied', async () => {
-    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('15');
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('navigator', { clipboard: { writeText }, share: undefined });
-
+  it('keeps the chosen share timing in the generated link', async () => {
+    vi.stubEnv('VITE_CLOUDFLARE_API_BASE_URL', '');
     try {
       const pack = buildQuickQuizPack([question('1')], { title: 'Timed copy' })!;
-      const result = await shareQuickQuizPack(pack);
-      const copiedUrl = writeText.mock.calls[0]?.[0] as string;
-      const encoded = new URL(copiedUrl).hash.split('p=')[1];
+      const timed = { ...pack, timeLimitMinutes: 15 };
+      const { url, mode } = await quickQuizShareUrl(timed, 'https://example.com/#/questions');
+      const encoded = new URL(url).hash.split('p=')[1];
 
-      expect(result).toBe('copied');
-      expect(prompt).toHaveBeenCalledWith(expect.stringContaining('Set the time before sharing'), 'never');
-      expect(prompt.mock.invocationCallOrder[0]).toBeLessThan(writeText.mock.invocationCallOrder[0]);
+      expect(mode).toBe('inline');
       expect(decodeQuickQuizPack(decodeURIComponent(encoded)).timeLimitMinutes).toBe(15);
+
+      const untimed = await quickQuizShareUrl(
+        { ...pack, timeLimitMinutes: undefined },
+        'https://example.com/#/questions',
+      );
+      const untimedEncoded = new URL(untimed.url).hash.split('p=')[1];
+      expect(
+        decodeQuickQuizPack(decodeURIComponent(untimedEncoded)).timeLimitMinutes,
+      ).toBeUndefined();
     } finally {
-      prompt.mockRestore();
-      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
     }
+  });
+
+  it('never asks the runtime for a native prompt, alert or share dialog', () => {
+    const source = readFileSync(resolve(__dirname, '../utils/quickQuizShare.ts'), 'utf8');
+    expect(source).not.toContain('window.prompt');
+    expect(source).not.toContain('window.alert');
+    expect(source).not.toContain('navigator.share');
   });
 
   it('never shares native tauri://localhost links outside the desktop app', async () => {

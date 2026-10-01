@@ -1,6 +1,6 @@
 // PharmTrack - Quiz Mode Page
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { ExamQuestion, QuizHistory, QuizMode } from '../types';
@@ -12,7 +12,9 @@ import {
   quizReview,
   QUIZ_MODES,
 } from '../utils/questionBank';
-import { buildQuickQuizPack, shareQuickQuizPack } from '../utils/quickQuizShare';
+import { buildQuickQuizPack } from '../utils/quickQuizShare';
+import { useQuickQuizShare } from '../components/QuickQuizShareDialog';
+import { useQuizAutosave } from '../hooks/useQuizAutosave';
 import {
   Brain,
   Play,
@@ -48,6 +50,8 @@ interface QuizSettings {
 
 type PausedQuizState = {
   version: 1;
+  /** 'auto' is a background autosave; 'paused' means the student tapped Pause. */
+  reason?: 'auto' | 'paused';
   savedAt: string;
   settings: QuizSettings;
   questions: ExamQuestion[];
@@ -120,6 +124,8 @@ const Quiz: React.FC = () => {
   const [results, setResults] = useState<QuizHistory | null>(null);
   const [pausedQuiz, setPausedQuiz] = useState<PausedQuizState | null>(() => loadPausedQuiz());
   const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
+  const [autoResumed, setAutoResumed] = useState(false);
+  const { startShare, shareDialog } = useQuickQuizShare();
 
   const topics = settings.courseId ? getTopicsForCourse(settings.courseId) : [];
 
@@ -200,7 +206,7 @@ const Quiz: React.FC = () => {
     setPausedQuiz(null);
   };
 
-  const shareCurrentQuiz = async () => {
+  const shareCurrentQuiz = () => {
     const selected = selectQuizQuestions();
     const course = state.courses.find((c) => c.id === settings.courseId);
     const topic = state.topics.find((t) => t.id === settings.topicId);
@@ -212,12 +218,7 @@ const Quiz: React.FC = () => {
       timeLimitMinutes: settings.timed ? settings.timeLimit : undefined,
     });
     if (!pack) return;
-    try {
-      const result = await shareQuickQuizPack(pack);
-      if (result === 'copied') alert('Quick quiz link copied. Share it with anyone — it opens directly into the quiz.');
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') alert(err?.message || 'Could not share this quick quiz link.');
-    }
+    startShare(pack);
   };
 
   const saveAnswer = (questionId: string, answer: string) => {
@@ -257,6 +258,7 @@ const Quiz: React.FC = () => {
 
   const buildPausePayload = (): PausedQuizState => ({
     version: 1,
+    reason: 'paused',
     savedAt: new Date().toISOString(),
     settings,
     questions: quizQuestions,
@@ -265,30 +267,27 @@ const Quiz: React.FC = () => {
     answers: Array.from(answers.entries()),
   });
 
-  // Safety net: leaving the page without tapping Pause still keeps the attempt,
-  // so Continue is always available when the student comes back.
-  const autoPauseRef = useRef<PausedQuizState | null>(null);
-  useEffect(() => {
-    autoPauseRef.current =
+  // Autosave: every answer, jump and tick is kept on the device, so a refresh,
+  // a crash or closing the app all resume exactly where the student stopped.
+  const autosaveSnapshot = useMemo(
+    () =>
       quizStarted && !quizFinished && !isReviewMode && quizQuestions.length
         ? {
-            version: 1,
-            savedAt: new Date().toISOString(),
+            version: 1 as const,
+            reason: 'auto' as const,
             settings,
             questions: quizQuestions,
             currentIndex,
             timeRemaining,
             answers: Array.from(answers.entries()),
           }
-        : null;
-  }, [answers, currentIndex, isReviewMode, quizFinished, quizQuestions, quizStarted, settings, timeRemaining]);
-
-  useEffect(
-    () => () => {
-      if (autoPauseRef.current) savePausedQuiz(autoPauseRef.current);
-    },
-    [],
+        : null,
+    [answers, currentIndex, isReviewMode, quizFinished, quizQuestions, quizStarted, settings, timeRemaining],
   );
+
+  useQuizAutosave(autosaveSnapshot, (snapshot) => {
+    savePausedQuiz({ ...snapshot, savedAt: new Date().toISOString() });
+  });
 
   const pauseQuiz = () => {
     if (!quizQuestions.length) return;
@@ -302,22 +301,46 @@ const Quiz: React.FC = () => {
     navigate('/quiz', { replace: true });
   };
 
+  const restoreSavedQuiz = useCallback(
+    (saved: PausedQuizState) => {
+      const byId = new Map(state.examQuestions.map((q) => [q.id, q]));
+      const restoredQuestions = saved.questions.map((question) => byId.get(question.id) || question);
+      if (!restoredQuestions.length) return false;
+      setSettings(saved.settings);
+      setQuizQuestions(restoredQuestions);
+      setCurrentIndex(Math.min(saved.currentIndex, Math.max(0, restoredQuestions.length - 1)));
+      setAnswers(new Map(saved.answers));
+      setTimeRemaining(saved.timeRemaining);
+      setIsReviewMode(false);
+      setQuizStarted(true);
+      setQuizFinished(false);
+      setResults(null);
+      setSubmitReviewOpen(false);
+      window.requestAnimationFrame(() => activeSetRef.current?.scrollIntoView({ block: 'start' }));
+      return true;
+    },
+    [state.examQuestions],
+  );
+
   const continuePausedQuiz = () => {
     if (!pausedQuiz) return;
-    const byId = new Map(state.examQuestions.map((q) => [q.id, q]));
-    const restoredQuestions = pausedQuiz.questions.map((question) => byId.get(question.id) || question);
-    setSettings(pausedQuiz.settings);
-    setQuizQuestions(restoredQuestions);
-    setCurrentIndex(Math.min(pausedQuiz.currentIndex, Math.max(0, restoredQuestions.length - 1)));
-    setAnswers(new Map(pausedQuiz.answers));
-    setTimeRemaining(pausedQuiz.timeRemaining);
-    setIsReviewMode(false);
-    setQuizStarted(true);
-    setQuizFinished(false);
-    setResults(null);
-    setSubmitReviewOpen(false);
-    window.requestAnimationFrame(() => activeSetRef.current?.scrollIntoView({ block: 'start' }));
+    restoreSavedQuiz(pausedQuiz);
+    setAutoResumed(false);
   };
+
+  // A refresh, an app restart or a crash lands here: the autosaved attempt is
+  // reopened immediately so the student carries on from the same question.
+  const autoResumeRef = useRef(false);
+  useEffect(() => {
+    if (autoResumeRef.current || quizStarted || quizFinished || quizId) return;
+    autoResumeRef.current = true;
+    const saved = loadPausedQuiz();
+    if (!saved || saved.reason === 'paused') return;
+    if (restoreSavedQuiz(saved)) {
+      setPausedQuiz(null);
+      setAutoResumed(true);
+    }
+  }, [quizFinished, quizId, quizStarted, restoreSavedQuiz]);
 
   const discardPausedQuiz = () => {
     removePausedQuiz();
@@ -412,6 +435,7 @@ const Quiz: React.FC = () => {
   if (!quizStarted) {
     return (
       <div className="max-w-2xl mx-auto space-y-4 sm:space-y-6">
+        {shareDialog}
         {/* Secure Examination Client Banner */}
         <div className="bg-gradient-to-r from-slate-900 to-[#1B4332] text-white rounded-2xl p-5 sm:p-6 shadow-md border border-emerald-900/40 text-left">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -790,6 +814,7 @@ const Quiz: React.FC = () => {
     const review = quizReview(state, results, quizQuestions);
     return (
       <div className="max-w-3xl mx-auto space-y-6">
+        {shareDialog}
         <div className="text-center">
           <div
             className={`inline-flex items-center justify-center w-20 h-20 rounded-full mb-4 ${
@@ -1012,6 +1037,21 @@ const Quiz: React.FC = () => {
   // Quiz in progress
   return (
     <div className="mx-auto max-w-7xl space-y-3" ref={activeSetRef}>
+      {shareDialog}
+      {autoResumed && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2.5">
+          <p className="text-sm font-bold text-blue-900">
+            Resumed automatically — your answers were saved on this device.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAutoResumed(false)}
+            className="rounded-xl px-3 py-1 text-xs font-black uppercase tracking-wider text-blue-700 hover:bg-blue-100"
+          >
+            Got it
+          </button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-4">
         <div className="min-w-0 flex-1">

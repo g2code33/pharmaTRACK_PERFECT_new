@@ -8,7 +8,8 @@ import QuestionAnalytics from '../components/QuestionAnalytics';
 import AddQuestionModal from '../components/AddQuestionModal';
 import { allQuestionPerformance, bankAnalytics, createQuestion, sourceLabel, TYPE_LABEL } from '../utils/questionBank';
 import { buildCourseQuestionPack, buildImportPlan, buildTopicQuestionPack, downloadQuestionPack, parseSharedQuestions } from '../utils/questionShare';
-import { buildQuickQuizPack, shareQuickQuizPack } from '../utils/quickQuizShare';
+import { buildQuickQuizPack } from '../utils/quickQuizShare';
+import { useQuickQuizShare } from '../components/QuickQuizShareDialog';
 
 
 type TopicWithQuestions = Topic & { questions: ExamQuestion[] };
@@ -46,6 +47,8 @@ const QuestionBank = () => {
   const [shareError, setShareError] = useState('');
   const [shareFileName, setShareFileName] = useState('');
   const shareFileInputRef = useRef<HTMLInputElement>(null);
+  const [quickShareError, setQuickShareError] = useState('');
+  const { startShare, shareDialog } = useQuickQuizShare();
 
   const filteredTopics = useMemo(
     () => state.topics.filter((t) => t.courseId === selectedCourseId),
@@ -168,16 +171,18 @@ const QuestionBank = () => {
     downloadQuestionPack(pack);
   };
 
-  const shareQuickQuiz = async (questions: ExamQuestion[], title: string, e?: React.MouseEvent) => {
+  // Sharing happens in an in-app sheet: native prompts return null inside the
+  // desktop and Android webviews, and navigator.share raises a system error
+  // dialog there, which is what used to break Quick Start sharing.
+  const shareQuickQuiz = (questions: ExamQuestion[], title: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     const pack = buildQuickQuizPack(questions, { title });
-    if (!pack) { alert('No questions are available for a quick quiz yet.'); return; }
-    try {
-      const result = await shareQuickQuizPack(pack);
-      if (result === 'copied') alert('Quick quiz link copied. Send it to your students or classmates.');
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') alert(err?.message || 'Could not share this quick quiz link.');
+    if (!pack) {
+      setQuickShareError('No questions are available for a quick quiz yet.');
+      return;
     }
+    setQuickShareError('');
+    startShare(pack);
   };
 
   const openShareImport = (scope: 'course' | 'topic', courseId: string, topicId: string | undefined, e: React.MouseEvent) => {
@@ -310,6 +315,19 @@ const QuestionBank = () => {
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6 pb-12">
+      {shareDialog}
+      {quickShareError ? (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-bold text-amber-900">{quickShareError}</p>
+          <button
+            type="button"
+            onClick={() => setQuickShareError('')}
+            className="rounded-xl px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 hover:bg-amber-100"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div className="bg-gradient-to-r from-indigo-900 via-purple-800 to-fuchsia-800 rounded-[1.5rem] sm:rounded-[2rem] p-5 sm:p-10 text-white shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 p-8 opacity-20"><FileQuestion size={120} /></div>
         <div className="relative z-10">
