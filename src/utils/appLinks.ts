@@ -271,18 +271,41 @@ export const openRouteInInstalledApp = (
   document.body.appendChild(link);
   link.click();
   window.setTimeout(() => link.remove(), 1000);
+
   // Installed PWAs claim web+pharmatrack: through the manifest protocol
-  // handler. A top-level navigation is what actually hands the launch over —
-  // hidden frames are blocked by Chromium for protocol handlers.
+  // handler, and only a top-level navigation hands the launch over. That
+  // navigation is used exclusively when the browser confirms the PWA is
+  // installed, so browsers without the app never land on a protocol error.
   window.setTimeout(() => {
     if (document.visibilityState === 'hidden') return;
-    try {
-      window.location.href = pwaTarget;
-    } catch {
-      openHiddenProtocol(pwaTarget);
-    }
+    void isInstalledPwaDetected().then((installed) => {
+      if (document.visibilityState === 'hidden') return;
+      if (installed === true) {
+        window.location.href = pwaTarget;
+        return;
+      }
+      if (installed === null) openHiddenProtocol(pwaTarget);
+    });
   }, 700);
   return target;
+};
+
+/**
+ * `true`/`false` when the browser can answer whether this PWA is installed,
+ * `null` when the browser has no way to tell.
+ */
+export const isInstalledPwaDetected = async (): Promise<boolean | null> => {
+  if (typeof navigator === 'undefined') return null;
+  const getInstalledRelatedApps = (navigator as Navigator & {
+    getInstalledRelatedApps?: () => Promise<Array<{ platform?: string; id?: string }>>;
+  }).getInstalledRelatedApps;
+  if (typeof getInstalledRelatedApps !== 'function') return null;
+  try {
+    const apps = await getInstalledRelatedApps.call(navigator);
+    return Array.isArray(apps) ? apps.some((app) => app?.platform === 'webapp') : false;
+  } catch {
+    return null;
+  }
 };
 
 export const openCurrentQuickQuizInInstalledApp = (automatic = false): string | null => {

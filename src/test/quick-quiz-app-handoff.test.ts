@@ -6,6 +6,7 @@ import {
   clearPendingQuickQuiz,
   consumePendingQuickQuiz,
   isAppleMobileBrowser,
+  isInstalledPwaDetected,
   openRouteInInstalledApp,
   readPendingQuickQuiz,
   rememberPendingQuickQuiz,
@@ -65,6 +66,31 @@ describe('quick quiz handoff into an installed app', () => {
 
     expect(openRouteInInstalledApp('/q/Short42', { fallbackHref: 'https://example.com/#/q/Short42' })).toBeNull();
     expect(readPendingQuickQuiz()).toBe('/q/Short42');
+  });
+});
+
+describe('installed PWA detection', () => {
+  it('reports an installed PWA when the browser can confirm it', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/120',
+      getInstalledRelatedApps: async () => [{ platform: 'webapp', id: 'pharmatrack' }],
+    } as unknown as Navigator);
+    await expect(isInstalledPwaDetected()).resolves.toBe(true);
+  });
+
+  it('reports no installed PWA when the browser says so', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/120',
+      getInstalledRelatedApps: async () => [],
+    } as unknown as Navigator);
+    await expect(isInstalledPwaDetected()).resolves.toBe(false);
+  });
+
+  it('stays undecided on browsers without the capability instead of guessing', async () => {
+    vi.stubGlobal('navigator', {
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Firefox/126',
+    } as unknown as Navigator);
+    await expect(isInstalledPwaDetected()).resolves.toBeNull();
   });
 });
 
