@@ -28,4 +28,39 @@ describe('standard quiz responsive layout', () => {
     expect(quiz).toContain('setIsReviewMode(true);');
     expect(quiz).toContain('setIsReviewMode(false);');
   });
+
+  it('keeps previous, finish and next on one row of the same navigation card', () => {
+    const navigation = quiz.slice(
+      quiz.indexOf('data-quiz-set-navigation'),
+      quiz.indexOf('data-quiz-set-navigation') + 1600,
+    );
+    expect(quiz).toContain('grid grid-cols-[repeat(3,minmax(0,1fr))] items-center gap-2 rounded-2xl');
+    expect(navigation).toContain('justify-self-start');
+    expect(navigation).toContain('justify-self-center');
+    expect(navigation).toContain('justify-self-end');
+    expect(navigation.indexOf('justify-self-start')).toBeLessThan(navigation.indexOf('justify-self-center'));
+    expect(navigation.indexOf('justify-self-center')).toBeLessThan(navigation.indexOf('justify-self-end'));
+  });
+
+  it('only unlocks finish on the last question and reviews answers before submitting', () => {
+    expect(quiz).toContain('const isOnLastQuestion = quizQuestions.length > 0 && currentIndex === quizQuestions.length - 1;');
+    expect(quiz).toContain('const openSubmitReview = () => {');
+    expect(quiz).toContain('if (!isOnLastQuestion) return;');
+    expect(quiz).toContain('onClick={openSubmitReview}');
+    expect(quiz).toContain('disabled={!isOnLastQuestion}');
+    expect(quiz).toContain('Check answered and unanswered questions');
+    expect(quiz).toContain('Unanswered — tap to correct');
+    expect(quiz).toContain('Corrections');
+    expect(quiz).toContain('Submit quiz');
+  });
+
+  it('can pause an active quiz and continue it later', () => {
+    expect(quiz).toContain("const QUIZ_PAUSE_KEY = 'pharmatrack.quiz.pause.v1';");
+    expect(quiz).toContain('const pauseQuiz = () => {');
+    expect(quiz).toContain('const continuePausedQuiz = () => {');
+    expect(quiz).toContain('onClick={pauseQuiz}');
+    expect(quiz).toContain('onClick={continuePausedQuiz}');
+    expect(quiz).toContain('savePausedQuiz(payload);');
+    expect(quiz).toContain('removePausedQuiz();');
+  });
 });

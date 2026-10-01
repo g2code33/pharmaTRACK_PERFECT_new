@@ -5,6 +5,7 @@ import {
   appLaunchTargetForRoute,
   getQuickQuizRouteFromHref,
   pwaProtocolLinkForRoute,
+  quickQuizRouteFromAnyText,
   routeFromPharmaTrackDeepLink,
 } from '../utils/appLinks';
 
@@ -57,5 +58,31 @@ describe('app-first quick quiz links', () => {
     expect(routeFromPharmaTrackDeepLink('pharmatrack://quick-quiz?p=zPACK')).toBe(
       '/quick-quiz?p=zPACK',
     );
+  });
+});
+
+describe('pasted quick quiz links resolved from search text', () => {
+  it('accepts links copied from the web app, the desktop app and the APK', () => {
+    expect(quickQuizRouteFromAnyText('https://pharmatrack-web.pages.dev/#/q/Short42')).toBe('/q/Short42');
+    expect(quickQuizRouteFromAnyText('tauri://localhost/#/quick-quiz?p=zPACK')).toBe('/quick-quiz?p=zPACK');
+    expect(quickQuizRouteFromAnyText('pharmatrack://q/Short42')).toBe('/q/Short42');
+    expect(quickQuizRouteFromAnyText('web+pharmatrack:pharmatrack%3A%2F%2Fq%2FShort42')).toBe('/q/Short42');
+  });
+
+  it('accepts bare routes and links pasted inside a chat message', () => {
+    expect(quickQuizRouteFromAnyText('/q/Short42')).toBe('/q/Short42');
+    expect(quickQuizRouteFromAnyText('#/quick-quiz?p=zPACK')).toBe('/quick-quiz?p=zPACK');
+    expect(
+      quickQuizRouteFromAnyText('Try this quiz: https://pharmatrack-web.pages.dev/#/q/Short42 thanks!'),
+    ).toBe('/q/Short42');
+    expect(
+      quickQuizRouteFromAnyText('(https://pharmatrack-web.pages.dev/#/q/Short42).'),
+    ).toBe('/q/Short42');
+  });
+
+  it('ignores ordinary search words and unrelated links', () => {
+    expect(quickQuizRouteFromAnyText('pharmacokinetics notes')).toBeNull();
+    expect(quickQuizRouteFromAnyText('https://example.com/#/courses')).toBeNull();
+    expect(quickQuizRouteFromAnyText('')).toBeNull();
   });
 });

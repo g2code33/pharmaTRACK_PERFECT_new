@@ -46,6 +46,31 @@ export const getQuickQuizRouteFromHref = (href: string): string | null => {
   }
 };
 
+const trimPastedLinkToken = (value: string): string =>
+  value.trim().replace(/^[<({["']+/, '').replace(/[>)}\]"'.,;]+$/, '');
+
+export const quickQuizRouteFromAnyText = (value: string): string | null => {
+  const text = value.trim();
+  if (!text) return null;
+
+  const directRoute = text.startsWith('#') ? text.slice(1) : text;
+  const normalizedDirectRoute = normalizeRoute(directRoute);
+  if (isQuickQuizRoute(normalizedDirectRoute)) return normalizedDirectRoute;
+
+  const candidates = [
+    text,
+    ...Array.from(text.matchAll(/(?:https?:\/\/|tauri:\/\/|pharmatrack:\/\/|web\+pharmatrack:)[^\s<>'"]+/gi), (match) => match[0]),
+  ];
+
+  for (const candidate of candidates) {
+    const cleaned = trimPastedLinkToken(candidate);
+    const route = getQuickQuizRouteFromHref(cleaned) || routeFromPharmaTrackDeepLink(cleaned);
+    if (route && isQuickQuizRoute(route)) return route;
+  }
+
+  return null;
+};
+
 export const appDeepLinkForRoute = (route: string): string => {
   const normalized = normalizeRoute(route);
   const [pathPart, queryPart = ''] = normalized.split('?');

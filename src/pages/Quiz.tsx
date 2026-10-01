@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
 import { ExamQuestion, QuizHistory, QuizMode } from '../types';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   gradeAnswer,
   isQuizMode,
@@ -29,9 +29,11 @@ import {
   BookOpen,
   FileQuestion,
   Share2,
+  Pause,
 } from 'lucide-react';
 
 const QUIZ_SET_SIZE = 3;
+const QUIZ_PAUSE_KEY = 'pharmatrack.quiz.pause.v1';
 
 interface QuizSettings {
   mode: QuizMode;
@@ -44,8 +46,47 @@ interface QuizSettings {
   timeLimit: number;
 }
 
+type PausedQuizState = {
+  version: 1;
+  savedAt: string;
+  settings: QuizSettings;
+  questions: ExamQuestion[];
+  currentIndex: number;
+  timeRemaining: number;
+  answers: [string, { answer: string; flagged: boolean }][];
+};
+
+const loadPausedQuiz = (): PausedQuizState | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(QUIZ_PAUSE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PausedQuizState;
+    return parsed?.version === 1 && Array.isArray(parsed.questions) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const savePausedQuiz = (payload: PausedQuizState) => {
+  try { window.localStorage.setItem(QUIZ_PAUSE_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
+};
+
+const removePausedQuiz = () => {
+  try { window.localStorage.removeItem(QUIZ_PAUSE_KEY); } catch { /* ignore */ }
+};
+
+const describeQuizAnswer = (question: ExamQuestion, raw: string): string => {
+  if (question.questionType === 'mcq' && question.options?.length) {
+    const idx = Number(raw);
+    if (Number.isInteger(idx) && question.options[idx]) return `${String.fromCharCode(65 + idx)}. ${question.options[idx]}`;
+  }
+  return raw.trim() || 'Not answered';
+};
+
 const Quiz: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, addActivity } = useApp();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const quizId = params.get('quiz');
   const requestedMode = params.get('mode');
@@ -77,6 +118,8 @@ const Quiz: React.FC = () => {
   const [timeRemaining, setTimeRemaining] = useState(0);
   const [quizFinished, setQuizFinished] = useState(false);
   const [results, setResults] = useState<QuizHistory | null>(null);
+  const [pausedQuiz, setPausedQuiz] = useState<PausedQuizState | null>(() => loadPausedQuiz());
+  const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
 
   const topics = settings.courseId ? getTopicsForCourse(settings.courseId) : [];
 
@@ -152,6 +195,9 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
+    setSubmitReviewOpen(false);
+    removePausedQuiz();
+    setPausedQuiz(null);
   };
 
   const shareCurrentQuiz = async () => {
@@ -203,7 +249,79 @@ const Quiz: React.FC = () => {
     setQuizStarted(true);
     setQuizFinished(false);
     setResults(null);
+    setSubmitReviewOpen(false);
+    removePausedQuiz();
+    setPausedQuiz(null);
     window.requestAnimationFrame(() => activeSetRef.current?.scrollIntoView({ block: 'start' }));
+  };
+
+  const buildPausePayload = (): PausedQuizState => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    settings,
+    questions: quizQuestions,
+    currentIndex,
+    timeRemaining,
+    answers: Array.from(answers.entries()),
+  });
+
+  // Safety net: leaving the page without tapping Pause still keeps the attempt,
+  // so Continue is always available when the student comes back.
+  const autoPauseRef = useRef<PausedQuizState | null>(null);
+  useEffect(() => {
+    autoPauseRef.current =
+      quizStarted && !quizFinished && !isReviewMode && quizQuestions.length
+        ? {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            settings,
+            questions: quizQuestions,
+            currentIndex,
+            timeRemaining,
+            answers: Array.from(answers.entries()),
+          }
+        : null;
+  }, [answers, currentIndex, isReviewMode, quizFinished, quizQuestions, quizStarted, settings, timeRemaining]);
+
+  useEffect(
+    () => () => {
+      if (autoPauseRef.current) savePausedQuiz(autoPauseRef.current);
+    },
+    [],
+  );
+
+  const pauseQuiz = () => {
+    if (!quizQuestions.length) return;
+    const payload = buildPausePayload();
+    savePausedQuiz(payload);
+    setPausedQuiz(payload);
+    setSubmitReviewOpen(false);
+    setQuizStarted(false);
+    setQuizFinished(false);
+    setResults(null);
+    navigate('/quiz', { replace: true });
+  };
+
+  const continuePausedQuiz = () => {
+    if (!pausedQuiz) return;
+    const byId = new Map(state.examQuestions.map((q) => [q.id, q]));
+    const restoredQuestions = pausedQuiz.questions.map((question) => byId.get(question.id) || question);
+    setSettings(pausedQuiz.settings);
+    setQuizQuestions(restoredQuestions);
+    setCurrentIndex(Math.min(pausedQuiz.currentIndex, Math.max(0, restoredQuestions.length - 1)));
+    setAnswers(new Map(pausedQuiz.answers));
+    setTimeRemaining(pausedQuiz.timeRemaining);
+    setIsReviewMode(false);
+    setQuizStarted(true);
+    setQuizFinished(false);
+    setResults(null);
+    setSubmitReviewOpen(false);
+    window.requestAnimationFrame(() => activeSetRef.current?.scrollIntoView({ block: 'start' }));
+  };
+
+  const discardPausedQuiz = () => {
+    removePausedQuiz();
+    setPausedQuiz(null);
   };
 
   const finishQuiz = () => {
@@ -249,6 +367,9 @@ const Quiz: React.FC = () => {
 
     dispatch({ type: 'ADD_QUIZ_HISTORY', payload: history });
     addActivity('quiz_taken', `Completed quiz with ${scorePercentage}% score`);
+    removePausedQuiz();
+    setPausedQuiz(null);
+    setSubmitReviewOpen(false);
     setResults(history);
     setQuizFinished(true);
   };
@@ -264,6 +385,11 @@ const Quiz: React.FC = () => {
   const setEnd = Math.min(setStart + visibleQuestions.length, quizQuestions.length);
   const canGoPreviousSet = setStart > 0;
   const canGoNextSet = setStart + QUIZ_SET_SIZE < quizQuestions.length;
+  const isOnLastQuestion = quizQuestions.length > 0 && currentIndex === quizQuestions.length - 1;
+  const answeredCount = quizQuestions.filter((question) =>
+    (answers.get(question.id)?.answer || '').trim().length > 0,
+  ).length;
+  const unansweredCount = Math.max(0, quizQuestions.length - answeredCount);
 
   const scrollActiveSetIntoView = () => {
     if (typeof window === 'undefined') return;
@@ -275,6 +401,11 @@ const Quiz: React.FC = () => {
   const goToQuestion = (index: number) => {
     setCurrentIndex(Math.min(Math.max(0, index), Math.max(0, quizQuestions.length - 1)));
     scrollActiveSetIntoView();
+  };
+
+  const openSubmitReview = () => {
+    if (!isOnLastQuestion) return;
+    setSubmitReviewOpen(true);
   };
 
   // Setup screen
@@ -324,6 +455,37 @@ const Quiz: React.FC = () => {
             </Link>
           </div>
         </div>
+
+        {pausedQuiz && (
+          <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-black uppercase tracking-wider text-blue-700">Paused quiz ready</p>
+                <h2 className="mt-1 text-lg font-black text-slate-900">Continue where you stopped</h2>
+                <p className="text-sm text-blue-800">
+                  Saved {new Date(pausedQuiz.savedAt).toLocaleString()} · Q{Math.min(pausedQuiz.currentIndex + 1, pausedQuiz.questions.length)} of {pausedQuiz.questions.length}
+                  {pausedQuiz.settings.timed ? ` · ${formatTime(pausedQuiz.timeRemaining)} left` : ''}
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={continuePausedQuiz}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-black text-white shadow-sm hover:bg-blue-700"
+                >
+                  <Play className="h-4 w-4" /> Continue
+                </button>
+                <button
+                  type="button"
+                  onClick={discardPausedQuiz}
+                  className="inline-flex items-center justify-center rounded-xl border border-blue-200 bg-white px-4 py-2.5 text-sm font-black text-blue-700 hover:bg-blue-100"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {state.examQuestions.length === 0 ? (
           <div className="text-center py-12 bg-white rounded-xl border border-gray-100">
@@ -863,16 +1025,25 @@ const Quiz: React.FC = () => {
             />
           </div>
         </div>
-        {settings.timed && (
-          <div
-            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-black ${
-              timeRemaining <= 60 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'
-            }`}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={pauseQuiz}
+            className="inline-flex items-center gap-2 rounded-xl bg-amber-100 px-3 py-2 text-sm font-black text-amber-800 hover:bg-amber-200"
           >
-            <Clock className="h-4 w-4" />
-            <span className="font-mono">{formatTime(timeRemaining)}</span>
-          </div>
-        )}
+            <Pause className="h-4 w-4" /> Pause
+          </button>
+          {settings.timed && (
+            <div
+              className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-black ${
+                timeRemaining <= 60 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              <Clock className="h-4 w-4" />
+              <span className="font-mono">{formatTime(timeRemaining)}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start">
@@ -915,7 +1086,7 @@ const Quiz: React.FC = () => {
                         return (
                           <button
                             key={idx}
-                            onClick={() => saveAnswer(question.id, String(idx))}
+                            onClick={() => { setCurrentIndex(absoluteIndex); saveAnswer(question.id, String(idx)); }}
                             className={`w-full rounded-xl border p-3 text-left text-sm transition-colors ${
                               isSelected
                                 ? 'border-blue-500 bg-blue-50'
@@ -939,7 +1110,8 @@ const Quiz: React.FC = () => {
                   ) : (
                     <textarea
                       value={saved?.answer || ''}
-                      onChange={(e) => saveAnswer(question.id, e.target.value)}
+                      onFocus={() => setCurrentIndex(absoluteIndex)}
+                      onChange={(e) => { setCurrentIndex(absoluteIndex); saveAnswer(question.id, e.target.value); }}
                       placeholder="Type your answer here..."
                       readOnly={isReviewMode}
                       rows={4}
@@ -949,7 +1121,7 @@ const Quiz: React.FC = () => {
 
                   <div className="mt-3 flex justify-end">
                     <button
-                      onClick={() => toggleFlag(question.id)}
+                      onClick={() => { setCurrentIndex(absoluteIndex); toggleFlag(question.id); }}
                       className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black ${
                         saved?.flagged
                           ? 'bg-yellow-100 text-yellow-700'
@@ -966,18 +1138,20 @@ const Quiz: React.FC = () => {
           </div>
 
           {/* Navigation appears after the third question in the current set. */}
-          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)] gap-2 rounded-2xl border border-gray-100 bg-white p-2 shadow-sm" data-quiz-set-navigation>
+          <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] items-center gap-2 rounded-2xl border border-gray-100 bg-white p-2 shadow-sm" data-quiz-set-navigation>
             <button
               onClick={() => goToQuestion(setStart - QUIZ_SET_SIZE)}
               disabled={!canGoPreviousSet}
-              className="inline-flex items-center justify-center gap-1 rounded-xl bg-gray-100 px-2 py-2 text-xs font-black text-gray-700 disabled:opacity-40"
+              className="inline-flex items-center justify-self-start gap-1 rounded-xl bg-gray-100 px-2 py-2 text-xs font-black text-gray-700 disabled:opacity-40"
             >
               <ChevronLeft className="h-4 w-4" /> Back 3
             </button>
 
             <button
-              onClick={finishQuiz}
-              className="inline-flex items-center justify-center gap-1 rounded-xl bg-green-600 px-2 py-2 text-xs font-black text-white hover:bg-green-700 sm:text-sm"
+              onClick={openSubmitReview}
+              disabled={!isOnLastQuestion}
+              title={isOnLastQuestion ? 'Review answers before submitting' : `Jump to question ${quizQuestions.length} to unlock Finish`}
+              className="inline-flex items-center justify-self-center gap-1 rounded-xl bg-green-600 px-2 py-2 text-xs font-black text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500 sm:text-sm"
             >
               Finish <Check className="h-4 w-4" />
             </button>
@@ -985,12 +1159,74 @@ const Quiz: React.FC = () => {
             <button
               onClick={() => goToQuestion(setStart + QUIZ_SET_SIZE)}
               disabled={!canGoNextSet}
-              className="inline-flex items-center justify-center gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white hover:bg-blue-700 disabled:opacity-40 sm:text-sm"
+              className="inline-flex items-center justify-self-end gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white hover:bg-blue-700 disabled:opacity-40 sm:text-sm"
             >
               Next 3 <ChevronRight className="h-4 w-4" />
             </button>
           </div>
+          {!isOnLastQuestion && quizQuestions.length > 0 && (
+            <p className="px-1 text-center text-[11px] font-bold text-gray-500">
+              Finish unlocks on question {quizQuestions.length}. Use the jump list to go there when you are ready to submit.
+            </p>
+          )}
         </section>
+
+        {submitReviewOpen && (
+          <div className="fixed inset-0 z-[260] flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Review quiz before submission">
+            <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl">
+              <div className="border-b border-slate-100 p-4">
+                <p className="text-[11px] font-black uppercase tracking-[0.2em] text-[#2D6A4F]">Final review</p>
+                <h2 className="mt-1 text-xl font-black text-slate-900">Check answered and unanswered questions</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {answeredCount} answered · {unansweredCount} unanswered. Use Corrections to return before final submission.
+                </p>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div className="grid gap-2">
+                  {quizQuestions.map((question, idx) => {
+                    const saved = answers.get(question.id);
+                    const hasAnswer = (saved?.answer || '').trim().length > 0;
+                    return (
+                      <button
+                        key={question.id}
+                        type="button"
+                        onClick={() => { setSubmitReviewOpen(false); goToQuestion(idx); }}
+                        className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${hasAnswer ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}
+                      >
+                        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${hasAnswer ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-amber-950'}`}>
+                          {idx + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-black text-slate-900 line-clamp-2">{question.questionText}</span>
+                          <span className={`mt-1 block text-xs font-bold ${hasAnswer ? 'text-emerald-800' : 'text-amber-800'}`}>
+                            {hasAnswer ? `Answered: ${describeQuizAnswer(question, saved?.answer || '')}` : 'Unanswered — tap to correct'}
+                            {saved?.flagged ? ' · Flagged' : ''}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="sticky bottom-0 grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2 border-t border-slate-100 bg-white p-3 safe-area-bottom">
+                <button
+                  type="button"
+                  onClick={() => setSubmitReviewOpen(false)}
+                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+                >
+                  Corrections
+                </button>
+                <button
+                  type="button"
+                  onClick={finishQuiz}
+                  className="rounded-2xl bg-[#2D6A4F] px-4 py-3 text-sm font-black text-white hover:bg-[#1B4332]"
+                >
+                  Submit quiz
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Question jump selection is fixed/sticky on the right on PC/exe/deb. */}
         <aside className="rounded-2xl border border-gray-100 bg-white p-3 shadow-sm lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto" aria-label="Jump to question">

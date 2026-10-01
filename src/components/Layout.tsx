@@ -16,10 +16,11 @@ import {
   restartNativeApplication,
 } from '../platform/runtime';
 import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
+import { quickQuizRouteFromAnyText } from '../utils/appLinks';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 
-const APP_VERSION_FALLBACK = '1.1.125';
+const APP_VERSION_FALLBACK = '1.1.126';
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -178,16 +179,24 @@ const Layout: React.FC = () => {
   );
 
   useEffect(() => onSearchIndex(() => setIndexTick((n) => n + 1)), []);
+  const quickQuizSearchRoute = useMemo(
+    () => quickQuizRouteFromAnyText(deferredSearchQuery),
+    [deferredSearchQuery],
+  );
+  const immediateQuickQuizRoute = useMemo(
+    () => quickQuizRouteFromAnyText(searchQuery),
+    [searchQuery],
+  );
 
   useEffect(() => {
-    if (!isSearchFocused || deferredSearchQuery.trim().length < 2) {
+    if (!isSearchFocused || deferredSearchQuery.trim().length < 2 || quickQuizSearchRoute) {
       setSearchResults((previous) => (previous.length ? [] : previous));
       setActiveIndex((previous) => (previous === 0 ? previous : 0));
       return;
     }
     setSearchResults(searchAcademic(state, deferredSearchQuery, undefined, 8));
     setActiveIndex((previous) => (previous === 0 ? previous : 0));
-  }, [deferredSearchQuery, isSearchFocused, state, indexTick]);
+  }, [deferredSearchQuery, isSearchFocused, quickQuizSearchRoute, state, indexTick]);
 
   // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
   // which raced with the click it was trying to allow.
@@ -226,8 +235,14 @@ const Layout: React.FC = () => {
   };
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const quickRoute = quickQuizRouteFromAnyText(searchQuery);
     const list = searchQuery ? searchResults : recentSlides.map(s => ({ link: `/read/${s.topicId}?slide=${Math.max(0, s.slideNumber - 1)}` }));
     if (e.key === 'Escape') { closeSearch(); return; }
+    if (e.key === 'Enter' && quickRoute) {
+      e.preventDefault();
+      goToResult(quickRoute);
+      return;
+    }
     if (!list.length) return;
 
     if (e.key === 'ArrowDown') {
@@ -522,7 +537,7 @@ const Layout: React.FC = () => {
                   <input
                     ref={searchInputRef}
                     type="text"
-                    placeholder="Search PharmaTRACK…"
+                    placeholder="Search or paste a Quick Quiz link…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
@@ -561,10 +576,28 @@ const Layout: React.FC = () => {
                           ))}
                         </>
                       ) : <div className="p-4 text-sm text-gray-500 text-center font-bold">No recent materials yet.</div>
+                    ) : immediateQuickQuizRoute ? (
+                      <div
+                        role="button"
+                        tabIndex={-1}
+                        onMouseDown={(e) => { e.preventDefault(); goToResult(immediateQuickQuizRoute); }}
+                        className="m-2 cursor-pointer rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-left transition-colors hover:bg-emerald-100"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-white">
+                            <FileQuestion className="h-5 w-5" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-black text-emerald-950">Open Quick Quiz link</p>
+                            <p className="mt-1 truncate text-xs font-bold text-emerald-800">{immediateQuickQuizRoute}</p>
+                            <p className="mt-2 text-[11px] font-black uppercase tracking-wider text-emerald-700">Press Enter or tap here to start this quiz</p>
+                          </div>
+                        </div>
+                      </div>
                     ) : searchResults.length === 0 ? (
                       <div className="p-6 text-center">
                         <p className="text-sm font-bold text-gray-600">No matches for “{searchQuery}”</p>
-                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or open Academic Search for filters.</p>
+                        <p className="text-xs text-gray-400 mt-1">Try fewer words, paste a Quick Quiz link, or open Academic Search for filters.</p>
                       </div>
                     ) : (
                       <>

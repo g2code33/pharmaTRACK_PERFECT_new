@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Home,
   Loader2,
+  Pause,
   RotateCcw,
   Save,
   Share2,
@@ -34,6 +35,40 @@ import type { SharedQuestion } from '../utils/questionShare';
 const SHARED_QUICK_COURSE_ID = 'shared-quick-quizzes';
 const APP_DOWNLOAD_URL = 'https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest';
 const QUIZ_SET_SIZE = 3;
+const QUICK_QUIZ_PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';
+
+type PausedQuickQuizState = {
+  version: 1;
+  savedAt: string;
+  packKey: string;
+  answers: Record<string, string>;
+  currentIndex: number;
+  timeRemainingSeconds: number | null;
+  timeExpired: boolean;
+};
+
+const quickQuizPauseKey = (key: string): string => `${QUICK_QUIZ_PAUSE_PREFIX}${key}`;
+
+const loadPausedQuickQuiz = (key: string): PausedQuickQuizState | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(quickQuizPauseKey(key));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PausedQuickQuizState;
+    return parsed?.version === 1 && parsed.packKey === key ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const savePausedQuickQuiz = (payload: PausedQuickQuizState) => {
+  try { window.localStorage.setItem(quickQuizPauseKey(payload.packKey), JSON.stringify(payload)); } catch { /* ignore */ }
+};
+
+const removePausedQuickQuiz = (key?: string) => {
+  if (!key) return;
+  try { window.localStorage.removeItem(quickQuizPauseKey(key)); } catch { /* ignore */ }
+};
 
 function hashString(value: string): string {
   let hash = 2166136261;
@@ -134,6 +169,9 @@ const QuickQuiz: React.FC = () => {
   const [finished, setFinished] = useState(false);
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
   const [timeExpired, setTimeExpired] = useState(false);
+  const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
+  const [pausedAttempt, setPausedAttempt] = useState<PausedQuickQuizState | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
   const [localName, setLocalName] = useState('');
   const [savedHistoryId, setSavedHistoryId] = useState<string | null>(null);
   const savedHistoryRef = useRef<string | null>(null);
@@ -149,6 +187,9 @@ const QuickQuiz: React.FC = () => {
       setFinished(false);
       setTimeRemainingSeconds(null);
       setTimeExpired(false);
+      setSubmitReviewOpen(false);
+      setPausedAttempt(null);
+      setIsPaused(false);
       savedHistoryRef.current = null;
       setSavedHistoryId(null);
       try {
@@ -194,6 +235,11 @@ const QuickQuiz: React.FC = () => {
   const setEnd = Math.min(setStart + visibleQuestions.length, packResult.questions.length);
   const canGoPreviousSet = setStart > 0;
   const canGoNextSet = setStart + QUIZ_SET_SIZE < packResult.questions.length;
+  const isOnLastQuestion = packResult.questions.length > 0 && currentIndex === packResult.questions.length - 1;
+  const answeredCount = packResult.questions.filter((question) =>
+    (answers[question.id] || '').trim().length > 0,
+  ).length;
+  const unansweredCount = Math.max(0, packResult.questions.length - answeredCount);
   const timeLimitSeconds = useMemo(() => {
     const minutes = packResult.pack?.timeLimitMinutes;
     return typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0
@@ -210,6 +256,13 @@ const QuickQuiz: React.FC = () => {
     setTimeRemainingSeconds(timeLimitSeconds);
     setTimeExpired(false);
   }, [packResult.loading, packResult.pack, packResult.packKey, timeLimitSeconds]);
+
+  useEffect(() => {
+    if (!packResult.packKey || packResult.loading) return;
+    const paused = loadPausedQuickQuiz(packResult.packKey);
+    setPausedAttempt(paused);
+    setIsPaused(Boolean(paused));
+  }, [packResult.loading, packResult.packKey]);
 
   const scrollQuestionToTop = () => {
     if (typeof window === 'undefined') return;
@@ -234,7 +287,11 @@ const QuickQuiz: React.FC = () => {
     setCurrentIndex(0);
     setFinished(false);
     setTimeExpired(false);
+    setSubmitReviewOpen(false);
     setTimeRemainingSeconds(timeLimitSeconds);
+    removePausedQuickQuiz(packResult.packKey);
+    setPausedAttempt(null);
+    setIsPaused(false);
     savedHistoryRef.current = null;
     setSavedHistoryId(null);
     scrollQuestionToTop();
@@ -371,12 +428,85 @@ const QuickQuiz: React.FC = () => {
   ]);
 
   const submitQuiz = () => {
+    removePausedQuickQuiz(packResult.packKey);
+    setPausedAttempt(null);
+    setIsPaused(false);
+    setSubmitReviewOpen(false);
     persistSubmittedQuiz();
     setFinished(true);
   };
 
+  const openSubmitReview = () => {
+    if (!isOnLastQuestion) return;
+    setSubmitReviewOpen(true);
+  };
+
+  const pauseQuickQuiz = () => {
+    if (!packResult.packKey || !packResult.questions.length) return;
+    const payload: PausedQuickQuizState = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      packKey: packResult.packKey,
+      answers,
+      currentIndex,
+      timeRemainingSeconds: timerSeconds,
+      timeExpired,
+    };
+    savePausedQuickQuiz(payload);
+    setPausedAttempt(payload);
+    setSubmitReviewOpen(false);
+    setIsPaused(true);
+  };
+
+  const continuePausedQuickQuiz = () => {
+    if (!pausedAttempt) return;
+    setAnswers(pausedAttempt.answers || {});
+    setCurrentIndex(Math.min(pausedAttempt.currentIndex, Math.max(0, packResult.questions.length - 1)));
+    setTimeRemainingSeconds(pausedAttempt.timeRemainingSeconds ?? timeLimitSeconds);
+    setTimeExpired(pausedAttempt.timeExpired);
+    setSubmitReviewOpen(false);
+    setIsPaused(false);
+    scrollQuestionToTop();
+  };
+
+  // Safety net: closing the tab or leaving the shared quiz keeps the attempt so
+  // reopening the same link offers Continue instead of restarting.
+  const autoPauseRef = useRef<PausedQuickQuizState | null>(null);
   useEffect(() => {
-    if (finished || timeLimitSeconds === null || timeRemainingSeconds === null) return undefined;
+    const hasProgress = Object.values(answers).some((value) => (value || '').trim().length > 0);
+    autoPauseRef.current =
+      !finished && packResult.packKey && packResult.questions.length && (hasProgress || currentIndex > 0)
+        ? {
+            version: 1,
+            savedAt: new Date().toISOString(),
+            packKey: packResult.packKey,
+            answers,
+            currentIndex,
+            timeRemainingSeconds: timerSeconds,
+            timeExpired,
+          }
+        : null;
+  }, [answers, currentIndex, finished, packResult.packKey, packResult.questions.length, timeExpired, timerSeconds]);
+
+  useEffect(
+    () => () => {
+      if (autoPauseRef.current) savePausedQuickQuiz(autoPauseRef.current);
+    },
+    [],
+  );
+
+  const discardPausedQuickQuiz = () => {
+    removePausedQuickQuiz(packResult.packKey);
+    setPausedAttempt(null);
+    setIsPaused(false);
+    setAnswers({});
+    setCurrentIndex(0);
+    setTimeExpired(false);
+    setTimeRemainingSeconds(timeLimitSeconds);
+  };
+
+  useEffect(() => {
+    if (isPaused || finished || timeLimitSeconds === null || timeRemainingSeconds === null) return undefined;
     if (timeRemainingSeconds <= 0) {
       setTimeExpired(true);
       persistSubmittedQuiz();
@@ -389,7 +519,7 @@ const QuickQuiz: React.FC = () => {
       );
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [finished, persistSubmittedQuiz, timeLimitSeconds, timeRemainingSeconds]);
+  }, [finished, isPaused, persistSubmittedQuiz, timeLimitSeconds, timeRemainingSeconds]);
 
   const showWebAppCta = runtime.platform === 'web' && !runtime.isPWA;
   const shouldTryAndroidApkFirst = showWebAppCta && runtime.device === 'android';
@@ -493,6 +623,53 @@ const QuickQuiz: React.FC = () => {
             >
               <Home className="w-4 h-4" /> Open PharmaTRACK
             </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isPaused && pausedAttempt) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-100">
+        {webAppCta}
+        <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-2xl items-center safe-area-x pt-safe pb-safe p-4">
+          <div className="w-full rounded-[2rem] border border-blue-200 bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-start gap-3">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-blue-600 text-white">
+                <Pause className="h-6 w-6" />
+              </span>
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.2em] text-blue-600">Quick quiz paused</p>
+                <h1 className="mt-1 text-2xl font-black text-slate-900">Continue when ready</h1>
+                <p className="mt-1 text-sm text-slate-600">
+                  Saved {new Date(pausedAttempt.savedAt).toLocaleString()} · Q{Math.min(pausedAttempt.currentIndex + 1, packResult.questions.length)} of {packResult.questions.length} · {pausedAttempt.timeRemainingSeconds === null ? 'No time limit' : `${formatQuizTimer(pausedAttempt.timeRemainingSeconds)} left`}
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <button
+                type="button"
+                onClick={continuePausedQuickQuiz}
+                className="rounded-2xl bg-blue-600 px-4 py-3 font-black text-white hover:bg-blue-700 sm:col-span-2"
+              >
+                Continue quiz
+              </button>
+              <button
+                type="button"
+                onClick={discardPausedQuickQuiz}
+                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 font-black text-slate-700 hover:bg-slate-50"
+              >
+                Restart
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={handleBack}
+              className="mt-3 inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-black text-slate-600 hover:bg-slate-100"
+            >
+              <ChevronLeft className="h-4 w-4" /> Leave page
+            </button>
           </div>
         </div>
       </div>
@@ -667,6 +844,14 @@ const QuickQuiz: React.FC = () => {
                 {packResult.pack.topic?.name ? ` · ${packResult.pack.topic.name}` : ''}
               </p>
             </div>
+            <button
+              type="button"
+              onClick={pauseQuickQuiz}
+              className="flex h-9 shrink-0 items-center justify-center gap-1 rounded-xl bg-amber-400 px-2 text-[11px] font-black uppercase text-amber-950 hover:bg-amber-300 sm:h-10 sm:px-3"
+            >
+              <Pause className="h-4 w-4" />
+              <span className="hidden sm:inline">Pause</span>
+            </button>
             <Link
               to="/"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white sm:h-10 sm:w-10"
@@ -760,7 +945,7 @@ const QuickQuiz: React.FC = () => {
                           return (
                             <button
                               key={idx}
-                              onClick={() => saveAnswer(question.id, String(idx))}
+                              onClick={() => { setCurrentIndex(absoluteIndex); saveAnswer(question.id, String(idx)); }}
                               className={`flex w-full items-start gap-2 rounded-xl border p-3 text-left text-sm touch-manipulation transition-colors ${selected ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm' : 'border-slate-200 bg-white text-slate-800 active:bg-slate-50'}`}
                             >
                               <span
@@ -776,7 +961,8 @@ const QuickQuiz: React.FC = () => {
                     ) : (
                       <textarea
                         value={answers[question.id] || ''}
-                        onChange={(e) => saveAnswer(question.id, e.target.value)}
+                        onFocus={() => setCurrentIndex(absoluteIndex)}
+                        onChange={(e) => { setCurrentIndex(absoluteIndex); saveAnswer(question.id, e.target.value); }}
                         placeholder="Type your answer…"
                         className="mt-3 min-h-[7rem] w-full rounded-xl border border-slate-300 p-3 text-sm outline-none focus:ring-4 focus:ring-[#2D6A4F]/15"
                       />
@@ -786,29 +972,91 @@ const QuickQuiz: React.FC = () => {
               })}
             </div>
 
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,1fr)] gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm" data-quick-quiz-set-navigation>
+            <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm" data-quick-quiz-set-navigation>
               <button
                 onClick={() => goToQuestionSet(setStart - QUIZ_SET_SIZE)}
                 disabled={!canGoPreviousSet}
-                className="inline-flex items-center justify-center gap-1 rounded-xl bg-slate-100 px-2 py-2 text-xs font-black text-slate-700 disabled:opacity-35"
+                className="inline-flex items-center justify-self-start gap-1 rounded-xl bg-slate-100 px-2 py-2 text-xs font-black text-slate-700 disabled:opacity-35"
               >
                 <ChevronLeft className="h-4 w-4" /> Back 3
               </button>
               <button
-                onClick={submitQuiz}
-                className="rounded-xl bg-emerald-600 px-2 py-2 text-xs font-black text-white shadow-sm sm:text-sm"
+                onClick={openSubmitReview}
+                disabled={!isOnLastQuestion}
+                title={isOnLastQuestion ? 'Review answers before submitting' : `Jump to question ${packResult.questions.length} to unlock Finish`}
+                className="inline-flex items-center justify-self-center gap-1 rounded-xl bg-emerald-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 sm:text-sm"
               >
-                Finish
+                Finish <Check className="h-4 w-4" />
               </button>
               <button
                 onClick={() => goToQuestionSet(setStart + QUIZ_SET_SIZE)}
                 disabled={!canGoNextSet}
-                className="inline-flex items-center justify-center gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:opacity-35 sm:text-sm"
+                className="inline-flex items-center justify-self-end gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:opacity-35 sm:text-sm"
               >
                 Next 3 <ChevronRight className="h-4 w-4" />
               </button>
             </div>
+            {!isOnLastQuestion && packResult.questions.length > 0 && (
+              <p className="px-1 text-center text-[11px] font-bold text-slate-500">
+                Finish unlocks on question {packResult.questions.length}. Use the jump list to go there when you are ready to submit.
+              </p>
+            )}
           </section>
+
+          {submitReviewOpen && (
+            <div className="fixed inset-0 z-[260] flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Review quick quiz before submission">
+              <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl">
+                <div className="border-b border-slate-100 p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-700">Final review</p>
+                  <h2 className="mt-1 text-xl font-black text-slate-900">Check answered and unanswered questions</h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {answeredCount} answered · {unansweredCount} unanswered. Use Corrections to go back before submitting.
+                  </p>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="grid gap-2">
+                    {packResult.questions.map((question, idx) => {
+                      const hasAnswer = (answers[question.id] || '').trim().length > 0;
+                      return (
+                        <button
+                          key={question.id}
+                          type="button"
+                          onClick={() => { setSubmitReviewOpen(false); goToQuestion(idx); }}
+                          className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${hasAnswer ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}
+                        >
+                          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${hasAnswer ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-amber-950'}`}>
+                            {idx + 1}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-black text-slate-900 line-clamp-2">{question.questionText}</span>
+                            <span className={`mt-1 block text-xs font-bold ${hasAnswer ? 'text-emerald-800' : 'text-amber-800'}`}>
+                              {hasAnswer ? `Answered: ${answerLabel(question, answers[question.id] || '')}` : 'Unanswered — tap to correct'}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="sticky bottom-0 grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2 border-t border-slate-100 bg-white p-3 safe-area-bottom">
+                  <button
+                    type="button"
+                    onClick={() => setSubmitReviewOpen(false)}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+                  >
+                    Corrections
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitQuiz}
+                    className="rounded-2xl bg-[#2D6A4F] px-4 py-3 text-sm font-black text-white hover:bg-[#1B4332]"
+                  >
+                    Submit quiz
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <aside className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm lg:sticky lg:top-3 lg:max-h-[calc(100dvh-1.5rem)] lg:overflow-y-auto" aria-label="Jump to question">
             <div className="mb-2 flex items-center justify-between gap-2">
