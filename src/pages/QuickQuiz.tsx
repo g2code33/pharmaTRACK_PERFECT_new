@@ -33,6 +33,7 @@ import type { SharedQuestion } from '../utils/questionShare';
 
 const SHARED_QUICK_COURSE_ID = 'shared-quick-quizzes';
 const APP_DOWNLOAD_URL = 'https://github.com/g2code33/pharmaTRACK_PERFECT_new/releases/latest';
+const QUIZ_SET_SIZE = 3;
 
 function hashString(value: string): string {
   let hash = 2166136261;
@@ -187,7 +188,11 @@ const QuickQuiz: React.FC = () => {
     };
   }, [paramsKey]);
 
-  const current = packResult.questions[currentIndex];
+  const setStart = Math.floor(currentIndex / QUIZ_SET_SIZE) * QUIZ_SET_SIZE;
+  const visibleQuestions = packResult.questions.slice(setStart, setStart + QUIZ_SET_SIZE);
+  const setEnd = Math.min(setStart + visibleQuestions.length, packResult.questions.length);
+  const canGoPreviousSet = setStart > 0;
+  const canGoNextSet = setStart + QUIZ_SET_SIZE < packResult.questions.length;
   const timeLimitSeconds = useMemo(() => {
     const minutes = packResult.pack?.timeLimitMinutes;
     return typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0
@@ -215,6 +220,10 @@ const QuickQuiz: React.FC = () => {
   const goToQuestion = (index: number) => {
     setCurrentIndex(Math.min(Math.max(0, index), Math.max(0, packResult.questions.length - 1)));
     scrollQuestionToTop();
+  };
+
+  const goToQuestionSet = (startIndex: number) => {
+    goToQuestion(Math.min(Math.max(0, startIndex), Math.max(0, packResult.questions.length - 1)));
   };
 
   const saveAnswer = (id: string, answer: string) =>
@@ -622,43 +631,43 @@ const QuickQuiz: React.FC = () => {
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
       {webAppCta}
 
-      <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-2 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-3 sm:pt-4">
-        <div className="mx-auto max-w-4xl rounded-2xl bg-[#0F172A] p-3 text-white shadow-lg sm:p-4">
-          <div className="flex items-center justify-between gap-3">
+      <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-1.5 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-2 sm:pt-3">
+        <div className="mx-auto max-w-7xl rounded-2xl bg-[#0F172A] p-2.5 text-white shadow-lg sm:p-3">
+          <div className="flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-[9px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">
+              <p className="text-[8px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">
                 PharmaTRACK Quick Quiz
               </p>
-              <h1 className="mt-0.5 truncate text-base font-black sm:text-lg">
+              <h1 className="mt-0.5 truncate text-sm font-black sm:text-lg">
                 {packResult.pack.title}
               </h1>
-              <p className="mt-0.5 truncate text-[11px] font-semibold text-slate-300 sm:text-xs">
+              <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-300 sm:text-xs">
                 {packResult.pack.course?.code || packResult.pack.course?.name || 'Shared quiz'}
                 {packResult.pack.topic?.name ? ` · ${packResult.pack.topic.name}` : ''}
               </p>
             </div>
             <Link
               to="/"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-white sm:h-11 sm:w-11"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-white sm:h-10 sm:w-10"
             >
-              <Home className="w-5 h-5" />
+              <Home className="h-4 w-4 sm:h-5 sm:w-5" />
             </Link>
           </div>
-          <div className="mt-2 flex items-center gap-2 sm:gap-3">
+          <div className="mt-1.5 flex items-center gap-2 sm:gap-3">
             <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
               <div
                 className="h-full rounded-full bg-emerald-400"
-                style={{ width: `${((currentIndex + 1) / packResult.questions.length) * 100}%` }}
+                style={{ width: `${(setEnd / packResult.questions.length) * 100}%` }}
               />
             </div>
-            <div className="flex shrink-0 items-center gap-2 text-[11px] font-black text-slate-200 sm:text-xs">
+            <div className="flex shrink-0 items-center gap-1.5 text-[10px] font-black text-slate-200 sm:text-xs">
               <span>
-                Q{currentIndex + 1}/{packResult.questions.length}
+                Q{setStart + 1}-{setEnd}/{packResult.questions.length}
               </span>
               <span
                 className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-1 ${timerIsLow ? 'bg-red-500/20 text-red-100 ring-1 ring-red-300/40' : 'bg-white/10 text-emerald-100'}`}
               >
-                <Clock className="h-3.5 w-3.5" /> Time: {timerLabel}
+                <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> {timerLabel}
               </span>
             </div>
           </div>
@@ -667,130 +676,141 @@ const QuickQuiz: React.FC = () => {
 
       <main
         ref={questionScrollRef}
-        className="safe-area-x min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-6 sm:py-5"
+        className="safe-area-x min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2 sm:px-6 sm:py-4"
       >
-        <div className="mx-auto max-w-4xl space-y-4">
-          {!state.student && (
-            <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 p-4 shadow-sm">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <div className="flex-1">
-                  <div className="mb-2 flex items-center gap-2 text-amber-900">
-                    <UserPlus className="h-5 w-5" />
-                    <p className="font-black">Create a local profile to save this quiz</p>
+        <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
+          <section className="min-w-0 space-y-3">
+            {!state.student && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 shadow-sm sm:p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="flex-1">
+                    <div className="mb-1.5 flex items-center gap-2 text-amber-900">
+                      <UserPlus className="h-4 w-4" />
+                      <p className="text-sm font-black sm:text-base">Create a local profile to save this quiz</p>
+                    </div>
+                    <p className="mb-2 text-xs text-amber-800 sm:text-sm">
+                      No sign-in is needed. Your name lets PharmaTRACK keep this quiz on this device after refresh.
+                    </p>
+                    <input
+                      value={localName}
+                      onChange={(event) => setLocalName(event.target.value)}
+                      placeholder="Your name"
+                      className="w-full rounded-xl border border-amber-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-900 outline-none focus:ring-4 focus:ring-amber-300/40"
+                    />
                   </div>
-                  <p className="mb-3 text-sm text-amber-800">
-                    No sign-in is needed. Your name lets PharmaTRACK keep this quiz on this device
-                    after refresh.
-                  </p>
-                  <input
-                    value={localName}
-                    onChange={(event) => setLocalName(event.target.value)}
-                    placeholder="Your name"
-                    className="w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 font-bold text-slate-900 outline-none focus:ring-4 focus:ring-amber-300/40"
-                  />
+                  <button
+                    onClick={ensureLocalStudent}
+                    className="rounded-xl bg-amber-500 px-4 py-2.5 text-sm font-black text-amber-950 shadow-sm hover:bg-amber-400"
+                  >
+                    Save locally
+                  </button>
                 </div>
-                <button
-                  onClick={ensureLocalStudent}
-                  className="rounded-2xl bg-amber-500 px-5 py-3 font-black text-amber-950 shadow-sm hover:bg-amber-400"
-                >
-                  Save locally
-                </button>
               </div>
+            )}
+
+            <div className="grid gap-3" data-quick-quiz-question-set="three">
+              {visibleQuestions.map((question, offset) => {
+                const absoluteIndex = setStart + offset;
+                const answered = answers[question.id];
+                return (
+                  <article
+                    key={question.id}
+                    className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:p-5"
+                  >
+                    <div className="mb-2.5 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                        Q{absoluteIndex + 1}
+                      </span>
+                      <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[10px] font-black uppercase text-purple-700">
+                        {question.questionType.replace('_', ' ')}
+                      </span>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
+                        {question.difficulty}
+                      </span>
+                    </div>
+                    <h2 className="text-[15px] font-black leading-snug text-slate-900 sm:text-base lg:text-lg">
+                      {question.questionText}
+                    </h2>
+
+                    {question.questionType === 'mcq' && question.options?.length ? (
+                      <div className="mt-3 grid gap-2">
+                        {question.options.map((opt, idx) => {
+                          const selected = answered === String(idx);
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => saveAnswer(question.id, String(idx))}
+                              className={`flex w-full items-start gap-2 rounded-xl border p-3 text-left text-sm touch-manipulation transition-colors ${selected ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm' : 'border-slate-200 bg-white text-slate-800 active:bg-slate-50'}`}
+                            >
+                              <span
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${selected ? 'bg-[#2D6A4F] text-white' : 'bg-slate-100 text-slate-500'}`}
+                              >
+                                {String.fromCharCode(65 + idx)}
+                              </span>
+                              <span className="min-w-0 flex-1 leading-snug">{opt}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <textarea
+                        value={answers[question.id] || ''}
+                        onChange={(e) => saveAnswer(question.id, e.target.value)}
+                        placeholder="Type your answer…"
+                        className="mt-3 min-h-[7rem] w-full rounded-xl border border-slate-300 p-3 text-sm outline-none focus:ring-4 focus:ring-[#2D6A4F]/15"
+                      />
+                    )}
+                  </article>
+                );
+              })}
             </div>
-          )}
 
-          {current && (
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-sm sm:rounded-[1.75rem] sm:p-7">
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-purple-100 px-3 py-1 text-xs font-black uppercase text-purple-700">
-                  {current.questionType.replace('_', ' ')}
-                </span>
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase text-slate-600">
-                  {current.difficulty}
-                </span>
-              </div>
-              <h2 className="text-lg font-black leading-relaxed text-slate-900 sm:text-xl">
-                {current.questionText}
-              </h2>
-
-              {current.questionType === 'mcq' && current.options?.length ? (
-                <div className="mt-5 space-y-3">
-                  {current.options.map((opt, idx) => {
-                    const selected = answers[current.id] === String(idx);
-                    return (
-                      <button
-                        key={idx}
-                        onClick={() => saveAnswer(current.id, String(idx))}
-                        className={`flex w-full items-start gap-3 rounded-2xl border-2 p-4 text-left touch-manipulation transition-all ${selected ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm' : 'border-slate-200 bg-white text-slate-800 active:scale-[0.99]'}`}
-                      >
-                        <span
-                          className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-black ${selected ? 'bg-[#2D6A4F] text-white' : 'bg-slate-100 text-slate-500'}`}
-                        >
-                          {String.fromCharCode(65 + idx)}
-                        </span>
-                        <span className="min-w-0 flex-1 leading-relaxed">{opt}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <textarea
-                  value={answers[current.id] || ''}
-                  onChange={(e) => saveAnswer(current.id, e.target.value)}
-                  placeholder="Type your answer…"
-                  className="mt-5 min-h-[9rem] w-full rounded-2xl border border-slate-300 p-4 outline-none focus:ring-4 focus:ring-[#2D6A4F]/15"
-                />
-              )}
+            <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm" data-quick-quiz-set-navigation>
+              <button
+                onClick={() => goToQuestionSet(setStart - QUIZ_SET_SIZE)}
+                disabled={!canGoPreviousSet}
+                className="inline-flex items-center justify-center gap-1 rounded-xl bg-slate-100 px-2 py-2 text-xs font-black text-slate-700 disabled:opacity-35"
+              >
+                <ChevronLeft className="h-4 w-4" /> Back 3
+              </button>
+              <button
+                onClick={submitQuiz}
+                className="rounded-xl bg-emerald-600 px-2 py-2 text-xs font-black text-white shadow-sm sm:text-sm"
+              >
+                Finish
+              </button>
+              <button
+                onClick={() => goToQuestionSet(setStart + QUIZ_SET_SIZE)}
+                disabled={!canGoNextSet}
+                className="inline-flex items-center justify-center gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:opacity-35 sm:text-sm"
+              >
+                Next 3 <ChevronRight className="h-4 w-4" />
+              </button>
             </div>
-          )}
-        </div>
-      </main>
+          </section>
 
-      <footer className="safe-area-x safe-area-bottom shrink-0 border-t border-slate-200/80 bg-slate-100/95 px-3 pb-2 pt-2 shadow-[0_-12px_30px_rgba(15,23,42,0.10)] backdrop-blur sm:px-6 sm:pb-4">
-        <div className="mx-auto max-w-4xl space-y-2">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <button
-              onClick={() => goToQuestion(currentIndex - 1)}
-              disabled={currentIndex === 0}
-              className="flex items-center justify-center gap-1 rounded-2xl bg-white px-3 py-3 font-black text-slate-700 shadow-sm disabled:opacity-40"
-            >
-              <ChevronLeft className="w-5 h-5" /> Prev
-            </button>
-            <button
-              onClick={submitQuiz}
-              className="rounded-2xl bg-emerald-600 px-3 py-3 font-black text-white shadow-sm"
-            >
-              <span className="hidden sm:inline">Finish & save</span>
-              <span className="sm:hidden">Finish</span>
-            </button>
-            <button
-              onClick={() => goToQuestion(currentIndex + 1)}
-              disabled={currentIndex === packResult.questions.length - 1}
-              className="flex items-center justify-center gap-1 rounded-2xl bg-blue-600 px-3 py-3 font-black text-white shadow-sm disabled:opacity-40"
-            >
-              Next <ChevronRight className="w-5 h-5" />
-            </button>
-          </div>
-
-          <div
-            className="max-h-24 overflow-y-auto overscroll-contain rounded-2xl bg-white/70 p-2 shadow-inner sm:max-h-28"
-            aria-label="Jump to question"
-          >
-            <div className="flex flex-wrap justify-center gap-2">
+          <aside className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm lg:sticky lg:top-3 lg:max-h-[calc(100dvh-1.5rem)] lg:overflow-y-auto" aria-label="Jump to question">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase tracking-wider text-slate-500">Jump to question</p>
+              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-500">
+                {score.total} Qs
+              </span>
+            </div>
+            <div className="grid grid-cols-5 gap-2 sm:grid-cols-8 lg:grid-cols-3" data-quick-quiz-jump-grid="right-fixed">
               {packResult.questions.map((q, idx) => (
                 <button
                   key={q.id}
                   onClick={() => goToQuestion(idx)}
-                  className={`h-9 w-9 rounded-full text-sm font-black ${idx === currentIndex ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-slate-500 border border-slate-200'}`}
+                  className={`h-9 rounded-full text-sm font-black ${idx >= setStart && idx < setEnd ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'border border-slate-200 bg-white text-slate-500'}`}
                   aria-current={idx === currentIndex ? 'step' : undefined}
                 >
                   {idx + 1}
                 </button>
               ))}
             </div>
-          </div>
+          </aside>
         </div>
-      </footer>
+      </main>
     </div>
   );
 };

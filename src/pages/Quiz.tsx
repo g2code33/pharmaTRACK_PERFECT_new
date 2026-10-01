@@ -31,6 +31,8 @@ import {
   Share2,
 } from 'lucide-react';
 
+const QUIZ_SET_SIZE = 3;
+
 interface QuizSettings {
   mode: QuizMode;
   courseId: string;
@@ -49,6 +51,7 @@ const Quiz: React.FC = () => {
   const requestedMode = params.get('mode');
   const requestedCount = parseInt(params.get('count') || '', 10);
   const reviewedQuiz = useRef('');
+  const activeSetRef = useRef<HTMLDivElement | null>(null);
 
   // Quiz setup state
   const [settings, setSettings] = useState<QuizSettings>({
@@ -235,7 +238,23 @@ const Quiz: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const currentQuestion = quizQuestions[currentIndex];
+  const setStart = Math.floor(currentIndex / QUIZ_SET_SIZE) * QUIZ_SET_SIZE;
+  const visibleQuestions = quizQuestions.slice(setStart, setStart + QUIZ_SET_SIZE);
+  const setEnd = Math.min(setStart + visibleQuestions.length, quizQuestions.length);
+  const canGoPreviousSet = setStart > 0;
+  const canGoNextSet = setStart + QUIZ_SET_SIZE < quizQuestions.length;
+
+  const scrollActiveSetIntoView = () => {
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      activeSetRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  };
+
+  const goToQuestion = (index: number) => {
+    setCurrentIndex(Math.min(Math.max(0, index), Math.max(0, quizQuestions.length - 1)));
+    scrollActiveSetIntoView();
+  };
 
   // Setup screen
   if (!quizStarted) {
@@ -801,161 +820,181 @@ const Quiz: React.FC = () => {
 
   // Quiz in progress
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="mx-auto max-w-7xl space-y-3" ref={activeSetRef}>
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5 sm:mb-6">
-        <div>
-          <p className="text-sm text-gray-500">
-            Question {currentIndex + 1} of {quizQuestions.length}
+      <div className="flex flex-col gap-3 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-4">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-black uppercase tracking-wider text-gray-500">
+            Questions {setStart + 1}-{setEnd} of {quizQuestions.length}
           </p>
-          <div className="w-full sm:w-48 h-2 bg-gray-200 rounded-full mt-2 overflow-hidden">
+          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-200 sm:max-w-md">
             <div
               className="h-full bg-blue-500 transition-all"
-              style={{ width: `${((currentIndex + 1) / quizQuestions.length) * 100}%` }}
+              style={{ width: `${(setEnd / quizQuestions.length) * 100}%` }}
             />
           </div>
         </div>
         {settings.timed && (
           <div
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+            className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-black ${
               timeRemaining <= 60 ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'
             }`}
           >
-            <Clock className="w-5 h-5" />
-            <span className="font-mono font-bold">{formatTime(timeRemaining)}</span>
+            <Clock className="h-4 w-4" />
+            <span className="font-mono">{formatTime(timeRemaining)}</span>
           </div>
         )}
       </div>
 
-      {/* Question card */}
-      {currentQuestion && (
-        <div className="bg-white rounded-xl p-4 sm:p-6 border border-gray-100 shadow-sm mb-5 sm:mb-6">
-          {/* Question type badge */}
-          <div className="flex items-center justify-between mb-4">
-            <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-lg text-sm font-medium">
-              {currentQuestion.questionType === 'mcq'
-                ? 'Multiple Choice'
-                : currentQuestion.questionType
-                    .split('_')
-                    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-                    .join(' ')}
-            </span>
-            <span className="text-sm text-gray-500">{currentQuestion.marksAllocation} marks</span>
-          </div>
-
-          {/* Question text */}
-          <p className="text-base sm:text-lg text-gray-800 font-medium mb-5 sm:mb-6 leading-relaxed">{currentQuestion.questionText}</p>
-
-          {/* MCQ options */}
-          {currentQuestion.questionType === 'mcq' && currentQuestion.options ? (
-            <div className="space-y-3">
-              {currentQuestion.options.map((opt, idx) => {
-                const isSelected = answers.get(currentQuestion.id)?.answer === String(idx);
-                return (
-                  <button
-                    key={idx}
-                    onClick={() => saveAnswer(currentQuestion.id, String(idx))}
-                    className={`w-full p-4 rounded-lg border-2 text-left transition-all ${
-                      isSelected
-                        ? 'border-blue-500 bg-blue-50'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={`w-8 h-8 rounded-full flex items-center justify-center font-medium ${
-                          isSelected ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600'
-                        }`}
-                      >
-                        {String.fromCharCode(65 + idx)}
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start">
+        <section className="min-w-0 space-y-3">
+          {/* Question cards: three at a time on phone, PWA, APK, web and desktop */}
+          <div className="grid gap-3" data-quiz-question-set="three">
+            {visibleQuestions.map((question, offset) => {
+              const absoluteIndex = setStart + offset;
+              const saved = answers.get(question.id);
+              return (
+                <article
+                  key={question.id}
+                  className="rounded-2xl border border-gray-100 bg-white p-3 shadow-sm sm:p-4 lg:p-5"
+                >
+                  <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                        Q{absoluteIndex + 1}
                       </span>
-                      <span className="text-gray-800">{opt}</span>
+                      <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[10px] font-black uppercase text-purple-700">
+                        {question.questionType === 'mcq'
+                          ? 'MCQ'
+                          : question.questionType
+                              .split('_')
+                              .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                              .join(' ')}
+                      </span>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            // Text answer
-            <textarea
-              value={answers.get(currentQuestion.id)?.answer || ''}
-              onChange={(e) => saveAnswer(currentQuestion.id, e.target.value)}
-              placeholder="Type your answer here..."
-              readOnly={isReviewMode}
-              rows={6}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none resize-none"
-            />
-          )}
+                    <span className="text-xs font-bold text-gray-500">{question.marksAllocation} marks</span>
+                  </div>
 
-        </div>
-      )}
+                  <p className="mb-3 text-[15px] font-bold leading-snug text-gray-800 sm:text-base lg:text-lg">
+                    {question.questionText}
+                  </p>
 
-      {/* Navigation */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:flex sm:items-center sm:justify-between">
-        <button
-          onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
-          disabled={currentIndex === 0}
-          className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
-        >
-          <ChevronLeft className="w-5 h-5" />
-          Previous
-        </button>
+                  {question.questionType === 'mcq' && question.options ? (
+                    <div className="grid gap-2">
+                      {question.options.map((opt, idx) => {
+                        const isSelected = saved?.answer === String(idx);
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => saveAnswer(question.id, String(idx))}
+                            className={`w-full rounded-xl border p-3 text-left text-sm transition-colors ${
+                              isSelected
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <span
+                                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                                  isSelected ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600'
+                                }`}
+                              >
+                                {String.fromCharCode(65 + idx)}
+                              </span>
+                              <span className="min-w-0 flex-1 leading-snug text-gray-800">{opt}</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <textarea
+                      value={saved?.answer || ''}
+                      onChange={(e) => saveAnswer(question.id, e.target.value)}
+                      placeholder="Type your answer here..."
+                      readOnly={isReviewMode}
+                      rows={4}
+                      className="w-full resize-none rounded-xl border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-transparent focus:ring-2 focus:ring-blue-500"
+                    />
+                  )}
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => toggleFlag(currentQuestion?.id || '')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              answers.get(currentQuestion?.id || '')?.flagged
-                ? 'bg-yellow-100 text-yellow-700'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
-          >
-            <Flag className="w-5 h-5" />
-            Flag
-          </button>
-        </div>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      onClick={() => toggleFlag(question.id)}
+                      className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black ${
+                        saved?.flagged
+                          ? 'bg-yellow-100 text-yellow-700'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      <Flag className="h-4 w-4" />
+                      Flag
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
 
-        {currentIndex === quizQuestions.length - 1 ? (
-          <button
-            onClick={finishQuiz}
-            className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700"
-          >
-            "Finish Quiz"
-            <Check className="w-5 h-5" />
-          </button>
-        ) : (
-          <button
-            onClick={() => setCurrentIndex((prev) => Math.min(quizQuestions.length - 1, prev + 1))}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            Next
-            <ChevronRight className="w-5 h-5" />
-          </button>
-        )}
-      </div>
-
-      {/* Question dots */}
-      <div className="flex flex-wrap justify-center gap-2 mt-6">
-        {quizQuestions.map((q, idx) => {
-          const answer = answers.get(q.id);
-          return (
+          {/* Navigation appears after the third question in the current set. */}
+          <div className="grid grid-cols-3 gap-2 rounded-2xl border border-gray-100 bg-white p-2 shadow-sm" data-quiz-set-navigation>
             <button
-              key={q.id}
-              onClick={() => setCurrentIndex(idx)}
-              className={`w-8 h-8 rounded-full text-sm font-medium transition-colors ${
-                currentIndex === idx
-                  ? 'bg-blue-600 text-white'
-                  : answer?.flagged
-                    ? 'bg-yellow-400 text-yellow-900'
-                    : answer?.answer
-                      ? 'bg-green-100 text-green-700 border border-green-300'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
+              onClick={() => goToQuestion(setStart - QUIZ_SET_SIZE)}
+              disabled={!canGoPreviousSet}
+              className="inline-flex items-center justify-center gap-1 rounded-xl bg-gray-100 px-2 py-2 text-xs font-black text-gray-700 disabled:opacity-40"
             >
-              {idx + 1}
+              <ChevronLeft className="h-4 w-4" /> Back 3
             </button>
-          );
-        })}
+
+            <button
+              onClick={finishQuiz}
+              className="inline-flex items-center justify-center gap-1 rounded-xl bg-green-600 px-2 py-2 text-xs font-black text-white hover:bg-green-700 sm:text-sm"
+            >
+              Finish <Check className="h-4 w-4" />
+            </button>
+
+            <button
+              onClick={() => goToQuestion(setStart + QUIZ_SET_SIZE)}
+              disabled={!canGoNextSet}
+              className="inline-flex items-center justify-center gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white hover:bg-blue-700 disabled:opacity-40 sm:text-sm"
+            >
+              Next 3 <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </section>
+
+        {/* Question jump selection is fixed/sticky on the right on PC/exe/deb. */}
+        <aside className="rounded-2xl border border-gray-100 bg-white p-3 shadow-sm lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:overflow-y-auto" aria-label="Jump to question">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-xs font-black uppercase tracking-wider text-gray-500">Jump to question</h3>
+            <span className="rounded-full bg-gray-100 px-2 py-1 text-[10px] font-black text-gray-500">
+              {quizQuestions.length} Qs
+            </span>
+          </div>
+          <div className="grid grid-cols-5 gap-2 sm:grid-cols-8 lg:grid-cols-3" data-quiz-jump-grid="right-fixed">
+            {quizQuestions.map((q, idx) => {
+              const answer = answers.get(q.id);
+              return (
+                <button
+                  key={q.id}
+                  onClick={() => goToQuestion(idx)}
+                  className={`h-9 rounded-full text-sm font-black transition-colors ${
+                    idx >= setStart && idx < setEnd
+                      ? 'bg-blue-600 text-white'
+                      : answer?.flagged
+                        ? 'bg-yellow-400 text-yellow-900'
+                        : answer?.answer
+                          ? 'border border-green-300 bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                  aria-current={idx === currentIndex ? 'step' : undefined}
+                >
+                  {idx + 1}
+                </button>
+              );
+            })}
+          </div>
+        </aside>
       </div>
     </div>
   );
