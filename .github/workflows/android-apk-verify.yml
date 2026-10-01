@@ -166,7 +166,7 @@ jobs:
           echo "Verified signed Android APK: PharmaTRACK-$APP_VER.apk"
 
       - name: Upload verified APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: verified-android-apk
           path: PharmaTRACK-*.apk
