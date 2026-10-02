@@ -17,6 +17,7 @@ const css = fs.readFileSync(path.resolve(__dirname, '../index.css'), 'utf8');
 const reader = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
 const pptxViewer = fs.readFileSync(path.resolve(__dirname, '../components/PptxViewer.tsx'), 'utf8');
 const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx'), 'utf8');
+const titleBar = fs.readFileSync(path.resolve(__dirname, '../components/NativeTitleBar.tsx'), 'utf8');
 const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
 const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
 const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
@@ -225,7 +226,10 @@ describe('whole-document uploads', () => {
 
 describe('stable layout', () => {
   it('keeps the native titlebar and hamburger/sidebar shell white, not green-gradient', () => {
-    expect(layout).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    // The window strip lives in its own component so every full-height screen
+    // can render it; the Layout mounts that component.
+    expect(titleBar).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    expect(layout).toContain('<NativeTitleBar />');
     expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900');
     expect(css).toContain('background: #ffffff !important;');
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');

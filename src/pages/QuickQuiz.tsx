@@ -12,6 +12,7 @@ import {
   Download,
   ExternalLink,
   Home,
+  Layers,
   Loader2,
   Pause,
   RotateCcw,
@@ -31,6 +32,7 @@ import {
   type QuickQuizPack,
 } from '../utils/quickQuizShare';
 import { useQuickQuizShare } from '../components/QuickQuizShareDialog';
+import NativeTitleBar from '../components/NativeTitleBar';
 import { useQuizAutosave } from '../hooks/useQuizAutosave';
 import { copyTextToClipboard } from '../utils/clipboard';
 import {
@@ -42,74 +44,26 @@ import {
 } from '../utils/appLinks';
 import { gradeAnswer } from '../utils/questionBank';
 import type { SharedQuestion } from '../utils/questionShare';
+import {
+  SHARED_QUICK_COURSE_ID,
+  hashString,
+  loadPausedQuickQuiz,
+  quickCourseEntryKey,
+  quickQuizPackKey,
+  rememberQuickCourseEntryPack,
+  removePausedQuickQuiz,
+  savePausedQuickQuiz,
+  saveQuickCourseResult,
+  sharedQuickQuestionId,
+  sharedQuickTopicId,
+  type PausedQuickQuizState,
+} from '../utils/quickQuizAttempts';
 
-const SHARED_QUICK_COURSE_ID = 'shared-quick-quizzes';
 const QUIZ_SET_SIZE = 3;
-const QUICK_QUIZ_PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';
 
-type PausedQuickQuizState = {
-  version: 1;
-  /** 'auto' is a background autosave; 'paused' means the student tapped Pause. */
-  reason?: 'auto' | 'paused';
-  savedAt: string;
-  packKey: string;
-  answers: Record<string, string>;
-  currentIndex: number;
-  timeRemainingSeconds: number | null;
-  timeExpired: boolean;
-};
-
-const quickQuizPauseKey = (key: string): string => `${QUICK_QUIZ_PAUSE_PREFIX}${key}`;
-
-const loadPausedQuickQuiz = (key: string): PausedQuickQuizState | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(quickQuizPauseKey(key));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as PausedQuickQuizState;
-    return parsed?.version === 1 && parsed.packKey === key ? parsed : null;
-  } catch {
-    return null;
-  }
-};
-
-const savePausedQuickQuiz = (payload: PausedQuickQuizState) => {
-  try { window.localStorage.setItem(quickQuizPauseKey(payload.packKey), JSON.stringify(payload)); } catch { /* ignore */ }
-};
-
-const removePausedQuickQuiz = (key?: string) => {
-  if (!key) return;
-  try { window.localStorage.removeItem(quickQuizPauseKey(key)); } catch { /* ignore */ }
-};
-
-function hashString(value: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function packKey(pack: QuickQuizPack): string {
-  return hashString(
-    JSON.stringify({
-      title: pack.title,
-      questions: pack.questions.map((q) => [
-        q.questionText,
-        q.questionType,
-        q.options,
-        q.correctOption,
-        q.correctAnswer,
-        q.explanation,
-      ]),
-    }),
-  );
-}
-
-const sharedTopicId = (key: string) => `shared-quick-topic-${key}`;
-const sharedQuestionId = (key: string, index: number) =>
-  `shared-quick-question-${key}-${index + 1}`;
+const packKey = quickQuizPackKey;
+const sharedTopicId = sharedQuickTopicId;
+const sharedQuestionId = sharedQuickQuestionId;
 
 const toQuestion = (q: SharedQuestion, index: number, key: string): ExamQuestion => ({
   id: sharedQuestionId(key, index),
@@ -194,6 +148,24 @@ const QuickQuiz: React.FC = () => {
   const questionScrollRef = useRef<HTMLDivElement | null>(null);
   const autoOpenAttemptRef = useRef('');
 
+  // Set when this quiz was opened from a shared course, so the student can go
+  // straight back to the topic list and pick the next one.
+  const courseParam = params.get('from') || '';
+  const courseRoute = courseParam
+    ? `/quick-course?p=${encodeURIComponent(courseParam)}`
+    : '';
+  const courseEntryKey = useMemo(
+    () =>
+      courseParam
+        ? quickCourseEntryKey({
+            code: params.get('c') || routeCode || undefined,
+            pack: params.get('p') || params.get('pack') || undefined,
+          })
+        : '',
+    [courseParam, params, routeCode],
+  );
+  const goBackToCourse = () => navigate(courseRoute);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -245,6 +217,11 @@ const QuickQuiz: React.FC = () => {
       cancelled = true;
     };
   }, [paramsKey]);
+
+  useEffect(() => {
+    if (!courseEntryKey || !packResult.packKey) return;
+    rememberQuickCourseEntryPack(courseEntryKey, packResult.packKey);
+  }, [courseEntryKey, packResult.packKey]);
 
   const setStart = Math.floor(currentIndex / QUIZ_SET_SIZE) * QUIZ_SET_SIZE;
   const visibleQuestions = packResult.questions.slice(setStart, setStart + QUIZ_SET_SIZE);
@@ -465,6 +442,16 @@ const QuickQuiz: React.FC = () => {
     setIsPaused(false);
     setSubmitReviewOpen(false);
     persistSubmittedQuiz();
+    // A topic opened from a shared course reports its score back to the course
+    // page, which is how that page can show what is done and what is left.
+    if (courseEntryKey) {
+      saveQuickCourseResult(courseEntryKey, {
+        percent: score.percent,
+        correct: score.correct,
+        total: score.total,
+        completedAt: new Date().toISOString(),
+      });
+    }
     setFinished(true);
   };
 
@@ -736,6 +723,7 @@ const QuickQuiz: React.FC = () => {
   if (packResult.loading) {
     return (
       <div className="min-h-[100dvh] bg-slate-950 text-white">
+        <NativeTitleBar sticky />
         {webAppCta}
       {shareDialog}
         <div className="safe-area-x pt-safe pb-safe flex min-h-[calc(100dvh-4rem)] items-center justify-center p-4">
@@ -756,6 +744,7 @@ const QuickQuiz: React.FC = () => {
   if (packResult.error || !packResult.pack) {
     return (
       <div className="min-h-[100dvh] bg-slate-950 text-white">
+        <NativeTitleBar sticky />
         {webAppCta}
       {shareDialog}
         <div className="safe-area-x pt-safe pb-safe flex min-h-[calc(100dvh-4rem)] items-center justify-center p-4">
@@ -778,6 +767,7 @@ const QuickQuiz: React.FC = () => {
   if (isPaused && pausedAttempt) {
     return (
       <div className="min-h-[100dvh] bg-slate-100">
+        <NativeTitleBar sticky />
         {webAppCta}
       {shareDialog}
         <div className="mx-auto flex min-h-[calc(100dvh-4rem)] max-w-2xl items-center safe-area-x pt-safe pb-safe p-4">
@@ -826,16 +816,29 @@ const QuickQuiz: React.FC = () => {
   if (finished) {
     return (
       <div className="min-h-[100dvh] bg-slate-100">
+        <NativeTitleBar sticky />
         {webAppCta}
       {shareDialog}
         <div className="mx-auto max-w-3xl space-y-4 safe-area-x pt-safe pb-safe p-4">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-black text-slate-700 shadow-sm ring-1 ring-slate-200"
-          >
-            <ChevronLeft className="h-4 w-4" /> Back
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleBack}
+              className="inline-flex items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-black text-slate-700 shadow-sm ring-1 ring-slate-200"
+            >
+              <ChevronLeft className="h-4 w-4" /> Back
+            </button>
+            {courseRoute ? (
+              <button
+                type="button"
+                onClick={goBackToCourse}
+                data-testid="quick-quiz-back-to-course"
+                className="inline-flex items-center gap-2 rounded-2xl bg-[#2D6A4F] px-4 py-2 text-sm font-black text-white shadow-sm hover:bg-[#1B4332]"
+              >
+                <Layers className="h-4 w-4" /> Choose another topic
+              </button>
+            ) : null}
+          </div>
           <div className="rounded-[2rem] bg-gradient-to-br from-[#0F172A] to-[#2D6A4F] p-6 text-white shadow-xl">
             <div className="flex items-center gap-3 mb-4">
               <div className="h-14 w-14 rounded-2xl bg-white/15 flex items-center justify-center">
@@ -966,20 +969,24 @@ const QuickQuiz: React.FC = () => {
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
+      <NativeTitleBar />
       {webAppCta}
       {shareDialog}
 
       <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-1.5 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-2 sm:pt-3">
         <div className="mx-auto max-w-7xl rounded-2xl bg-[#0F172A] p-2.5 text-white shadow-lg sm:p-3">
           <div className="flex items-center justify-between gap-2">
+            {/* Opened from a shared course, "back" means the topic list the
+                student came from, so they can pick the next topic. */}
             <button
               type="button"
-              onClick={handleBack}
+              onClick={courseRoute ? goBackToCourse : handleBack}
+              data-testid={courseRoute ? 'quick-quiz-course-topics' : 'quick-quiz-back'}
               className="flex h-9 shrink-0 items-center justify-center gap-1 rounded-xl bg-white/10 px-2 text-[11px] font-black uppercase text-white hover:bg-white/15 sm:h-10 sm:px-3"
-              aria-label="Back"
+              aria-label={courseRoute ? 'Back to all topics' : 'Back'}
             >
               <ChevronLeft className="h-4 w-4" />
-              <span className="hidden sm:inline">Back</span>
+              <span className="hidden sm:inline">{courseRoute ? 'Topics' : 'Back'}</span>
             </button>
             <div className="min-w-0 flex-1">
               <p className="text-[8px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">

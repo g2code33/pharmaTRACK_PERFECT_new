@@ -5,6 +5,7 @@ import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import StorageNoticeBanner from './components/StorageNoticeBanner';
+import NativeTitleBar from './components/NativeTitleBar';
 // First paint: these three are what a student sees before anything else, so
 // they stay in the main chunk.
 import Dashboard from './pages/Dashboard';
@@ -28,6 +29,7 @@ const LearningObjectives = lazyRoute('/objectives', () => import('./pages/Learni
 const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'));
 const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'));
 const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'));
+const QuickCourse = lazyRoute('/quick-course', () => import('./pages/QuickCourse'));
 const Planner = lazyRoute('/planner', () => import('./pages/Planner'));
 const Notes = lazyRoute('/notes', () => import('./pages/Notes'));
 const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'));
@@ -180,7 +182,9 @@ const PendingQuickQuizLauncher: React.FC = () => {
     // already has the link it was opened with.
     if (!runtime.isPWA && !runtime.nativeHost) return;
     const alreadyOnQuiz =
-      location.pathname.startsWith('/quick-quiz') || location.pathname.startsWith('/q/');
+      location.pathname.startsWith('/quick-quiz') ||
+      location.pathname.startsWith('/quick-course') ||
+      location.pathname.startsWith('/q/');
     if (alreadyOnQuiz) return;
     const pending = consumePendingQuickQuiz();
     if (pending) navigate(pending, { replace: true });
@@ -336,6 +340,7 @@ const App = () => {
         <HashRouter>
           <ResumePaintRecovery />
           <div className="min-h-screen bg-slate-50">
+            <NativeTitleBar sticky />
             <StorageNoticeBanner />
             <main className="p-4 sm:p-8">
               <StorageManager />
@@ -364,6 +369,7 @@ const App = () => {
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/q/:code" element={<QuickQuiz />} />
+                  <Route path="/quick-course" element={<QuickCourse />} />
                   <Route path="/app-link" element={<AppLinkRedirect />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
@@ -373,6 +379,7 @@ const App = () => {
                 <>
                   <Route path="/quick-quiz" element={<QuickQuiz />} />
                   <Route path="/q/:code" element={<QuickQuiz />} />
+                  <Route path="/quick-course" element={<QuickCourse />} />
                   <Route path="/app-link" element={<AppLinkRedirect />} />
                   <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
                   <Route

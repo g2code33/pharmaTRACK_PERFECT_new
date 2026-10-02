@@ -15,7 +15,9 @@ export const APP_STORE_URL = 'https://rx-store-web.pages.dev/app/pharmatrack';
 const PENDING_QUICK_QUIZ_KEY = 'pharmatrack:pending-quick-quiz';
 const PENDING_QUICK_QUIZ_TTL_MS = 30 * 60 * 1000;
 
-const QUICK_QUIZ_ROUTE_PREFIXES = ['/quick-quiz', '/q/'];
+// A shared course link is handled exactly like a shared quiz link: it opens
+// the installed app first and only falls back to the web.
+const QUICK_QUIZ_ROUTE_PREFIXES = ['/quick-quiz', '/q/', '/quick-course'];
 
 const normalizeRoute = (route: string): string => {
   const trimmed = route.trim();

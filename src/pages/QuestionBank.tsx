@@ -48,7 +48,7 @@ const QuestionBank = () => {
   const [shareFileName, setShareFileName] = useState('');
   const shareFileInputRef = useRef<HTMLInputElement>(null);
   const [quickShareError, setQuickShareError] = useState('');
-  const { startShare, shareDialog } = useQuickQuizShare();
+  const { startShare, startCourseShare, shareDialog } = useQuickQuizShare();
 
   const filteredTopics = useMemo(
     () => state.topics.filter((t) => t.courseId === selectedCourseId),
@@ -183,6 +183,30 @@ const QuestionBank = () => {
     }
     setQuickShareError('');
     startShare(pack);
+  };
+
+  /**
+   * Sharing a course is deliberately different from sharing a topic.
+   *
+   * A topic link drops the recipient straight into that one quiz. A course
+   * link opens a page listing every topic in the course, so they choose what
+   * to do, and can come back to the same link later for the rest.
+   */
+  const shareQuickCourse = (course: CourseQuestionGroup, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const topics = course.topics
+      .filter((topic) => topic.questions.length > 0)
+      .map((topic) => ({ name: topic.topicName, questions: topic.questions }));
+    if (!topics.length) {
+      setQuickShareError('No questions are available for a quick quiz yet.');
+      return;
+    }
+    setQuickShareError('');
+    startCourseShare({
+      title: `${course.courseCode}: ${course.courseName}`,
+      course: { code: course.courseCode, name: course.courseName },
+      topics,
+    });
   };
 
   const openShareImport = (scope: 'course' | 'topic', courseId: string, topicId: string | undefined, e: React.MouseEvent) => {
@@ -394,7 +418,7 @@ const QuestionBank = () => {
                   <div className="text-left min-w-0"><h2 className="text-base sm:text-xl font-bold text-slate-800 truncate">{course.courseCode}: {course.courseName}</h2><p className="text-xs sm:text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
-                  <button onClick={(e) => void shareQuickQuiz(course.topics.flatMap((t) => t.questions), `${course.courseCode} Quick Quiz`, e)} title="Share a link that opens this course as an instant quiz" className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-500 rounded-lg text-xs font-black uppercase transition-colors"><Share2 size={14} /> Quick Start</button>
+                  <button onClick={(e) => shareQuickCourse(course, e)} data-testid={`share-course-${course.id}`} title={`Share all ${course.topics.length} topics — whoever opens the link chooses which topic to do, and can come back for the rest`} className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-500 rounded-lg text-xs font-black uppercase transition-colors"><Layers size={14} /> Share course</button>
                   <button onClick={(e) => handleExportCourse(course.id, e)} title="Export this course's questions to share" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-[#2D6A4F] hover:bg-green-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Download size={14} /> Export</button>
                   <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><FileUp size={14} /> Import</button>
                   <div className="p-2 bg-white rounded-full shadow-sm">{expandedCourses.has(course.id) ? <ChevronUp className="text-slate-400" /> : <ChevronDown className="text-slate-400" />}</div>
@@ -412,7 +436,7 @@ const QuestionBank = () => {
                            <span className="shrink-0 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
                          </div>
                          <div className="flex flex-wrap items-center justify-end gap-2">
-                           <button onClick={(e) => void shareQuickQuiz(topic.questions, `${topic.topicName} Quick Quiz`, e)} title="Share a link that opens this topic as an instant quiz" className="text-white bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span>Quick Start</span></button>
+                           <button onClick={(e) => void shareQuickQuiz(topic.questions, `${topic.topicName} Quick Quiz`, e)} data-testid={`share-topic-${topic.id}`} title="Share a link that opens this topic as an instant quiz" className="text-white bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span>Quick Start</span></button>
                            <button onClick={(e) => handleExportTopic(topic.id, e)} title="Export this topic's questions to share" className="text-slate-500 hover:text-[#2D6A4F] hover:bg-green-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Download size={14}/> <span className="hidden sm:inline">Export</span></button>
                            <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><FileUp size={14}/> <span className="hidden sm:inline">Import</span></button>
                            <button onClick={(e) => handleDeleteTopicQuestions(topic.id, e)} className="text-red-400 hover:text-red-600 hover:bg-red-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Trash2 size={14}/> <span className="hidden sm:inline">Clear Topic</span></button>

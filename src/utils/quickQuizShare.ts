@@ -56,7 +56,7 @@ type TinyPack = {
 type ShareUrlResult = { url: string; mode: 'short-code' | 'inline' };
 
 const PUBLIC_APP_URL_FALLBACK = 'https://pharmatrack-web.pages.dev/';
-const INLINE_LINK_MAX_LENGTH = 1800;
+export const INLINE_LINK_MAX_LENGTH = 1800;
 
 const TYPE_TO_CODE: Record<SharedQuestion['questionType'], 'm' | 's' | 'e'> = {
   mcq: 'm',
@@ -292,7 +292,7 @@ function shareBaseUrl(href: string): URL {
   return isNativeAppUrl(current) ? new URL(PUBLIC_APP_URL_FALLBACK) : current;
 }
 
-function buildHashUrl(route: string, href: string): string {
+export function buildShareHashUrl(route: string, href: string): string {
   const url = shareBaseUrl(href);
   url.search = '';
   url.hash = route.startsWith('/') ? route : `/${route}`;
@@ -332,7 +332,7 @@ function toShortCodePack(pack: QuickQuizPack): QuickQuizPack {
   };
 }
 
-async function createShortQuickQuizCode(pack: QuickQuizPack): Promise<string | null> {
+export async function createShortQuickQuizCode(pack: QuickQuizPack): Promise<string | null> {
   const base = apiBase();
   if (base === null || typeof fetch !== 'function') return null;
   try {
@@ -364,11 +364,11 @@ export async function fetchQuickQuizPackByCode(code: string): Promise<QuickQuizP
 }
 
 export function quickQuizUrl(pack: QuickQuizPack, href: string = window.location.href): string {
-  return buildHashUrl(`/quick-quiz?p=${encodeURIComponent(encodeQuickQuizPack(pack))}`, href);
+  return buildShareHashUrl(`/quick-quiz?p=${encodeURIComponent(encodeQuickQuizPack(pack))}`, href);
 }
 
 export function quickQuizCodeUrl(code: string, href: string = window.location.href): string {
-  return buildHashUrl(`/q/${encodeURIComponent(code.trim())}`, href);
+  return buildShareHashUrl(`/q/${encodeURIComponent(code.trim())}`, href);
 }
 
 export async function quickQuizShareUrl(pack: QuickQuizPack, href: string = window.location.href): Promise<ShareUrlResult> {

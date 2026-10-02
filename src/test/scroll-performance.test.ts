@@ -16,6 +16,7 @@ const code = (source: string) =>
 
 const css = read('../index.css');
 const layout = read('../components/Layout.tsx');
+const titleBar = read('../components/NativeTitleBar.tsx');
 const pdfViewer = read('../components/PdfViewer.tsx');
 const pptxViewer = read('../components/PptxViewer.tsx');
 const idleScheduler = read('../utils/idleScheduler.ts');
@@ -173,8 +174,8 @@ describe('desktop shell keeps the GPU', () => {
   });
 
   it('keeps the desktop window strip to a single compact row', () => {
-    expect(layout).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
-    expect(layout).not.toContain('native-titlebar flex h-11');
+    expect(titleBar).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    expect(titleBar).not.toContain('native-titlebar flex h-11');
     expect(css).toMatch(/\.native-window-control \{[\s\S]*?height: 2\.25rem;/);
   });
 });

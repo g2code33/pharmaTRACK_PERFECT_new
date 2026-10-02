@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, useCallback, useDeferredValue, useMemo } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useDeferredValue, useMemo } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import RouteErrorBoundary from './RouteErrorBoundary';
@@ -17,8 +17,9 @@ import {
 } from '../platform/runtime';
 import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
 import { quickQuizRouteFromAnyText } from '../utils/appLinks';
-import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope, Minus, Maximize2 } from 'lucide-react';
+import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
+import NativeTitleBar from './NativeTitleBar';
 
 const APP_VERSION_FALLBACK = '1.2.0';
 
@@ -50,16 +51,6 @@ const mobileNavItems = [
   { path: '/questions', icon: FileQuestion, label: 'Questions' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
-
-type NativeDesktopWindow = {
-  startDragging: () => Promise<void>;
-  minimize: () => Promise<void>;
-  toggleMaximize: () => Promise<void>;
-  isMaximized: () => Promise<boolean>;
-  close: () => Promise<void>;
-};
-
-type NativeWindowAction = 'drag' | 'minimize' | 'toggleMaximize' | 'close';
 
 const Layout: React.FC = () => {
   const { state, logout } = useApp();
@@ -101,52 +92,6 @@ const Layout: React.FC = () => {
     if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);
     else navigate('/');
   };
-  const nativePlatformLabel = runtime.nativeWebview && typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
-    ? 'Windows App'
-    : 'Desktop App';
-  const nativeWindowRef = useRef<NativeDesktopWindow | null>(null);
-  const [nativeIsMaximized, setNativeIsMaximized] = useState(false);
-
-  const getNativeDesktopWindow = useCallback(async (): Promise<NativeDesktopWindow | null> => {
-    if (!runtime.nativeWebview) return null;
-    if (!nativeWindowRef.current) {
-      const { getCurrentWindow } = await import('@tauri-apps/api/window');
-      nativeWindowRef.current = getCurrentWindow() as unknown as NativeDesktopWindow;
-    }
-    return nativeWindowRef.current;
-  }, [runtime.nativeWebview]);
-
-  const syncNativeWindowState = useCallback(async () => {
-    const win = await getNativeDesktopWindow();
-    if (!win) return;
-    try {
-      setNativeIsMaximized(await win.isMaximized());
-    } catch {
-      setNativeIsMaximized(false);
-    }
-  }, [getNativeDesktopWindow]);
-
-  const runNativeWindowAction = useCallback(async (action: NativeWindowAction) => {
-    const win = await getNativeDesktopWindow();
-    if (!win) return;
-    try {
-      if (action === 'drag') await win.startDragging();
-      if (action === 'minimize') await win.minimize();
-      if (action === 'toggleMaximize') {
-        await win.toggleMaximize();
-        await syncNativeWindowState();
-      }
-      if (action === 'close') await win.close();
-    } catch (error) {
-      console.warn(`Native window action failed: ${action}`, error);
-    }
-  }, [getNativeDesktopWindow, syncNativeWindowState]);
-
-  useEffect(() => {
-    if (!runtime.nativeWebview) return;
-    void syncNativeWindowState();
-  }, [runtime.nativeWebview, syncNativeWindowState]);
-
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
     try { localStorage.setItem('pharmatrack-dark-mode', String(darkMode)); } catch { /* ignore */ }
@@ -387,59 +332,7 @@ const Layout: React.FC = () => {
 
   return (
     <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${runtime.platform === 'android-native' ? 'android-native-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
-      {runtime.nativeWebview && (
-        <div className="native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white text-slate-900 shadow-sm">
-          <div
-            className="native-titlebar-drag flex h-full flex-1 select-none items-center gap-2 overflow-hidden px-3"
-            data-tauri-drag-region
-            onMouseDown={(event) => { if (event.button === 0 && event.detail === 1) void runNativeWindowAction('drag'); }}
-            onDoubleClick={() => void runNativeWindowAction('toggleMaximize')}
-            title="Drag to move · Double-click to maximize"
-          >
-            {/* One compact line. The window strip used to be 44px tall and
-                repeated the branding that the sidebar and header already show,
-                which is pure vertical real estate on a laptop screen. */}
-            <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white">
-              <img src="/logo.png" alt="PharmaTRACK" className="h-full w-full object-cover scale-110" />
-            </div>
-            <p className="truncate text-xs font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-emerald-600">TRACK</span></p>
-            <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex">{nativePlatformLabel}</span>
-            <span className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-slate-400 lg:inline">Track · Learn · Achieve · v{appVersion}</span>
-          </div>
-          <div className="flex h-full items-center pr-1">
-            <button
-              type="button"
-              aria-label="Minimize PharmaTRACK"
-              title="Minimize"
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => void runNativeWindowAction('minimize')}
-              className="native-window-control"
-            >
-              <Minus className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              aria-label={nativeIsMaximized ? 'Restore PharmaTRACK window' : 'Maximize PharmaTRACK'}
-              title={nativeIsMaximized ? 'Restore' : 'Maximize'}
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => void runNativeWindowAction('toggleMaximize')}
-              className="native-window-control"
-            >
-              <Maximize2 className={`h-3.5 w-3.5 ${nativeIsMaximized ? 'scale-90' : ''}`} />
-            </button>
-            <button
-              type="button"
-              aria-label="Close PharmaTRACK"
-              title="Close"
-              onMouseDown={(event) => event.stopPropagation()}
-              onClick={() => void runNativeWindowAction('close')}
-              className="native-window-control native-window-control-close"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
+      <NativeTitleBar />
       {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
       {pwaUpdateAvailable && (
         <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">

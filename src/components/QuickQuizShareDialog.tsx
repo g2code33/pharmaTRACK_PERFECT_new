@@ -1,20 +1,49 @@
 import React, { useCallback, useState } from 'react';
-import { AlertTriangle, Check, Clock, Copy, Link2, Loader2, Share2, Timer, X } from 'lucide-react';
+import { AlertTriangle, Check, Clock, Copy, Layers, Link2, Loader2, Share2, Timer, X } from 'lucide-react';
 import type { QuickQuizPack } from '../utils/quickQuizShare';
 import { quickQuizShareUrl } from '../utils/quickQuizShare';
+import { createQuickCourseShare, type QuickCourseTopicInput } from '../utils/quickCourseShare';
 import { canUseWebShare, copyTextToClipboard, shareOrCopyLink } from '../utils/clipboard';
 
 const TIME_PRESETS = [5, 10, 15, 20, 30, 45, 60];
 
 type Stage =
   | { kind: 'timing' }
-  | { kind: 'working' }
-  | { kind: 'ready'; url: string; mode: 'short-code' | 'inline'; copied: boolean }
+  | { kind: 'working'; progress?: string }
+  | {
+      kind: 'ready';
+      url: string;
+      mode: 'short-code' | 'inline' | 'course';
+      copied: boolean;
+      offlineTopics?: string[];
+    }
   | { kind: 'error'; message: string };
+
+/** What the sheet is being asked to share. */
+type ShareJob =
+  | { kind: 'quiz'; pack: QuickQuizPack }
+  | {
+      kind: 'course';
+      title: string;
+      course?: { code?: string; name?: string };
+      topics: QuickCourseTopicInput[];
+      questionCount: number;
+    };
+
+export interface QuickCourseShareInput {
+  title: string;
+  course?: { code?: string; name?: string };
+  topics: QuickCourseTopicInput[];
+}
 
 export interface QuickQuizShareController {
   /** Opens the share sheet for a pack. Does nothing when there is no pack. */
   startShare: (pack: QuickQuizPack | null | undefined) => void;
+  /**
+   * Opens the share sheet for a whole course. The recipient gets a page
+   * listing every topic instead of being dropped into one quiz.
+   */
+  startCourseShare: (input: QuickCourseShareInput | null | undefined) => void;
   /** Render this anywhere in the page; it is `null` while the sheet is closed. */
   shareDialog: React.ReactNode;
 }
@@ -30,34 +59,67 @@ export interface QuickQuizShareController {
  * hand if the runtime blocks clipboard access.
  */
 export function useQuickQuizShare(): QuickQuizShareController {
-  const [pack, setPack] = useState<QuickQuizPack | null>(null);
+  const [job, setJob] = useState<ShareJob | null>(null);
   const [stage, setStage] = useState<Stage>({ kind: 'timing' });
   const [customMinutes, setCustomMinutes] = useState('');
   const [chosenMinutes, setChosenMinutes] = useState<number | undefined>(undefined);
 
   const startShare = useCallback((next: QuickQuizPack | null | undefined) => {
     if (!next) return;
-    setPack(next);
+    setJob({ kind: 'quiz', pack: next });
+    setCustomMinutes('');
+    setChosenMinutes(undefined);
+    setStage({ kind: 'timing' });
+  }, []);
+
+  const startCourseShare = useCallback((input: QuickCourseShareInput | null | undefined) => {
+    const topics = (input?.topics || []).filter((topic) =>
+      topic.questions.some((question) => question.questionText.trim()),
+    );
+    if (!input || !topics.length) return;
+    setJob({
+      kind: 'course',
+      title: input.title,
+      course: input.course,
+      topics,
+      questionCount: topics.reduce((sum, topic) => sum + topic.questions.length, 0),
+    });
     setCustomMinutes('');
     setChosenMinutes(undefined);
     setStage({ kind: 'timing' });
   }, []);
 
   const close = useCallback(() => {
-    setPack(null);
+    setJob(null);
     setStage({ kind: 'timing' });
   }, []);
 
   const generate = useCallback(
     async (minutes: number | undefined) => {
-      if (!pack) return;
+      if (!job) return;
       setChosenMinutes(minutes);
       setStage({ kind: 'working' });
-      const timedPack: QuickQuizPack = {
-        ...pack,
-        timeLimitMinutes: minutes && minutes > 0 ? Math.round(minutes) : undefined,
-      };
+      const timeLimitMinutes = minutes && minutes > 0 ? Math.round(minutes) : undefined;
       try {
+        if (job.kind === 'course') {
+          // Each topic becomes its own quiz link, so the course link stays
+          // short however many topics there are.
+          const { url, offlineTopics } = await createQuickCourseShare(
+            job.topics,
+            { title: job.title, course: job.course, timeLimitMinutes },
+            {
+              onProgress: ({ current, total, name }) =>
+                setStage({
+                  kind: 'working',
+                  progress: `Preparing topic ${current} of ${total} · ${name}`,
+                }),
+            },
+          );
+          const copied = await copyTextToClipboard(url);
+          setStage({ kind: 'ready', url, mode: 'course', copied, offlineTopics });
+          return;
+        }
+        const timedPack: QuickQuizPack = { ...job.pack, timeLimitMinutes };
         const { url, mode } = await quickQuizShareUrl(timedPack);
         const copied = await copyTextToClipboard(url);
         setStage({ kind: 'ready', url, mode, copied });
@@ -67,11 +129,11 @@ export function useQuickQuizShare(): QuickQuizShareController {
           message:
             error instanceof Error
               ? error.message
-              : 'This quick quiz link could not be created. Check your connection and try again.',
+              : 'This link could not be created. Check your connection and try again.',
         });
       }
     },
-    [pack],
+    [job],
   );
 
   const copyAgain = useCallback(async () => {
@@ -82,36 +144,48 @@ export function useQuickQuizShare(): QuickQuizShareController {
   }, [stage]);
 
   const shareNow = useCallback(async () => {
-    if (stage.kind !== 'ready' || !pack) return;
+    if (stage.kind !== 'ready' || !job) return;
+    const label = job.kind === 'course' ? 'PharmaTRACK Course' : 'PharmaTRACK Quick Quiz';
     const result = await shareOrCopyLink({
       url: stage.url,
-      title: `PharmaTRACK Quick Quiz: ${pack.title}`,
+      title: `${label}: ${job.kind === 'course' ? job.title : job.pack.title}`,
     });
     if (result === 'shared' || result === 'copied') {
       setStage((current) => (current.kind === 'ready' ? { ...current, copied: true } : current));
     }
-  }, [pack, stage]);
+  }, [job, stage]);
 
   const customValue = Number.parseInt(customMinutes, 10);
   const customIsValid = Number.isFinite(customValue) && customValue > 0 && customValue <= 600;
 
-  const shareDialog = pack ? (
+  const isCourse = job?.kind === 'course';
+  const jobTitle = job ? (job.kind === 'course' ? job.title : job.pack.title) : '';
+  const jobQuestionCount = job ? (job.kind === 'course' ? job.questionCount : job.pack.questionCount) : 0;
+  const jobSubtitle = job
+    ? job.kind === 'course'
+      ? `${job.topics.length} topic${job.topics.length === 1 ? '' : 's'} · ${jobQuestionCount} question${jobQuestionCount === 1 ? '' : 's'}`
+      : `${jobQuestionCount} question${jobQuestionCount === 1 ? '' : 's'}`
+    : '';
+
+  const shareDialog = job ? (
     <div
       className="fixed inset-0 z-[400] flex items-end justify-center bg-slate-900/60 p-0 backdrop-blur-sm sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
-      aria-label="Share this quick quiz"
+      aria-label={isCourse ? 'Share this course' : 'Share this quick quiz'}
     >
       <div className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl safe-area-bottom sm:rounded-3xl sm:p-6">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#2D6A4F] text-white">
-              <Share2 className="h-5 w-5" />
+              {isCourse ? <Layers className="h-5 w-5" /> : <Share2 className="h-5 w-5" />}
             </span>
             <div className="min-w-0">
-              <h2 className="text-lg font-black text-slate-900">Share quick quiz</h2>
+              <h2 className="text-lg font-black text-slate-900">
+                {isCourse ? 'Share whole course' : 'Share quick quiz'}
+              </h2>
               <p className="truncate text-sm font-semibold text-slate-500">
-                {pack.title} · {pack.questionCount} question{pack.questionCount === 1 ? '' : 's'}
+                {jobTitle} · {jobSubtitle}
               </p>
             </div>
           </div>
@@ -128,7 +202,9 @@ export function useQuickQuizShare(): QuickQuizShareController {
         {stage.kind === 'timing' ? (
           <div>
             <p className="mb-3 text-sm font-bold text-slate-700">
-              Choose the time first — every shared quiz is either untimed or timed.
+              {isCourse
+                ? 'Choose the time first — it applies to each topic quiz in this course.'
+                : 'Choose the time first — every shared quiz is either untimed or timed.'}
             </p>
 
             <button
@@ -186,7 +262,9 @@ export function useQuickQuizShare(): QuickQuizShareController {
         {stage.kind === 'working' ? (
           <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-4">
             <Loader2 className="h-5 w-5 animate-spin text-[#2D6A4F]" />
-            <p className="text-sm font-bold text-slate-700">Creating a short link…</p>
+            <p className="text-sm font-bold text-slate-700">
+              {stage.progress || 'Creating a short link…'}
+            </p>
           </div>
         ) : null}
 
@@ -199,9 +277,30 @@ export function useQuickQuizShare(): QuickQuizShareController {
               </span>
               <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-wider text-slate-600">
                 <Link2 className="h-3.5 w-3.5" />
-                {stage.mode === 'short-code' ? 'Short link' : 'Offline link'}
+                {stage.mode === 'course'
+                  ? 'Course link'
+                  : stage.mode === 'short-code'
+                    ? 'Short link'
+                    : 'Offline link'}
               </span>
             </div>
+
+            {isCourse ? (
+              <p className="mb-3 rounded-2xl bg-emerald-50 px-3 py-2 text-xs font-bold text-[#1B4332]">
+                Whoever opens this link sees every topic in the course and picks
+                which one to do. They can come back to the same link any time to
+                take the others.
+              </p>
+            ) : null}
+
+            {stage.offlineTopics?.length ? (
+              <p className="mb-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                {stage.offlineTopics.length} topic
+                {stage.offlineTopics.length === 1 ? ' was' : 's were'} packed into the
+                link itself because a short link could not be created:{' '}
+                {stage.offlineTopics.join(', ')}.
+              </p>
+            ) : null}
 
             <input
               readOnly
@@ -212,7 +311,7 @@ export function useQuickQuizShare(): QuickQuizShareController {
             />
             <p className="mb-4 text-xs font-bold text-slate-500">
               {stage.copied
-                ? 'Link copied — paste it anywhere to share this quiz.'
+                ? `Link copied — paste it anywhere to share this ${isCourse ? 'course' : 'quiz'}.`
                 : 'Tap the link above to select it, then copy it with your keyboard.'}
             </p>
 
@@ -274,7 +373,7 @@ export function useQuickQuizShare(): QuickQuizShareController {
     </div>
   ) : null;
 
-  return { startShare, shareDialog };
+  return { startShare, startCourseShare, shareDialog };
 }
 
 export default useQuickQuizShare;

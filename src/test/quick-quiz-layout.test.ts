@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const quickQuiz = fs.readFileSync(path.resolve(__dirname, '../pages/QuickQuiz.tsx'), 'utf8');
+const attempts = fs.readFileSync(path.resolve(__dirname, '../utils/quickQuizAttempts.ts'), 'utf8');
 
 describe('quick quiz responsive layout', () => {
   it('keeps the shared quiz route viewport-bound with a compact header and body scrolling', () => {
@@ -26,7 +27,8 @@ describe('quick quiz responsive layout', () => {
   it('adds an explicit back action to standalone quick quiz screens', () => {
     expect(quickQuiz).toContain('const handleBack = () =>');
     expect(quickQuiz).toContain('onClick={handleBack}');
-    expect(quickQuiz).toContain('aria-label="Back"');
+    // Inside a shared course the same control goes back to the topic list.
+    expect(quickQuiz).toContain("aria-label={courseRoute ? 'Back to all topics' : 'Back'}");
   });
 
   it('keeps previous, finish and next on one row of the same navigation card', () => {
@@ -57,7 +59,9 @@ describe('quick quiz responsive layout', () => {
   });
 
   it('can pause a shared quiz and continue it after leaving the page', () => {
-    expect(quickQuiz).toContain("const QUICK_QUIZ_PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';");
+    // The attempt storage is shared with the course page, so it lives in
+    // src/utils/quickQuizAttempts.ts and both agree on the keys.
+    expect(attempts).toContain("const PAUSE_PREFIX = 'pharmatrack.quickQuiz.pause.v1:';");
     expect(quickQuiz).toContain('const pauseQuickQuiz = () => {');
     expect(quickQuiz).toContain('const continuePausedQuickQuiz = () => {');
     expect(quickQuiz).toContain('onClick={pauseQuickQuiz}');

@@ -11,7 +11,10 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -955,6 +958,38 @@ fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String>
 ///
 /// Kept as a free function (not inlined into the Linux-only block) so the
 /// parsing rules stay testable on every platform.
+/// Tracks whether the app has drawn its own window strip.
+///
+/// The window is created without system decorations so Windows and Linux look
+/// the same, which makes the app's own strip the only way to minimize,
+/// maximize or close. If the front-end never reports one — an old cached
+/// bundle, a screen that forgot to render it, a JavaScript failure — the
+/// window would have no controls at all, so the system title bar is put back.
+#[derive(Default)]
+struct CustomTitlebarState {
+    reported: AtomicBool,
+}
+
+/// How long the front-end gets to draw its own strip before the system title
+/// bar is restored. Generous: a cold start on a slow machine still has to
+/// download nothing, but it does have to parse and mount the whole app.
+const TITLEBAR_FALLBACK_DELAY: Duration = Duration::from_secs(8);
+
+#[tauri::command]
+fn set_native_titlebar(
+    app: tauri::AppHandle,
+    state: State<'_, CustomTitlebarState>,
+    custom: bool,
+) -> Result<(), String> {
+    state.reported.store(true, Ordering::SeqCst);
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_string())?;
+    // Decorations are the inverse of the app's own strip: exactly one of the
+    // two is always present.
+    window.set_decorations(!custom).map_err(|e| e.to_string())
+}
+
 /// Asks the front-end to rebuild its compositing layer.
 ///
 /// WebKitGTK can bring a window back from being hidden or unfocused with a
@@ -1096,6 +1131,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(SecureExamHostState::default())
+        .manage(CustomTitlebarState::default())
         .manage(PendingPharmaExamFiles::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -1161,6 +1197,20 @@ fn main() {
             if let Err(error) = main_window.eval(SHELL_SERVICE_WORKER_CLEANUP) {
                 eprintln!("Service worker cleanup could not be injected: {error}");
             }
+            // Safety net: if nothing claims the title bar, give the window its
+            // system one back so it can always be moved, minimized and closed.
+            let titlebar_window = main_window.clone();
+            let titlebar_handle = app.handle().clone();
+            thread::spawn(move || {
+                thread::sleep(TITLEBAR_FALLBACK_DELAY);
+                let state = titlebar_handle.state::<CustomTitlebarState>();
+                if !state.reported.load(Ordering::SeqCst) {
+                    eprintln!(
+                        "No in-app title bar was reported; restoring the system window controls."
+                    );
+                    let _ = titlebar_window.set_decorations(true);
+                }
+            });
             app.manage(MainWindowHandle(main_window));
             #[cfg(target_os = "windows")]
             register_windows_protocol_handler();
@@ -1178,6 +1228,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             restart_application,
+            set_native_titlebar,
             open_external_url,
             enter_secure_exam_mode,
             exit_secure_exam_mode,
