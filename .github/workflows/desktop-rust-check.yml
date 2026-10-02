@@ -1,0 +1,60 @@
+name: 'Verify desktop (Rust) build'
+
+# The Tauri shell can only be compiled on a machine with the WebKitGTK
+# toolchain, and until now the first compile of any Rust change happened
+# inside the release job on main — i.e. after the change had already been
+# merged. This runs the same compiler plus the Rust unit tests on the working
+# branch whenever anything under src-tauri changes, so a broken desktop build
+# is caught before it can break a release.
+on:
+  push:
+    branches:
+      - arena/01a0ede1-pharmatrack-perfect-new
+    paths:
+      - 'src-tauri/**'
+      - '.github/workflows/desktop-rust-check.yml'
+  workflow_dispatch:
+
+jobs:
+  verify-desktop-rust:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-desktop-rust-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-rust-
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # tauri-build embeds the built frontend, so dist/ has to exist before the
+      # crate will compile at all.
+      - run: npm install --legacy-peer-deps
+      - run: npm run build
+
+      - name: Compile the desktop shell
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Run desktop unit tests
+        working-directory: src-tauri
+        run: cargo test --locked
