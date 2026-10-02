@@ -951,18 +951,40 @@ fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String>
     Ok(())
 }
 
+/// Reads the opt-in "my window will not paint at all" escape hatch.
+///
+/// Kept as a free function (not inlined into the Linux-only block) so the
+/// parsing rules stay testable on every platform.
+#[allow(dead_code)]
+fn safe_graphics_requested(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|value| value.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on"),
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn apply_linux_webkit_runtime_workarounds() {
     // Ubuntu/Debian users can hit a blank or never-painted Tauri window when
-    // WebKitGTK's GPU compositing/DMABUF path does not initialise correctly
-    // under a particular driver, VM, or Wayland session. Set the safe fallback
-    // flags before Tauri creates GTK/WebKit objects so the installed .deb paints
-    // reliably even when launched from the desktop menu (not just via npm
-    // scripts). Respect an explicit user override if one is already present.
+    // WebKitGTK's DMABUF renderer does not initialise correctly under a
+    // particular driver, VM, or Wayland session. Disabling only that path
+    // fixes the blank window while leaving accelerated compositing switched
+    // on. Respect an explicit user override if one is already present.
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
-    if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+
+    // WEBKIT_DISABLE_COMPOSITING_MODE=1 used to be set here as well, and it was
+    // the single biggest reason the desktop build felt like it was running
+    // several frames behind the user. Accelerated compositing is what gives the
+    // webview threaded scrolling, GPU-promoted layers and cheap repaints;
+    // without it every wheel tick, slide canvas and hover state is repainted in
+    // software on the main thread, so scrolling reacts late and then crawls.
+    // It is now opt-in for the rare machine that genuinely cannot paint
+    // otherwise:  PHARMATRACK_SAFE_GRAPHICS=1 pharmatrack
+    let requested = std::env::var("PHARMATRACK_SAFE_GRAPHICS").ok();
+    let safe_graphics = safe_graphics_requested(requested.as_deref());
+    if safe_graphics && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     }
 }
@@ -983,6 +1005,20 @@ mod tests {
             session_token: "session-1".into(),
         });
         assert!(ensure_application_controls_available(&state).is_err());
+    }
+
+    #[test]
+    fn safe_graphics_is_opt_in_only() {
+        // Accelerated compositing must stay on unless the user explicitly asks
+        // for the software fallback, otherwise scrolling goes back to being
+        // painted on the main thread.
+        assert!(!safe_graphics_requested(None));
+        assert!(!safe_graphics_requested(Some("")));
+        assert!(!safe_graphics_requested(Some("0")));
+        assert!(!safe_graphics_requested(Some("false")));
+        assert!(safe_graphics_requested(Some("1")));
+        assert!(safe_graphics_requested(Some(" TRUE ")));
+        assert!(safe_graphics_requested(Some("yes")));
     }
 
     #[test]

@@ -3,7 +3,7 @@ Categories={{{categories}}}
 {{#if comment}}
 Comment={{{comment}}}
 {{/if}}
-Exec=/usr/bin/env WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 {{{exec}}} %U
+Exec=/usr/bin/env WEBKIT_DISABLE_DMABUF_RENDERER=1 {{{exec}}} %U
 Icon={{{icon}}}
 Name={{{name}}}
 Terminal=false

@@ -33,16 +33,17 @@ body { background-color: #F8FAFC; color: #0F172A; }
 }
 
 /* Interaction performance guard -------------------------------------------------
-   Scrolling, dragging split panes and swiping through long lists must never
-   compete with decorative animations. The idle scheduler briefly adds the
-   `pharmatrack-input-active` class while real input is happening; reader split
-   panes add `pharmatrack-resizing` during a drag. */
-html.pharmatrack-input-active .transition-all,
-html.pharmatrack-input-active .transition,
-html.pharmatrack-input-active .transition-colors,
-html.pharmatrack-input-active .transition-opacity,
-html.pharmatrack-input-active .transition-shadow,
-html.pharmatrack-input-active .transition-transform,
+   Dragging a reader split pane must never compete with decorative animations,
+   so `pharmatrack-resizing` is added to <html> for the duration of the drag.
+
+   There used to be a second, always-on variant of this (`pharmatrack-input-active`,
+   toggled by the idle scheduler on every wheel/scroll/pointermove burst). It
+   was a net loss: adding or removing a class on <html> that is matched by
+   document-wide selectors — especially the universal `html.x *` one — forces a
+   full-document style recalculation, and it fired at the start of every single
+   scroll gesture and again 220 ms after it ended. That is exactly the "scroll
+   reacts slowly, then crawls" symptom it was meant to prevent, so scroll-time
+   damping is now scoped to the element being scrolled (see `.is-scrolling`). */
 html.pharmatrack-resizing .transition-all,
 html.pharmatrack-resizing .transition,
 html.pharmatrack-resizing .transition-colors,
@@ -51,7 +52,6 @@ html.pharmatrack-resizing .transition-shadow,
 html.pharmatrack-resizing .transition-transform {
   transition-duration: 0ms !important;
 }
-html.pharmatrack-input-active *,
 html.pharmatrack-resizing * {
   scroll-behavior: auto !important;
 }
@@ -257,7 +257,12 @@ body { overflow-x: hidden; }
 /* Reader pages own their scrollable areas. Do not add shell/mobile padding or
    page-level scrolling around them, otherwise the slide/AI row ends early and
    leaves a large empty block below the viewer. */
-.app-page-main:has(.slide-reader-fullbleed) {
+/* `.app-page-main--reader` is set by Layout from the route, replacing a
+   `:has(.slide-reader-fullbleed)` selector. `:has()` whose subject is the main
+   scroll container means the style engine has to re-evaluate the rule on every
+   DOM mutation anywhere inside the page — on WebKitGTK (the Linux desktop
+   build) that showed up as scroll and typing lag on content-heavy pages. */
+.app-page-main--reader {
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -472,7 +477,11 @@ html.dark select {
   backface-visibility: hidden;
   contain: layout paint style;
 }
-html.pharmatrack-input-active .pdf-text-layer,
+/* Hit-testing the transparent text spans on every mouse move is pure overhead
+   while the page is moving, so the viewer flags its own scroller instead of
+   flipping a class on <html> (which invalidated the whole document). */
+.pdf-viewer-scroll.is-scrolling .pdf-text-layer,
+.pptx-viewer-scroll.is-scrolling .pdf-text-layer,
 html.pharmatrack-resizing .pdf-text-layer {
   pointer-events: none !important;
 }
@@ -564,8 +573,8 @@ html.pharmatrack-resizing .pdf-text-layer {
   display: inline-flex;
   border: 0;
   background: transparent;
-  height: 2.75rem;
-  width: 3.25rem;
+  height: 2.25rem;
+  width: 2.75rem;
   align-items: center;
   justify-content: center;
   color: #475569;
@@ -615,23 +624,38 @@ html.pharmatrack-resizing .pdf-text-layer {
     border-color: rgba(51, 65, 85, 0.95);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   }
-  .native-desktop-shell .app-page-main {
+  /* The desktop "floating card" look is painted on the frame, NOT on the
+     scrolling element inside it.
+     A scroll container that carries a border-radius has to clip its scrolled
+     content to a rounded rect on every frame, and WebKit refuses accelerated
+     overflow scrolling for such an element outright — the page then scrolls on
+     the main thread, which is why the desktop build crawled while the same
+     page in a browser was smooth. The frame does not scroll, so its rounded
+     clip is rasterised once and the scroller inside it stays a plain,
+     fast-scrolling rectangle. */
+  .native-desktop-shell .app-page-frame {
     margin: 0.75rem 1rem 1rem;
     border: 1px solid rgba(203, 213, 225, 0.95);
     border-radius: 1.75rem;
-    background: #f8fafc !important;
+    background: #f8fafc;
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    overflow: hidden;
   }
-  .dark .native-desktop-shell .app-page-main {
-    background: #0f172a !important;
+  .dark .native-desktop-shell .app-page-frame {
+    background: #0f172a;
     border-color: rgba(51, 65, 85, 0.95);
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
-  .native-desktop-shell .app-page-main:has(.slide-reader-fullbleed) {
+  .native-desktop-shell .app-page-main {
+    background: #f8fafc !important;
+  }
+  .dark .native-desktop-shell .app-page-main {
+    background: #0f172a !important;
+  }
+  .native-desktop-shell .app-page-main--reader {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    margin: 0.75rem 1rem 1rem;
     overflow: hidden;
     padding: 0 !important;
   }

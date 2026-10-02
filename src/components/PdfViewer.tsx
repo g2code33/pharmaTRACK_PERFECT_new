@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { offsetsAreMeasured, pageNumberAtOffset } from '../utils/pageOffsets';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import {
@@ -154,6 +155,8 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const panPointer = useRef<{ x: number; y: number } | null>(null);
   const currentPageRef = useRef(1);
   const scrollFrame = useRef<number | null>(null);
+  const renderSoonTimer = useRef<number | null>(null);
+  const renderSoonCentre = useRef<number | null>(null);
 
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
@@ -450,6 +453,33 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     })();
   }, [doc, numPages, renderPage]);
 
+  /**
+   * Coalesced entry point to `renderWindow`.
+   *
+   * Every call to renderWindow bumps `renderBatch`, which aborts the batch that
+   * is still rasterising. The viewport tracker used to call it from a rAF on
+   * every scroll frame and from every IntersectionObserver entry, so during a
+   * flick the render loop was cancelled and restarted dozens of times a second
+   * and no page ever finished painting — the document appeared to lag behind
+   * the scrollbar and then snap. Collapsing those calls into one per short
+   * window keeps rasterisation moving forward while the user scrolls.
+   */
+  const scheduleRenderWindow = useCallback((centre: number, delay = 90) => {
+    renderSoonCentre.current = centre;
+    if (renderSoonTimer.current != null) return;
+    renderSoonTimer.current = window.setTimeout(() => {
+      renderSoonTimer.current = null;
+      const next = renderSoonCentre.current;
+      renderSoonCentre.current = null;
+      if (next != null) renderWindow(next);
+    }, delay);
+  }, [renderWindow]);
+
+  useEffect(() => () => {
+    if (renderSoonTimer.current != null) window.clearTimeout(renderSoonTimer.current);
+    renderSoonTimer.current = null;
+  }, []);
+
   useEffect(() => {
     const onResume = () => {
       if (!doc || !numPages) return;
@@ -472,7 +502,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           const pageNum = Number((entry.target as HTMLElement).dataset.page);
-          renderWindow(pageNum);
+          scheduleRenderWindow(pageNum);
           if (entry.intersectionRatio > 0.45) {
             currentPageRef.current = pageNum;
             setCurrentPage(pageNum);
@@ -484,45 +514,100 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     );
     pageRefs.current.slice(0, numPages).forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
-  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, renderWindow]);
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, scheduleRenderWindow]);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!doc || !el || !numPages || !baseSizes.length) return;
-    const findNearestPage = () => {
+    const horizontal = scrollMode === 'horizontal';
+
+    // Page offsets are measured once per layout change and then reused.
+    //
+    // The previous implementation asked the browser for
+    // `document.elementsFromPoint()` on every scroll frame. A hit test has to
+    // flush layout and walk the paint order of everything under the cursor
+    // position — on a reader whose pages carry a canvas plus a full
+    // transparent text layer that is one of the most expensive calls available,
+    // and it ran 60 times a second while the wheel was moving. Comparing the
+    // scroll offset against cached page offsets is pure arithmetic.
+    let offsets: number[] = [];
+    const measure = () => {
+      const base = el.getBoundingClientRect();
+      const next: number[] = [];
+      for (let i = 0; i < numPages; i += 1) {
+        const page = pageRefs.current[i];
+        if (!page) {
+          next.push(next.length ? next[next.length - 1] : 0);
+          continue;
+        }
+        const rect = page.getBoundingClientRect();
+        next.push(horizontal
+          ? rect.left - base.left + el.scrollLeft
+          : rect.top - base.top + el.scrollTop);
+      }
+      // Before the first layout every rect reads as 0; acting on that would
+      // report the last page and throw the reader to the end of the document.
+      offsets = offsetsAreMeasured(next, numPages) ? next : [];
+    };
+
+    const pageAtViewport = () => {
+      if (!offsets.length) return currentPageRef.current;
+      const probe = horizontal
+        ? el.scrollLeft + el.clientWidth * 0.5
+        : el.scrollTop + el.clientHeight * 0.42;
+      return pageNumberAtOffset(offsets, probe, numPages);
+    };
+
+    const syncPage = () => {
       scrollFrame.current = null;
-      const rootRect = el.getBoundingClientRect();
-      const probeX = rootRect.left + rootRect.width * 0.5;
-      const probeY = scrollMode === 'horizontal'
-        ? rootRect.top + rootRect.height * 0.5
-        : rootRect.top + rootRect.height * 0.42;
-      const hit = typeof document.elementsFromPoint === 'function'
-        ? document.elementsFromPoint(probeX, probeY).find((node) => (node as HTMLElement).closest?.('[data-page]')) as HTMLElement | undefined
-        : undefined;
-      const pageElement = hit?.closest?.('[data-page]') as HTMLElement | null | undefined;
-      let best = pageElement?.dataset.page ? Number(pageElement.dataset.page) : currentPageRef.current;
-      if (!Number.isFinite(best) || best < 1 || best > numPages) best = currentPageRef.current;
-      renderWindow(best);
+      const best = pageAtViewport();
+      if (!Number.isFinite(best) || best < 1 || best > numPages) return;
       if (best !== currentPageRef.current) {
         currentPageRef.current = best;
         setCurrentPage(best);
         setPageInput(String(best));
       }
     };
-    const onScroll = () => {
-      if (scrollFrame.current == null) scrollFrame.current = window.requestAnimationFrame(findNearestPage);
+
+    let settleTimer: number | undefined;
+    const settle = () => {
+      settleTimer = undefined;
+      el.classList.remove('is-scrolling');
+      // Heights change as pages rasterise, so re-measure whenever the user
+      // pauses rather than on a timer that competes with the scroll itself.
+      measure();
+      syncPage();
+      scheduleRenderWindow(currentPageRef.current, 0);
     };
+
+    const onScroll = () => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (scrollFrame.current == null) scrollFrame.current = window.requestAnimationFrame(syncPage);
+      if (settleTimer !== undefined) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settle, 120);
+    };
+
+    measure();
+    syncPage();
     el.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
+
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => { measure(); })
+      : null;
+    resizeObserver?.observe(el);
+
     return () => {
       el.removeEventListener('scroll', onScroll);
+      resizeObserver?.disconnect();
+      el.classList.remove('is-scrolling');
+      if (settleTimer !== undefined) window.clearTimeout(settleTimer);
       if (scrollFrame.current != null) window.cancelAnimationFrame(scrollFrame.current);
       scrollFrame.current = null;
     };
-  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, renderWindow]);
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, scale, rotation, scheduleRenderWindow]);
 
   // Keep the render window centred on wherever the user is.
-  useEffect(() => { renderWindow(currentPage); }, [currentPage, renderWindow]);
+  useEffect(() => { scheduleRenderWindow(currentPage); }, [currentPage, scheduleRenderWindow]);
 
   // Zoom or rotation invalidates every cached raster.
   useEffect(() => {

@@ -698,19 +698,89 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     };
   }, []);
 
-  /* Ctrl/⌘ + wheel zooms (trackpad pinch on laptops), like a PDF page. */
+  /* Ctrl/⌘ + wheel zooms (trackpad pinch on laptops), like a PDF page.
+     A NON-passive wheel listener turns its element into a "slow scroll
+     region": the browser must hand every wheel tick to JavaScript and wait for
+     it to decide about preventDefault() before the compositor is allowed to
+     move a single pixel. Keeping one permanently attached to the slide
+     scroller is what made deck scrolling feel heavy and delayed, so the
+     blocking listener is only attached while a zoom gesture is actually
+     plausible — a held Ctrl/Cmd key, or right after a pinch was detected by
+     the cheap passive probe below. */
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        zoomBy(e.deltaY < 0 ? 0.1 : -0.1);
-      }
+
+    let attached = false;
+    let releaseTimer: number | undefined;
+
+    const onZoomWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      zoomBy(e.deltaY < 0 ? 0.1 : -0.1);
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    const attach = () => {
+      if (attached) return;
+      el.addEventListener('wheel', onZoomWheel, { passive: false });
+      attached = true;
+    };
+    const detach = () => {
+      if (releaseTimer !== undefined) { window.clearTimeout(releaseTimer); releaseTimer = undefined; }
+      if (!attached) return;
+      el.removeEventListener('wheel', onZoomWheel);
+      attached = false;
+    };
+    const holdBriefly = () => {
+      if (releaseTimer !== undefined) window.clearTimeout(releaseTimer);
+      releaseTimer = window.setTimeout(detach, 1200);
+    };
+
+    // Passive: never blocks scrolling. It only notices that a pinch-zoom
+    // gesture is in progress so the real handler can take over for it.
+    const probe = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      attach();
+      holdBriefly();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') { attach(); if (releaseTimer !== undefined) { window.clearTimeout(releaseTimer); releaseTimer = undefined; } }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') holdBriefly();
+    };
+
+    el.addEventListener('wheel', probe, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', detach);
+    return () => {
+      el.removeEventListener('wheel', probe);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', detach);
+      detach();
+    };
   }, [deck, mode, zoomBy]);
+
+  /* Same scroll-time damping the PDF reader uses: hit-testing slide text while
+     the deck is moving is wasted work, and the class is scoped to this
+     scroller so the invalidation never leaves the subtree. */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let idle: number | undefined;
+    const onScroll = () => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (idle !== undefined) window.clearTimeout(idle);
+      idle = window.setTimeout(() => { idle = undefined; el.classList.remove('is-scrolling'); }, 120);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (idle !== undefined) window.clearTimeout(idle);
+      el.classList.remove('is-scrolling');
+    };
+  }, [deck, mode]);
 
   /* Presentation mode: chrome fades away, any pointer movement brings it back. */
   useEffect(() => {

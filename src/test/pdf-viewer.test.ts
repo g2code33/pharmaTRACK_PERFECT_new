@@ -225,7 +225,7 @@ describe('whole-document uploads', () => {
 
 describe('stable layout', () => {
   it('keeps the native titlebar and hamburger/sidebar shell white, not green-gradient', () => {
-    expect(layout).toContain('native-titlebar flex h-11 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    expect(layout).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
     expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900');
     expect(css).toContain('background: #ffffff !important;');
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
@@ -266,8 +266,11 @@ describe('stable layout', () => {
     expect(reader).toContain('slide-reader-fullbleed');
     expect(reader).toContain('flex flex-1 min-h-0 overflow-hidden relative');
     expect(reader).toContain('flex-1 overflow-hidden flex flex-col items-stretch p-0');
-    expect(layout).toContain("isReaderRoute ? 'p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'");
-    expect(css).toMatch(/app-page-main:has\(\.slide-reader-fullbleed\)[\s\S]{0,180}display:\s*flex/);
+    // The reader layout is keyed off the route rather than a `:has()` rule on
+    // the main scroll container, which the style engine had to re-check on
+    // every DOM mutation inside the page.
+    expect(layout).toContain("isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'");
+    expect(css).toMatch(/app-page-main--reader[\s\S]{0,180}display:\s*flex/);
   });
 
   it('opens the reader at full width instead of showing a default split panel', () => {

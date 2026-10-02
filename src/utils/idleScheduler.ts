@@ -42,26 +42,24 @@ const HIGH_FREQUENCY_INPUT_EVENTS = new Set<string>([
 ]);
 
 const HIGH_FREQUENCY_INPUT_THROTTLE_MS = 120;
-const ACTIVE_INPUT_CLASS = 'pharmatrack-input-active';
-const ACTIVE_INPUT_HOLD_MS = 220;
 
 let trackingStarted = false;
 let lastInputAt = 0;
-let activeInputTimer: number | undefined;
 
 const now = () => Date.now();
 
-const markActiveInput = () => {
-  if (typeof document === 'undefined') return;
-  const root = document.documentElement;
-  if (!root.classList.contains(ACTIVE_INPUT_CLASS)) root.classList.add(ACTIVE_INPUT_CLASS);
-  if (activeInputTimer !== undefined) window.clearTimeout(activeInputTimer);
-  activeInputTimer = window.setTimeout(() => {
-    root.classList.remove(ACTIVE_INPUT_CLASS);
-    activeInputTimer = undefined;
-  }, ACTIVE_INPUT_HOLD_MS);
-};
-
+/**
+ * Records *that* the user is interacting, and nothing else.
+ *
+ * This handler sits on the capture phase of wheel/scroll/pointermove, i.e. the
+ * hottest path in the whole app, so it must stay allocation-free and must not
+ * touch the DOM. An earlier version also toggled a `pharmatrack-input-active`
+ * class on <html> to damp transitions mid-gesture; because document-wide
+ * selectors (including a universal one) keyed off that class, every scroll
+ * gesture paid for two full-document style recalculations — one when the class
+ * went on, one 220 ms after the gesture ended. Scroll-time damping now lives on
+ * the scroll container itself, where invalidation is contained.
+ */
 const markInput = (event?: Event) => {
   const t = now();
   // Pointer/scroll/wheel events can fire dozens of times per second. The app
@@ -72,7 +70,6 @@ const markInput = (event?: Event) => {
   // delays background work without registering two global handlers per frame.
   if (event && HIGH_FREQUENCY_INPUT_EVENTS.has(event.type) && t - lastInputAt < HIGH_FREQUENCY_INPUT_THROTTLE_MS) return;
   lastInputAt = t;
-  markActiveInput();
 };
 
 export const startInputTracking = (): void => {
@@ -184,8 +181,5 @@ export const __testing = {
   trackedInputEvents: () => [...INPUT_EVENTS],
   resetInputTracking: () => {
     lastInputAt = 0;
-    if (activeInputTimer !== undefined && typeof window !== 'undefined') window.clearTimeout(activeInputTimer);
-    activeInputTimer = undefined;
-    if (typeof document !== 'undefined') document.documentElement.classList.remove(ACTIVE_INPUT_CLASS);
   },
 };

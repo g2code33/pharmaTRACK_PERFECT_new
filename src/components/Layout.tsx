@@ -272,6 +272,7 @@ const Layout: React.FC = () => {
     let activatedWaitingWorker = false;
     try {
       setUpdateStatus('checking');
+      window.setTimeout(() => setUpdateStatus((current) => (current === 'checking' ? 'idle' : current)), 20000);
       const registration = getPwaRegistration();
       if (registration) {
         await registration.update().catch(() => undefined);
@@ -287,9 +288,29 @@ const Layout: React.FC = () => {
     }
   };
 
+  /**
+   * The native updater talks to GitHub over the network and, on a slow or
+   * filtered connection, `check()` can sit there indefinitely. That left the
+   * version pill stuck on "Checking…" and disabled for the rest of the
+   * session — the app looked permanently behind. Every check is now bounded.
+   */
+  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 20000): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(
+        () => reject(new Error(`The update server did not answer within ${Math.round(ms / 1000)}s. Check your connection and try again.`)),
+        ms,
+      );
+      work.then(
+        (value) => { window.clearTimeout(timer); resolve(value); },
+        (error) => { window.clearTimeout(timer); reject(error); },
+      );
+    });
+
   // `silent` is used by the automatic check on launch: it still offers a real
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
+  // A silent check also never paints the spinner, so the launch check cannot
+  // be mistaken for the app hanging.
   const checkForUpdates = async (silent = false) => {
     // A browser/PWA is updated by its service worker, not by Tauri's native
     // updater. Keeping this branch explicit prevents a missing native bridge
@@ -300,8 +321,8 @@ const Layout: React.FC = () => {
     }
 
     try {
-      setUpdateStatus('checking');
-      const update = await checkNativeUpdate();
+      if (!silent) setUpdateStatus('checking');
+      const update = await withUpdateTimeout(checkNativeUpdate());
 
       if (update) {
         setUpdateStatus('available');
@@ -329,6 +350,9 @@ const Layout: React.FC = () => {
       console.error('Update failed:', error);
       if (!silent) alert(`Update Check Failed: ${error.message || error}`);
       setUpdateStatus('idle');
+    } finally {
+      // Whatever happened, the pill must never be left spinning and disabled.
+      setUpdateStatus((current) => (current === 'checking' ? 'idle' : current));
     }
   };
 
@@ -364,24 +388,23 @@ const Layout: React.FC = () => {
   return (
     <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${runtime.platform === 'android-native' ? 'android-native-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
       {runtime.nativeWebview && (
-        <div className="native-titlebar flex h-11 flex-shrink-0 items-center border-b border-slate-200 bg-white text-slate-900 shadow-sm">
+        <div className="native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white text-slate-900 shadow-sm">
           <div
-            className="native-titlebar-drag flex h-full flex-1 select-none items-center gap-3 overflow-hidden px-4"
+            className="native-titlebar-drag flex h-full flex-1 select-none items-center gap-2 overflow-hidden px-3"
             data-tauri-drag-region
             onMouseDown={(event) => { if (event.button === 0 && event.detail === 1) void runNativeWindowAction('drag'); }}
             onDoubleClick={() => void runNativeWindowAction('toggleMaximize')}
             title="Drag to move · Double-click to maximize"
           >
-            <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            {/* One compact line. The window strip used to be 44px tall and
+                repeated the branding that the sidebar and header already show,
+                which is pure vertical real estate on a laptop screen. */}
+            <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-white">
               <img src="/logo.png" alt="PharmaTRACK" className="h-full w-full object-cover scale-110" />
             </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="truncate text-sm font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-emerald-600">TRACK</span> Desktop</p>
-                <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex">{nativePlatformLabel}</span>
-              </div>
-              <p className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500 sm:block">Track · Learn · Achieve · v{appVersion}</p>
-            </div>
+            <p className="truncate text-xs font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-emerald-600">TRACK</span></p>
+            <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.18em] text-emerald-700 sm:inline-flex">{nativePlatformLabel}</span>
+            <span className="hidden truncate text-[10px] font-bold uppercase tracking-[0.22em] text-slate-400 lg:inline">Track · Learn · Achieve · v{appVersion}</span>
           </div>
           <div className="flex h-full items-center pr-1">
             <button
@@ -682,7 +705,12 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
+          {/* The frame carries the desktop card styling (rounded corners,
+              border, shadow). Keeping those off <main> is what lets the
+              browser scroll it on the compositor instead of clipping a
+              rounded rect on the main thread every frame. */}
+          <div className="app-page-frame flex flex-1 min-h-0 flex-col">
+          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY
@@ -695,6 +723,7 @@ const Layout: React.FC = () => {
               </Suspense>
             </RouteErrorBoundary>
           </main>
+          </div>
         </div>
       </div>
 
