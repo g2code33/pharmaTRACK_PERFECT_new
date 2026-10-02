@@ -161,29 +161,35 @@ describe('desktop shell keeps the GPU', () => {
     expect(layout).toContain("setUpdateStatus((current) => (current === 'checking' ? 'idle' : current));");
   });
 
-  it('never puts a rounded clip over the element that scrolls', () => {
-    // A rounded clip has to be applied to the scrolled contents whether it
-    // sits on the scroller or on an ancestor of it, and either way the page
-    // leaves the fast scrolling path. Nothing around the main scroller may
-    // round or clip it.
-    const desktopMain = css.match(/\.native-desktop-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
-    expect(desktopMain).not.toContain('border-radius');
-    expect(desktopMain).not.toContain('box-shadow');
-    const frame = css.match(/\.native-desktop-shell \.app-page-frame \{([\s\S]*?)\}/)?.[1] ?? '';
-    expect(frame).not.toContain('border-radius');
-    expect(frame).not.toContain('overflow');
-    expect(frame).not.toContain('box-shadow');
+  it('never puts a rounded clip on the element that scrolls', () => {
+    // A scroller that carries its own border-radius is dropped out of
+    // accelerated overflow scrolling, so the card styling lives on the static
+    // frame around it.
+    const pageMain = css.match(/\.app-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(pageMain).not.toContain('border-radius');
+    expect(pageMain).not.toContain('box-shadow');
+    const frame = css.match(/\.app-shell \.app-page-frame \{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(frame).toContain('border-radius');
+    expect(frame).toContain('overflow: hidden');
     expect(layout).toContain('app-page-frame flex flex-1 min-h-0 flex-col');
   });
 
-  it('spends desktop vertical space on the page, not on floating card insets', () => {
-    // The desktop build is the web build in a window; inset cards cost ~40px
-    // of height on the screens that have the least to spare.
-    const frame = css.match(/\.native-desktop-shell \.app-page-frame \{([\s\S]*?)\}/)?.[1] ?? '';
-    const header = css.match(/\.native-desktop-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
-    expect(frame).not.toContain('margin');
-    expect(header).not.toContain('margin');
-    expect(header).not.toContain('border-radius');
+  it('gives every wide surface the same shell chrome, however it was installed', () => {
+    // The browser, the EXE, the DEB and an Android tablet are the same
+    // product; none of them may be the one that looks plainer.
+    const chrome = css.slice(css.indexOf('@media (min-width: 1024px)'));
+    for (const selector of [
+      '.app-shell .mobile-sidebar',
+      '.app-shell .app-header',
+      '.app-shell .app-page-frame',
+      '.app-shell .app-page-main',
+    ]) {
+      expect(chrome).toContain(selector);
+      expect(chrome).not.toContain(`.native-desktop-shell ${selector.slice('.app-shell '.length)} {`);
+    }
+    // Being a window rather than a tab is still allowed to mean something.
+    expect(chrome).toContain('.native-desktop-shell .app-page-main--reader');
+    expect(chrome).toContain('.native-desktop-shell .slide-reader-fullbleed');
   });
 
   it('keeps layout out of the hover transitions that fire while a list scrolls', () => {

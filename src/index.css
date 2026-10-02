@@ -615,14 +615,31 @@ html.pharmatrack-resizing .pdf-text-layer {
   color: #ffffff;
 }
 
+/* Wide-screen shell chrome ------------------------------------------------------
+   PharmaTRACK's "floating panel" look: the sidebar, the header and the page
+   area read as three cards resting on a slightly darker desk.
+
+   This used to be gated on `.native-desktop-shell`, i.e. the installed
+   desktop builds only, which meant the browser and the Android tablet build
+   showed a flat, plainer app than the EXE and the DEB. There is no reason for
+   the same product to look like two different products depending on how it
+   was installed, so the chrome is now keyed off the layout shell itself and
+   every wide-screen surface gets it: browser, PWA, Windows EXE, Linux DEB and
+   Android tablets alike. Only the things that genuinely belong to a packaged
+   window — the native title bar, the full-bleed reader, pointer affordances —
+   remain gated on the desktop shell further down.
+
+   Phones keep the edge-to-edge layout on purpose: a 24px inset on each side
+   of a 360px screen is a real loss of reading width, and the bottom
+   navigation bar already overlaps the bottom of the page. */
 @media (min-width: 1024px) {
-  .native-desktop-shell {
+  .app-shell {
     background: #f8fafc;
   }
-  .dark .native-desktop-shell {
+  .dark .app-shell {
     background: #020617;
   }
-  .native-desktop-shell .mobile-sidebar {
+  .app-shell .mobile-sidebar {
     margin: 0.75rem 0 0.75rem 0.75rem;
     border: 1px solid rgba(203, 213, 225, 0.95);
     border-radius: 1.65rem;
@@ -630,40 +647,49 @@ html.pharmatrack-resizing .pdf-text-layer {
     box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
     overflow: hidden;
   }
-  .dark .native-desktop-shell .mobile-sidebar {
+  .dark .app-shell .mobile-sidebar {
     background: #1e293b !important;
     border-color: rgba(51, 65, 85, 0.95);
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
-  /* The desktop app is the web app in a window, so it is laid out like the web
-     app. An earlier revision floated the header and the page area as inset
-     rounded cards; between the window strip, the card's top margin and the
-     card's bottom margin that spent roughly 40 vertical pixels on decoration,
-     on the one screen size where vertical space is already scarcest. */
-  .native-desktop-shell .app-header {
+  .app-shell .app-header {
+    margin: 0.75rem 1rem 0;
+    border: 1px solid rgba(203, 213, 225, 0.95);
+    border-radius: 1.5rem;
     background: #ffffff !important;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   }
-  .dark .native-desktop-shell .app-header {
+  .dark .app-shell .app-header {
     background: #0f172a !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   }
-  /* Moving the rounded corners off the scroller itself was not enough: a
-     rounded clip on an *ancestor* still has to be applied to the scrolling
-     contents, which keeps the main page off the fast scrolling path. That is
-     why home scrolled late and slowly in the desktop build while the identical
-     page was smooth in a browser. The frame is now the plain rectangle the web
-     build uses, so the scroller inside it is a plain rectangle too. */
-  .native-desktop-shell .app-page-frame {
+  /* The card styling is painted on the frame, never on the element that
+     scrolls: a scroller that carries its own border-radius is dropped out of
+     accelerated overflow scrolling outright. The frame does not scroll, so
+     its rounded clip is rasterised once. */
+  .app-shell .app-page-frame {
+    margin: 0.75rem 1rem 1rem;
+    border: 1px solid rgba(203, 213, 225, 0.95);
+    border-radius: 1.75rem;
     background: #f8fafc;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    overflow: hidden;
   }
-  .dark .native-desktop-shell .app-page-frame {
+  .dark .app-shell .app-page-frame {
     background: #0f172a;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
-  .native-desktop-shell .app-page-main {
+  .app-shell .app-page-main {
     background: #f8fafc !important;
   }
-  .dark .native-desktop-shell .app-page-main {
+  .dark .app-shell .app-page-main {
     background: #0f172a !important;
   }
+
+  /* Packaged-window behaviour. Unlike the chrome above, these describe what it
+     means to be an app window rather than a tab, so they stay desktop-only. */
   .native-desktop-shell .app-page-main--reader {
     display: flex;
     flex-direction: column;

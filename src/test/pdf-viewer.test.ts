@@ -242,10 +242,10 @@ describe('stable layout', () => {
   });
 
   it('does not force dark-mode native desktop backgrounds back to white', () => {
-    const darkShell = css.match(/\.dark \.native-desktop-shell \{([\s\S]*?)\}/)?.[1] ?? '';
-    const darkHeader = css.match(/\.dark \.native-desktop-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
-    const darkPage = css.match(/\.dark \.native-desktop-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
-    const darkSidebar = css.match(/\.dark \.native-desktop-shell \.mobile-sidebar \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkShell = css.match(/\.dark \.app-shell \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkHeader = css.match(/\.dark \.app-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkPage = css.match(/\.dark \.app-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkSidebar = css.match(/\.dark \.app-shell \.mobile-sidebar \{([\s\S]*?)\}/)?.[1] ?? '';
 
     expect(layout).toContain('app-header bg-white dark:bg-slate-900');
     expect(layout).toContain('mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0');
