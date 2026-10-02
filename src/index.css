@@ -95,6 +95,27 @@ html.pharmatrack-resume-paint .app-shell {
   }
 }
 
+/* Installed-app zoom behaviour ---------------------------------------------------
+   Set on <html> by src/platform/zoomGuard.ts, and only when the app is really
+   installed — a standalone PWA, the Android APK, the desktop window. A browser
+   tab never gets this class and keeps pinch-zoom.
+
+   `pan-x pan-y` is the whole trick: any value other than `auto` also disables
+   double-tap-to-zoom, and a descendant cannot widen what an ancestor has
+   narrowed, so one declaration on the root covers every element in the app
+   without a universal selector. One-finger gestures are untouched, which is
+   why scrolling, swiping, dragging and text selection all still work. */
+html.pharmatrack-zoom-locked,
+html.pharmatrack-zoom-locked body {
+  touch-action: pan-x pan-y;
+}
+/* A surface running its own pinch takes over completely for the duration, so
+   the document does not scroll out from under the gesture. */
+html.pharmatrack-zoom-locked .is-pinching,
+.is-pinching {
+  touch-action: none;
+}
+
 .android-native-shell {
   height: 100vh;
   height: 100dvh;

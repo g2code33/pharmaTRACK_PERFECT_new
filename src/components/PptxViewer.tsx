@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight,
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
@@ -7,6 +7,7 @@ import {
 import { renderPptx, ptToPx, type PptxDocument, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
+import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
 
 /**
  * Native .pptx viewer — renders the *actual* slide as positioned DOM:
@@ -662,6 +663,29 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const zoomBy = useCallback((delta: number) => {
     setZoom((z) => ({ mode: 'custom', value: clampZoom((z.mode === 'custom' ? z.value : currentScaleRef.current) + delta) }));
   }, []);
+
+  /* Pinch-to-zoom. The installed app refuses browser zoom, so pinching a deck
+     has to zoom the deck rather than the whole interface. */
+  const pinchRef = useRef<{ anchor: PinchAnchor; startScale: number } | null>(null);
+  usePinchZoom(containerRef, {
+    onStart: (anchor) => { pinchRef.current = { anchor, startScale: currentScaleRef.current }; },
+    onZoom: (factor) => {
+      const base = pinchRef.current;
+      if (!base) return;
+      setZoom({ mode: 'custom', value: clampZoom(base.startScale * factor) });
+    },
+    onEnd: () => { pinchRef.current = null; },
+    // Keyed on the deck, so the gesture attaches to the scroller the moment
+    // the deck replaces the loading or error screen.
+  }, Boolean(deck));
+
+  // Runs once the rescaled stage is laid out, so the pinched point stays put.
+  useLayoutEffect(() => {
+    const base = pinchRef.current;
+    const el = containerRef.current;
+    if (!base || !el) return;
+    keepPinchAnchor(el, base.anchor, scale / base.startScale);
+  }, [scale]);
 
   useEffect(() => {
     const el = containerRef.current;

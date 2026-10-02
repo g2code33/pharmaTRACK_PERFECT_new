@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { offsetsAreMeasured, pageNumberAtOffset } from '../utils/pageOffsets';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import SelectionPopup, { overlayFor } from './SelectionPopup';
 import type { Highlight, HighlightColor, HighlightRect } from '../types';
+import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -717,6 +718,61 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     setZoomPreset('actual');
     setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, +(s + delta).toFixed(2))));
   };
+
+  /* ---------------- pinch & trackpad zoom ----------------
+     The installed app refuses browser zoom, so the reader has to provide the
+     real thing: pinching the page zooms the page, not the whole interface. */
+  const scaleRef = useRef(scale);
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+  const pinchRef = useRef<{ anchor: PinchAnchor; startScale: number } | null>(null);
+
+  usePinchZoom(containerRef, {
+    onStart: (anchor) => { pinchRef.current = { anchor, startScale: scaleRef.current }; },
+    onZoom: (factor) => {
+      const base = pinchRef.current;
+      if (!base) return;
+      setZoomPreset('actual');
+      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, base.startScale * factor)));
+    },
+    onEnd: () => { pinchRef.current = null; },
+    // Keyed on the document: the scroller is only in the tree once there is
+    // something to scroll, and an error screen replaces it entirely.
+  }, Boolean(doc));
+
+  // Runs after the rescaled pages are laid out, so the point between the
+  // fingers is still the point on screen.
+  useLayoutEffect(() => {
+    const base = pinchRef.current;
+    const el = containerRef.current;
+    if (!base || !el) return;
+    keepPinchAnchor(el, base.anchor, scale / base.startScale);
+  }, [scale]);
+
+  // ctrl/⌘ + wheel is the trackpad pinch and the mouse-wheel zoom. Without
+  // this the guard would simply swallow it and desktop would lose a gesture
+  // it used to have.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (event.cancelable) event.preventDefault();
+      const box = el.getBoundingClientRect();
+      const anchor: PinchAnchor = {
+        x: event.clientX - box.left,
+        y: event.clientY - box.top,
+        scrollLeft: el.scrollLeft,
+        scrollTop: el.scrollTop,
+      };
+      const startScale = scaleRef.current;
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale * Math.exp(-event.deltaY / 420)));
+      pinchRef.current = { anchor, startScale };
+      setZoomPreset('actual');
+      setScale(next);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [doc]);
 
   /* ---------------- hand tool ---------------- */
   const onPanStart = (e: React.MouseEvent) => {
