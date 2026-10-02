@@ -342,6 +342,35 @@ describe('native side cleanup', () => {
   });
 });
 
+describe('shipping the fix', () => {
+  it('carries one version across every artifact so the apps can update to it', () => {
+    const pkg = JSON.parse(read('package.json')) as { version: string };
+    const lock = JSON.parse(read('package-lock.json')) as {
+      version: string;
+      packages: Record<string, { version?: string }>;
+    };
+    const tauriConf = JSON.parse(read('src-tauri/tauri.conf.json')) as { version: string };
+    const cargoToml = read('src-tauri/Cargo.toml');
+    const cargoLock = read('src-tauri/Cargo.lock');
+
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages['']?.version).toBe(pkg.version);
+    expect(tauriConf.version).toBe(pkg.version);
+    expect(cargoToml).toContain(`version = "${pkg.version}"`);
+    expect(cargoLock).toContain(`name = "pharmatrack"\nversion = "${pkg.version}"`);
+  });
+
+  it('stays ahead of the broken build that is already installed', () => {
+    const { version } = JSON.parse(read('package.json')) as { version: string };
+    const [major, minor, patch] = version.split('.').map(Number);
+    // v1.2.0 is published and is the build that registers the service worker,
+    // so the recovery has to ride on a higher version to reach those installs.
+    expect(major * 1_000_000 + minor * 1_000 + patch).toBeGreaterThan(1 * 1_000_000 + 2 * 1_000 + 0);
+    // Android's versionCode must keep climbing past the old 1.1.126 line too.
+    expect(1_000 + major * 10_000 + minor * 100 + patch).toBeGreaterThan(10_226);
+  });
+});
+
 describe('resume repaint recovery', () => {
   it('rebuilds the compositing layer rather than re-applying the same transform', () => {
     const source = stripComments(read('src/App.tsx'));
@@ -354,6 +383,16 @@ describe('resume repaint recovery', () => {
     // Opacity, not filter: a filter would make #root a containing block and
     // drag every fixed header out of place.
     expect(source).not.toContain("root.style.filter =");
+  });
+
+  it('is driven from the native side too, where the focus event can go missing', () => {
+    const rust = read('src-tauri/src/main.rs');
+    expect(rust).toContain("pharmatrack:native-resume");
+    expect(rust).toContain('WindowEvent::Focused(true)');
+    expect(rust).toContain('RESUME_REPAINT_NUDGE');
+    const app = stripComments(read('src/App.tsx'));
+    expect(app).toContain("window.addEventListener('pharmatrack:native-resume', repaint)");
+    expect(app).toContain("window.removeEventListener('pharmatrack:native-resume', repaint)");
   });
 
   it('still reloads as a last resort when the shell really is empty', () => {

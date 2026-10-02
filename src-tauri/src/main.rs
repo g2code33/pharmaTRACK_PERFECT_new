@@ -955,6 +955,18 @@ fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String>
 ///
 /// Kept as a free function (not inlined into the Linux-only block) so the
 /// parsing rules stay testable on every platform.
+/// Asks the front-end to rebuild its compositing layer.
+///
+/// WebKitGTK can bring a window back from being hidden or unfocused with a
+/// blank surface, and it does not always deliver a focus event to the page, so
+/// the recovery that lives in the app never runs and the user is left looking
+/// at a black window. The native side always gets the event, so it dispatches
+/// a dedicated one of its own. A dedicated name is used rather than a
+/// synthetic "focus" so examination focus tracking is not affected.
+#[cfg(target_os = "linux")]
+const RESUME_REPAINT_NUDGE: &str =
+    "window.dispatchEvent(new Event('pharmatrack:native-resume'));";
+
 /// Injected into the window at startup to make sure no service worker is
 /// serving the desktop app.
 ///
@@ -1091,6 +1103,14 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if matches!(event, WindowEvent::Focused(true)) {
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let _ = webview.eval(RESUME_REPAINT_NUDGE);
+                    }
+                }
             }
             let secure_state = window.app_handle().state::<SecureExamHostState>();
             if !secure_state.is_active() {

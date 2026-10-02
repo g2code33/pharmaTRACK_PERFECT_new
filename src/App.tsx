@@ -275,6 +275,10 @@ const ResumePaintRecovery: React.FC = () => {
     window.addEventListener('pageshow', repaint);
     window.addEventListener('focus', repaint);
     document.addEventListener('visibilitychange', onVisible);
+    // The Linux desktop shell fires this from the native side: its webview can
+    // come back with a blank surface without ever delivering a focus event to
+    // the page, which is how the window ends up black after switching away.
+    window.addEventListener('pharmatrack:native-resume', repaint);
     return () => {
       window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
@@ -282,6 +286,7 @@ const ResumePaintRecovery: React.FC = () => {
       window.removeEventListener('pageshow', repaint);
       window.removeEventListener('focus', repaint);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pharmatrack:native-resume', repaint);
     };
   }, []);
   return null;
