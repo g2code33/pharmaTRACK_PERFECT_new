@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { offsetsAreMeasured, pageNumberAtOffset } from '../utils/pageOffsets';
+import { offsetsAreMeasured, pageNumberAtOffset, pagesByDistance } from '../utils/pageOffsets';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import {
@@ -87,6 +87,17 @@ const RENDER_WINDOW = 2;
  * so an unbounded cache makes the desktop WebView feel frozen on lecture decks.
  */
 const KEEP_WINDOW = 8;
+
+/**
+ * Width, in device pixels, of the standing preview kept for every page.
+ * Large enough to read headings and recognise a figure, small enough that a
+ * whole lecture deck of them is a few megabytes of JPEG rather than the
+ * gigabytes the same pages would cost as live canvases.
+ */
+const PREVIEW_WIDTH = 640;
+const PREVIEW_QUALITY = 0.62;
+/** Repaint after this many new previews, rather than once per page. */
+const PREVIEW_BATCH = 4;
 
 const yieldToMainThread = () => new Promise<void>((resolve) => {
   if (typeof window === 'undefined') { resolve(); return; }
@@ -655,6 +666,82 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, [doc, zoomPreset, rotation, spreadMode, baseSizes]);
+
+  /* ---------------- standing page previews ----------------
+     Skipping to page 90 used to show a blank sheet while that page was
+     rasterised, because only a handful of pages around the viewport are kept
+     as live canvases — and they have to be, since one page at reading
+     resolution is tens of megabytes and a lecture deck would exhaust the
+     WebView in seconds.
+
+     So every page gets a small JPEG of itself instead, built once in the
+     background and then kept. It sits underneath the real canvas, so a jump
+     lands on a readable page immediately and the sharp render simply replaces
+     it a moment later. A 200-page deck costs a few megabytes this way.
+
+     Pages are prepared outwards from wherever the reader currently is, so the
+     most likely destinations are ready first. */
+  const previewUrls = useRef<Map<number, string>>(new Map());
+  const [previewTick, setPreviewTick] = useState(0);
+  const previewFor = (pageNum: number): string | undefined =>
+    previewTick < 0 ? undefined : previewUrls.current.get(pageNum);
+
+  useEffect(() => {
+    if (!doc || !numPages) return;
+    let cancelled = false;
+    const urls = previewUrls.current;
+
+    void (async () => {
+      const scratch = document.createElement('canvas');
+      const ctx = scratch.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      let sinceRepaint = 0;
+
+      for (const pageNum of pagesByDistance(numPages, currentPageRef.current)) {
+        if (cancelled) return;
+        if (urls.has(pageNum)) continue;
+        try {
+          const page = await doc.getPage(pageNum);
+          if (cancelled) return;
+          const unscaled = page.getViewport({ scale: 1, rotation });
+          // Never upscale: a page already smaller than the preview width is
+          // cheapest rendered at its own size.
+          const viewport = page.getViewport({
+            scale: Math.min(1, PREVIEW_WIDTH / Math.max(1, unscaled.width)),
+            rotation,
+          });
+          scratch.width = Math.max(1, Math.floor(viewport.width));
+          scratch.height = Math.max(1, Math.floor(viewport.height));
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          if (cancelled) return;
+
+          const blob = await new Promise<Blob | null>((resolve) => {
+            if (typeof scratch.toBlob !== 'function') { resolve(null); return; }
+            scratch.toBlob(resolve, 'image/jpeg', PREVIEW_QUALITY);
+          });
+          if (cancelled) { if (blob) URL.revokeObjectURL(URL.createObjectURL(blob)); return; }
+          if (blob) {
+            urls.set(pageNum, URL.createObjectURL(blob));
+            sinceRepaint += 1;
+            if (sinceRepaint >= PREVIEW_BATCH) { sinceRepaint = 0; setPreviewTick((t) => t + 1); }
+          }
+        } catch {
+          // A page that refuses to preview still renders normally when reached.
+        }
+        // One page per task, so preparing the document never competes with
+        // scrolling, typing or the live render of the page being read.
+        await yieldToMainThread();
+      }
+      if (!cancelled && sinceRepaint > 0) setPreviewTick((t) => t + 1);
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const url of urls.values()) URL.revokeObjectURL(url);
+      urls.clear();
+    };
+  }, [doc, numPages, rotation]);
 
   /* ---------------- navigation ---------------- */
   const goToPage = useCallback((n: number) => {
@@ -1271,7 +1358,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   marginInline: inline ? undefined : 'auto',
                 }}
               >
-                <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="block rounded-sm" />
+                {/* Underneath the canvas: visible while this page has no live
+                    render, which is exactly the moment a jump lands on it. */}
+                {previewFor(n) && (
+                  <img
+                    src={previewFor(n)}
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    className="pdf-page-preview"
+                  />
+                )}
+                <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="relative z-[1] block rounded-sm" />
 
                 {pageHighlights.map((h) =>
                   h.rects!.map((r, i) => (

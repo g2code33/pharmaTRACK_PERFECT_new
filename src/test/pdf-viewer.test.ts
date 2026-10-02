@@ -230,7 +230,7 @@ describe('stable layout', () => {
     // can render it; the Layout mounts that component.
     expect(titleBar).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
     expect(layout).toContain('<NativeTitleBar />');
-    expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900');
+    expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] w-[min(84vw,20rem)] bg-white text-slate-900');
     expect(css).toContain('background: #ffffff !important;');
     expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
   });

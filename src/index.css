@@ -95,6 +95,32 @@ html.pharmatrack-resume-paint .app-shell {
   }
 }
 
+/* The navigation drawer --------------------------------------------------------
+   Opening the drawer puts a full-screen translucent layer over the page. On
+   Android that was enough to make the menu itself feel stuck: the page behind
+   stayed live underneath, so every frame of the slide re-blended it, and the
+   drawer's own `transition-all` was animating its width and its screen-high
+   shadow at the same time.
+
+   Containment is what fixes it. The drawer and the backdrop each become their
+   own paint and layout boundary, so sliding the drawer cannot invalidate the
+   page behind it, and the page behind cannot invalidate them. */
+.mobile-sidebar-backdrop {
+  contain: layout paint style;
+  /* The page behind must not scroll when a finger drags across the backdrop;
+     without this a swipe to dismiss scrolled the page underneath instead. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 1023px) {
+  .mobile-sidebar {
+    contain: layout paint style;
+    /* The drawer slides on the compositor rather than being repainted into
+       the page on every frame. */
+    will-change: transform;
+  }
+}
+
 /* Installed-app zoom behaviour ---------------------------------------------------
    Set on <html> by src/platform/zoomGuard.ts, and only when the app is really
    installed — a standalone PWA, the Android APK, the desktop window. A browser
@@ -511,6 +537,19 @@ html.dark select {
 .pdf-page-shell canvas {
   backface-visibility: hidden;
   transform: translateZ(0);
+}
+/* The standing preview for a page, under its live canvas. When the canvas is
+   released its backing store collapses to 0x0, so this is what the reader
+   sees the instant they jump somewhere far away. */
+.pdf-page-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+  pointer-events: none;
 }
 .pptx-viewer-scroll {
   -webkit-overflow-scrolling: touch;

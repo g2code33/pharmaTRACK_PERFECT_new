@@ -348,15 +348,24 @@ const Layout: React.FC = () => {
       )}
       <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
-        {mobileMenuOpen && (
-          <button
-            type="button"
-            aria-label="Close navigation menu"
-            onClick={() => setMobileMenuOpen(false)}
-            className="fixed inset-0 z-[220] bg-slate-950/45 lg:hidden"
-          />
-        )}
-        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] bg-white text-slate-900 flex flex-col border-r border-slate-200 transition-all duration-200 ease-out lg:relative lg:z-50 shadow-xl ${mobileMenuOpen ? 'translate-x-0 w-[min(84vw,20rem)]' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
+        {/* Always mounted and faded, never mounted and unmounted. Inserting a
+            full-screen layer mid-gesture forces the whole page behind it
+            through layout and paint at the exact moment the drawer is trying
+            to animate, which is what made the menu feel stuck on Android. */}
+        <button
+          type="button"
+          aria-label="Close navigation menu"
+          aria-hidden={!mobileMenuOpen}
+          tabIndex={mobileMenuOpen ? 0 : -1}
+          onClick={() => setMobileMenuOpen(false)}
+          className={`mobile-sidebar-backdrop fixed inset-0 z-[220] bg-slate-950/45 transition-opacity duration-200 ease-out lg:hidden ${
+            mobileMenuOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        />
+        {/* Only the transform is animated. `transition-all` also animated the
+            drawer's width and its large shadow, so every frame of the slide
+            repainted a blurred rectangle the height of the screen. */}
+        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] w-[min(84vw,20rem)] bg-white text-slate-900 flex flex-col border-r border-slate-200 transition-transform duration-200 ease-out lg:relative lg:z-50 shadow-xl ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
           <div className={`flex items-center p-6 border-b border-slate-100 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
             <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-sm ring-1 ring-slate-200"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
             {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-slate-900">Pharma<span className="text-[#2D6A4F]">TRACK</span></h1></div>)}

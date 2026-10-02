@@ -69,3 +69,22 @@ export const offsetsAreMeasured = (offsets: readonly number[], pageCount: number
   if (pageCount === 1) return true;
   return offsets[offsets.length - 1] > offsets[0];
 };
+
+/**
+ * Page numbers ordered by how near they are to `centre`, nearest first.
+ *
+ * Used to decide what to prepare ahead of the reader. Work queued in this
+ * order means the pages someone is most likely to jump to next are ready
+ * first, and a document that is still being prepared is always prepared
+ * around wherever they actually are.
+ */
+export const pagesByDistance = (pageCount: number, centre: number): number[] => {
+  if (!Number.isFinite(pageCount) || pageCount < 1) return [];
+  const anchor = Math.min(Math.max(1, Math.round(centre) || 1), pageCount);
+  const pages = [anchor];
+  for (let d = 1; pages.length < pageCount; d++) {
+    if (anchor - d >= 1) pages.push(anchor - d);
+    if (anchor + d <= pageCount) pages.push(anchor + d);
+  }
+  return pages;
+};
