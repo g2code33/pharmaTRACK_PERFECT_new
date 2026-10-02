@@ -192,6 +192,10 @@ export async function listenNative<T>(
 
 export interface NativeUpdate {
   version: string;
+  /** Release notes published with the update, when the feed carries them. */
+  body?: string;
+  /** Publish date, as sent by the update feed. */
+  date?: string;
   downloadAndInstall: (onEvent?: (event: unknown) => void) => Promise<void>;
 }
 

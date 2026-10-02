@@ -14,12 +14,14 @@ import {
   detectRuntimeCapabilities,
   getApplicationVersion,
   restartNativeApplication,
+  type NativeUpdate,
 } from '../platform/runtime';
 import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
-import { quickQuizRouteFromAnyText } from '../utils/appLinks';
+import { APP_STORE_URL, quickQuizRouteFromAnyText } from '../utils/appLinks';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
 import NativeTitleBar from './NativeTitleBar';
+import UpdateDialog, { type UpdateFlowState } from './UpdateDialog';
 
 const APP_VERSION_FALLBACK = __APP_VERSION__;
 
@@ -74,6 +76,13 @@ const Layout: React.FC = () => {
     typeof navigator !== 'undefined' ? navigator.onLine === false : false,
   );
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
+  // What the in-app update sheet is showing, if anything. `null` keeps it
+  // closed; the pill is what opens it.
+  const [updateFlow, setUpdateFlow] = useState<UpdateFlowState | null>(null);
+  // An update found by the quiet launch check waits here until the user taps
+  // the pill, so starting the app never throws a dialog in anyone's face.
+  const pendingUpdateRef = useRef<NativeUpdate | null>(null);
+  const [pendingUpdateVersion, setPendingUpdateVersion] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -251,6 +260,76 @@ const Layout: React.FC = () => {
       );
     });
 
+  // Each manual check gets a ticket. Closing the sheet burns the ticket, so a
+  // check the user cancelled cannot pop its answer back up ten seconds later
+  // when the slow network finally replies.
+  const updateRunIdRef = useRef(0);
+  const closeUpdateSheet = () => {
+    updateRunIdRef.current += 1;
+    setUpdateFlow(null);
+  };
+
+  const describeUpdateError = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    return message || 'The update could not be completed. Check your connection and try again.';
+  };
+
+  /**
+   * Downloads and installs the update the last check found. Progress is
+   * painted into the sheet instead of being thrown away, and it is throttled:
+   * a package arrives in thousands of chunks and re-rendering the shell on
+   * every one of them is what makes an "updating" window feel frozen.
+   */
+  const installPendingUpdate = async () => {
+    const update = pendingUpdateRef.current;
+    if (!update) {
+      setUpdateFlow({ kind: 'failed', message: 'That update is no longer available. Check again.' });
+      return;
+    }
+
+    const version = update.version;
+    let received = 0;
+    let total = 0;
+    let lastPaintedAt = 0;
+
+    setUpdateStatus('downloading');
+    setUpdateFlow({ kind: 'downloading', version, received: 0, total: 0 });
+
+    try {
+      await update.downloadAndInstall((event: unknown) => {
+        const progress = event as { event?: string; data?: { contentLength?: number; chunkLength?: number } };
+        if (progress?.event === 'Started') total = progress.data?.contentLength || 0;
+        else if (progress?.event === 'Progress') received += progress.data?.chunkLength || 0;
+        else if (progress?.event === 'Finished') received = total || received;
+
+        const now = Date.now();
+        const finished = total > 0 && received >= total;
+        if (!finished && now - lastPaintedAt < 120) return;
+        lastPaintedAt = now;
+        setUpdateFlow({ kind: 'downloading', version, received, total });
+      });
+
+      pendingUpdateRef.current = null;
+      setPendingUpdateVersion(null);
+      setUpdateStatus('done');
+      setUpdateFlow({ kind: 'installed', version });
+    } catch (error) {
+      console.error('Update failed:', error);
+      setUpdateStatus('idle');
+      setUpdateFlow({ kind: 'failed', message: describeUpdateError(error) });
+    }
+  };
+
+  const restartForUpdate = async () => {
+    closeUpdateSheet();
+    if (!(await restartNativeApplication())) window.location.reload();
+  };
+
+  const openAppDownloadPage = () => {
+    closeUpdateSheet();
+    window.open(APP_STORE_URL, '_blank', 'noopener,noreferrer');
+  };
+
   // `silent` is used by the automatic check on launch: it still offers a real
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
@@ -265,36 +344,52 @@ const Layout: React.FC = () => {
       return;
     }
 
+    // The Android build is installed from a package, not patched in place, so
+    // there is nothing for an updater to download here — send the user to the
+    // download page instead of claiming they are up to date.
+    if (runtime.platform === 'android-native') {
+      if (!silent) setUpdateFlow({ kind: 'store', version: appVersion });
+      return;
+    }
+
+    // An update already found by the launch check: reopen the offer instead of
+    // paying for a second round trip.
+    if (!silent && pendingUpdateRef.current) {
+      setUpdateFlow({
+        kind: 'available',
+        version: pendingUpdateRef.current.version,
+        notes: pendingUpdateRef.current.body,
+      });
+      return;
+    }
+
+    const runId = silent ? -1 : (updateRunIdRef.current += 1);
+    const showSheet = (next: UpdateFlowState) => {
+      if (!silent && runId === updateRunIdRef.current) setUpdateFlow(next);
+    };
+
     try {
       if (!silent) setUpdateStatus('checking');
+      showSheet({ kind: 'checking', version: appVersion });
       const update = await withUpdateTimeout(checkNativeUpdate());
 
       if (update) {
+        pendingUpdateRef.current = update;
+        setPendingUpdateVersion(update.version);
         setUpdateStatus('available');
-        let _downloaded = 0;
-        let _contentLength = 0;
-
-        if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
-          setUpdateStatus('downloading');
-          await update.downloadAndInstall((event: any) => {
-            if (event.event === 'Started') _contentLength = event.data.contentLength || 0;
-            if (event.event === 'Progress') _downloaded += event.data.chunkLength;
-          });
-
-          setUpdateStatus('done');
-          alert('Update installed successfully! The app will now restart.');
-          if (!await restartNativeApplication()) window.location.reload();
-        } else {
-          setUpdateStatus('idle');
-        }
+        // A quiet launch check only turns the pill into "Update <version>".
+        // Nothing covers the screen until the user asks for it.
+        showSheet({ kind: 'available', version: update.version, notes: update.body });
       } else {
-        if (!silent) alert(`You are already on the latest version (${appVersion})!`);
+        pendingUpdateRef.current = null;
+        setPendingUpdateVersion(null);
         setUpdateStatus('idle');
+        showSheet({ kind: 'current', version: appVersion });
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Update failed:', error);
-      if (!silent) alert(`Update Check Failed: ${error.message || error}`);
       setUpdateStatus('idle');
+      showSheet({ kind: 'failed', message: describeUpdateError(error) });
     } finally {
       // Whatever happened, the pill must never be left spinning and disabled.
       setUpdateStatus((current) => (current === 'checking' ? 'idle' : current));
@@ -593,11 +688,29 @@ const Layout: React.FC = () => {
                   );
                 })()}
                 
-                <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
-                  <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
-                  <button onClick={() => void checkForUpdates(false)} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title={runtime.platform === 'web' ? 'Refresh app and check for update' : 'Check for Updates'} className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
-                    {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
-                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : runtime.platform === 'web' ? 'Refresh App' : 'Update App'}</span>
+                {/* The pill is the whole update story: it says what the app
+                    is doing, it never stays stuck on "Checking…", and once a
+                    quiet launch check has found something it turns into the
+                    offer itself — tapping it reopens the sheet rather than
+                    re-running the check. */}
+                <div className={`flex items-center gap-2 text-white pl-4 pr-1 py-1 rounded-full shadow-md ${updateStatus === 'available' || updateStatus === 'done' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
+                  <span className={`text-[10px] font-black uppercase tracking-widest border-r pr-3 mr-1 opacity-90 ${updateStatus === 'available' || updateStatus === 'done' ? 'border-emerald-400' : 'border-blue-400'}`}>v{appVersion}</span>
+                  <button
+                    onClick={() => (updateStatus === 'done' ? void restartForUpdate() : void checkForUpdates(false))}
+                    disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+                    title={
+                      updateStatus === 'available'
+                        ? `Install version ${pendingUpdateVersion}`
+                        : updateStatus === 'done'
+                          ? 'Restart to finish updating'
+                          : runtime.platform === 'web'
+                            ? 'Refresh app and check for update'
+                            : 'Check for Updates'
+                    }
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full font-bold text-xs transition-all disabled:opacity-50 ${updateStatus === 'available' || updateStatus === 'done' ? 'hover:bg-emerald-700' : 'hover:bg-blue-700'}`}
+                  >
+                    {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : updateStatus === 'available' ? <Download className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restart now' : updateStatus === 'available' ? `Update ${pendingUpdateVersion}` : runtime.platform === 'web' ? 'Refresh App' : 'Update App'}</span>
                   </button>
                 </div>
 
@@ -649,6 +762,15 @@ const Layout: React.FC = () => {
           })}
         </div>
       </nav>
+
+      <UpdateDialog
+        state={updateFlow}
+        onInstall={() => void installPendingUpdate()}
+        onRestart={() => void restartForUpdate()}
+        onRetry={() => (pendingUpdateRef.current ? void installPendingUpdate() : void checkForUpdates(false))}
+        onOpenStore={openAppDownloadPage}
+        onClose={closeUpdateSheet}
+      />
     </div>
   );
 };

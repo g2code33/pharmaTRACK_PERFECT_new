@@ -7,7 +7,9 @@ const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx
 
 describe('search bar opens pasted quick quiz links', () => {
   it('wires the global search input to the quick quiz link parser', () => {
-    expect(layout).toContain("import { quickQuizRouteFromAnyText } from '../utils/appLinks';");
+    // Matched loosely on purpose: the point is that the parser is imported
+    // from appLinks, not that it is the only name on that import line.
+    expect(layout).toMatch(/import \{[^}]*\bquickQuizRouteFromAnyText\b[^}]*\} from '\.\.\/utils\/appLinks';/);
     expect(layout).toContain('const quickQuizSearchRoute = useMemo(');
     expect(layout).toContain('const immediateQuickQuizRoute = useMemo(');
     expect(layout).toContain('placeholder="Search or paste a Quick Quiz link…"');
