@@ -32,6 +32,20 @@ body { background-color: #F8FAFC; color: #0F172A; }
   scrollbar-gutter: stable;
 }
 
+/* `transition-all` is "transition every animatable property", width, height
+   and the inset properties included, so a card that only changes colour on
+   hover still arms a layout-animating transition. That matters on the scroll
+   path, not just on hover: while a list scrolls under a stationary cursor the
+   browser fires mouseover/mouseout down the entire column, starting one of
+   these on every row it passes. Narrowing the property list leaves every
+   hover state looking exactly the same and takes layout out of the gesture.
+   (The desktop shell narrowed this for itself already; the web app, which is
+   where most of this app is used, was still paying for it.) */
+.transition-all {
+  transition-property: color, background-color, border-color, text-decoration-color,
+    fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+}
+
 /* Interaction performance guard -------------------------------------------------
    Dragging a reader split pane must never compete with decorative animations,
    so `pharmatrack-resizing` is added to <html> for the duration of the drag.
@@ -459,10 +473,19 @@ html.dark select {
   scroll-behavior: auto;
   contain: layout paint;
 }
+/* No `content-visibility: auto` here, deliberately.
+   Every page shell is given its exact pixel width and height inline before a
+   single pixel is drawn, and the viewer already rasterises only the pages
+   around the current one. `content-visibility` therefore added no
+   virtualisation the viewer did not already have, but it did add a cost on the
+   worst possible code path: the browser has to lay out and paint a skipped
+   subtree *synchronously, inside the scroll frame* at the moment it crosses
+   into the viewport. With a canvas plus a few hundred absolutely-positioned
+   text spans per page, that is a long frame on every page boundary — the
+   reader answered late and then crawled. Plain containment keeps the cheap
+   part (a page can never invalidate its neighbours) with none of that. */
 .pdf-page-shell {
-  content-visibility: auto;
   contain: layout paint style;
-  contain-intrinsic-size: auto 900px;
 }
 .pdf-page-shell canvas {
   backface-visibility: hidden;
@@ -612,39 +635,28 @@ html.pharmatrack-resizing .pdf-text-layer {
     border-color: rgba(51, 65, 85, 0.95);
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
+  /* The desktop app is the web app in a window, so it is laid out like the web
+     app. An earlier revision floated the header and the page area as inset
+     rounded cards; between the window strip, the card's top margin and the
+     card's bottom margin that spent roughly 40 vertical pixels on decoration,
+     on the one screen size where vertical space is already scarcest. */
   .native-desktop-shell .app-header {
-    margin: 0.75rem 1rem 0;
-    border: 1px solid rgba(203, 213, 225, 0.95);
-    border-radius: 1.5rem;
     background: #ffffff !important;
-    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
   }
   .dark .native-desktop-shell .app-header {
     background: #0f172a !important;
-    border-color: rgba(51, 65, 85, 0.95);
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   }
-  /* The desktop "floating card" look is painted on the frame, NOT on the
-     scrolling element inside it.
-     A scroll container that carries a border-radius has to clip its scrolled
-     content to a rounded rect on every frame, and WebKit refuses accelerated
-     overflow scrolling for such an element outright — the page then scrolls on
-     the main thread, which is why the desktop build crawled while the same
-     page in a browser was smooth. The frame does not scroll, so its rounded
-     clip is rasterised once and the scroller inside it stays a plain,
-     fast-scrolling rectangle. */
+  /* Moving the rounded corners off the scroller itself was not enough: a
+     rounded clip on an *ancestor* still has to be applied to the scrolling
+     contents, which keeps the main page off the fast scrolling path. That is
+     why home scrolled late and slowly in the desktop build while the identical
+     page was smooth in a browser. The frame is now the plain rectangle the web
+     build uses, so the scroller inside it is a plain rectangle too. */
   .native-desktop-shell .app-page-frame {
-    margin: 0.75rem 1rem 1rem;
-    border: 1px solid rgba(203, 213, 225, 0.95);
-    border-radius: 1.75rem;
     background: #f8fafc;
-    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
-    overflow: hidden;
   }
   .dark .native-desktop-shell .app-page-frame {
     background: #0f172a;
-    border-color: rgba(51, 65, 85, 0.95);
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
   }
   .native-desktop-shell .app-page-main {
     background: #f8fafc !important;

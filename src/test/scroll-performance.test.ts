@@ -161,16 +161,53 @@ describe('desktop shell keeps the GPU', () => {
     expect(layout).toContain("setUpdateStatus((current) => (current === 'checking' ? 'idle' : current));");
   });
 
-  it('never puts a rounded clip on the element that scrolls', () => {
-    // WebKit drops a border-radius'd scroller out of accelerated overflow
-    // scrolling, so the desktop card styling lives on a static frame.
+  it('never puts a rounded clip over the element that scrolls', () => {
+    // A rounded clip has to be applied to the scrolled contents whether it
+    // sits on the scroller or on an ancestor of it, and either way the page
+    // leaves the fast scrolling path. Nothing around the main scroller may
+    // round or clip it.
     const desktopMain = css.match(/\.native-desktop-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
     expect(desktopMain).not.toContain('border-radius');
     expect(desktopMain).not.toContain('box-shadow');
     const frame = css.match(/\.native-desktop-shell \.app-page-frame \{([\s\S]*?)\}/)?.[1] ?? '';
-    expect(frame).toContain('border-radius');
-    expect(frame).toContain('overflow: hidden');
+    expect(frame).not.toContain('border-radius');
+    expect(frame).not.toContain('overflow');
+    expect(frame).not.toContain('box-shadow');
     expect(layout).toContain('app-page-frame flex flex-1 min-h-0 flex-col');
+  });
+
+  it('spends desktop vertical space on the page, not on floating card insets', () => {
+    // The desktop build is the web build in a window; inset cards cost ~40px
+    // of height on the screens that have the least to spare.
+    const frame = css.match(/\.native-desktop-shell \.app-page-frame \{([\s\S]*?)\}/)?.[1] ?? '';
+    const header = css.match(/\.native-desktop-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(frame).not.toContain('margin');
+    expect(header).not.toContain('margin');
+    expect(header).not.toContain('border-radius');
+  });
+
+  it('keeps layout out of the hover transitions that fire while a list scrolls', () => {
+    const narrowed = css.match(/^\.transition-all \{([\s\S]*?)\}/m)?.[1] ?? '';
+    expect(narrowed).toContain('transition-property');
+    for (const property of ['width', 'height', 'margin', 'padding', 'inset']) {
+      expect(narrowed).not.toContain(property);
+    }
+    // The visible feedback must survive the narrowing.
+    for (const property of ['background-color', 'box-shadow', 'transform', 'opacity']) {
+      expect(narrowed).toContain(property);
+    }
+  });
+
+  it('leaves document pages out of content-visibility, which costs a frame on every page boundary', () => {
+    // The shells are already given exact pixel sizes and the viewer already
+    // rasterises only the pages near the reader, so skipping their contents
+    // bought nothing and charged a synchronous layout and paint to the scroll
+    // frame each time a page scrolled into view.
+    const shell = css.match(/\.pdf-page-shell \{([\s\S]*?)\}/)?.[1] ?? '';
+    expect(shell).not.toContain('content-visibility');
+    expect(shell).not.toContain('contain-intrinsic-size');
+    expect(shell).toContain('contain: layout paint style');
+    expect(pdfViewer).toContain('height: size?.h,');
   });
 
   it('keeps the desktop window strip to a single compact row', () => {
