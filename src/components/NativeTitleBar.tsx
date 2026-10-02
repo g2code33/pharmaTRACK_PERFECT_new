@@ -3,7 +3,7 @@ import { Maximize2, Minus, X } from 'lucide-react';
 import { detectRuntimeCapabilities, getApplicationVersion } from '../platform/runtime';
 import { reportNativeTitlebar } from '../platform/nativeTitlebar';
 
-const APP_VERSION_FALLBACK = '1.2.1';
+const APP_VERSION_FALLBACK = __APP_VERSION__;
 
 type NativeDesktopWindow = {
   startDragging: () => Promise<void>;

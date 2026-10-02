@@ -21,7 +21,7 @@ import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moo
 import StorageNoticeBanner from './StorageNoticeBanner';
 import NativeTitleBar from './NativeTitleBar';
 
-const APP_VERSION_FALLBACK = '1.2.0';
+const APP_VERSION_FALLBACK = __APP_VERSION__;
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
