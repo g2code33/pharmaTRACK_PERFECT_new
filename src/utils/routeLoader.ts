@@ -25,6 +25,7 @@
  */
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 import { scheduleBackgroundWork } from './idleScheduler';
+import { recoverServiceWorker } from './serviceWorkerRecovery';
 
 /** sessionStorage flag so a stale-chunk reload happens at most once per tab. */
 const RELOAD_FLAG = 'pharmatrack:chunk-reload';
@@ -89,34 +90,46 @@ function canControlledReload(): boolean {
 }
 
 /**
- * Best-effort: pull a fresh service worker and let a waiting one take over so
- * the next navigation is served the new asset manifest. Never throws.
+ * Pulls the failing module URL out of a chunk load error.
+ *
+ * Every engine puts the URL in the message, e.g.
+ * `Failed to fetch dynamically imported module: https://tauri.localhost/assets/CourseDetail-CH8k_Lo-.js`.
  */
-async function refreshServiceWorker(): Promise<void> {
+export function chunkUrlFromError(error: unknown): string | null {
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : String(error ?? '');
+  const match = message.match(/(?:[a-z][a-z0-9+.-]*:\/\/|\/)[^\s'"`()]+\.(?:m?js|css)/i);
+  return match ? match[0] : null;
+}
+
+/**
+ * Adds a unique query so the request is a genuinely new module specifier.
+ *
+ * This is the whole point of the second attempt: once an `import()` of a given
+ * URL rejects, the engine remembers that rejection, and re-running the exact
+ * same `import()` resolves from that memory without touching the network. Any
+ * stale HTTP/worker cache entry is skipped for the same reason.
+ */
+export function withCacheBust(url: string, stamp: number = Date.now()): string {
   try {
-    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    const registrations = await navigator.serviceWorker.getRegistrations();
-    await Promise.all(
-      registrations.map(async (registration) => {
-        try {
-          await registration.update();
-        } catch {
-          /* ignore */
-        }
-        // Activate a worker that installed but is waiting, so the refreshed
-        // index.html (and its new chunk names) becomes the controller.
-        if (registration.waiting) {
-          try {
-            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-          } catch {
-            /* ignore */
-          }
-        }
-      }),
-    );
+    const base = typeof window !== 'undefined' ? window.location.href : undefined;
+    const parsed = new URL(url, base);
+    parsed.searchParams.set('pharmatrack-retry', String(stamp));
+    return parsed.toString();
   } catch {
-    /* best-effort only */
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}pharmatrack-retry=${stamp}`;
   }
+}
+
+/**
+ * Re-imports the failing chunk under a fresh URL. Returns null when the error
+ * carried no usable URL, so the caller can fall through to its next strategy.
+ */
+async function retryChunkFromError<T>(error: unknown): Promise<{ default: T } | null> {
+  const url = chunkUrlFromError(error);
+  if (!url) return null;
+  return (await import(/* @vite-ignore */ withCacheBust(url))) as { default: T };
 }
 
 /**
@@ -126,7 +139,7 @@ async function refreshServiceWorker(): Promise<void> {
  */
 async function recoverByReload(): Promise<never> {
   markReloaded();
-  await refreshServiceWorker();
+  await recoverServiceWorker();
   try {
     window.location.reload();
   } catch {
@@ -158,12 +171,24 @@ export function lazyWithRetry<T extends ComponentType<any>>(
         return mod;
       } catch (secondError) {
         if (!isChunkLoadError(secondError)) throw secondError;
-        // 2) Looks like the cached HTML points at a chunk from a previous
+        // 2) Re-request the same file under a unique URL. Without this the
+        //    retry above is a no-op whenever the engine has already cached the
+        //    rejection for that specifier, which is the usual case.
+        try {
+          const mod = await retryChunkFromError<T>(secondError);
+          if (mod) {
+            clearReloadStamp();
+            return mod;
+          }
+        } catch {
+          /* fall through to the reload */
+        }
+        // 3) Looks like the cached HTML points at a chunk from a previous
         //    build. Refresh the worker and reload — but only once.
         if (canControlledReload()) {
           return recoverByReload();
         }
-        // 3) Already reloaded and still failing: hand it to the boundary.
+        // 4) Already reloaded and still failing: hand it to the boundary.
         throw secondError;
       }
     }

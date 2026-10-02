@@ -66,7 +66,10 @@ describe('Android APK build and signing', () => {
     expect(manifest).toContain('android:resizeableActivity="true"');
     expect(manifest).toContain('android:usesCleartextTraffic="false"');
     expect(styles).not.toContain('android:windowFullscreen">true');
-    expect(pwa).toContain('!hasAndroidNativeBridge()');
+    // The APK is served by WebViewAssetLoader, so no service worker may own
+    // these pages. The gate now covers every packaged shell, not only Android.
+    expect(pwa).toContain('!isNativeShell()');
+    expect(main).toContain('setServiceWorkerClient');
   });
 
   it('publishes a verified release-signed APK in the GitHub release workflow', () => {

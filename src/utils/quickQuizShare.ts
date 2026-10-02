@@ -1,6 +1,7 @@
 import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string';
 import type { ExamQuestion } from '../types';
 import type { SharedQuestion } from './questionShare';
+import { isNativeShellOrigin } from '../platform/runtime';
 
 export const QUICK_QUIZ_FORMAT = 'pharmatrack-quick-quiz';
 export const QUICK_QUIZ_VERSION = 1;
@@ -282,16 +283,6 @@ function isNativeAppUrl(url: URL): boolean {
     url.protocol === 'file:' ||
     url.hostname.endsWith('appassets.androidplatform.net')
   );
-}
-
-/** True when the page is served by an app shell rather than the public web app. */
-function isNativeShellOrigin(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    return isNativeAppUrl(new URL(window.location.href));
-  } catch {
-    return false;
-  }
 }
 
 function shareBaseUrl(href: string): URL {

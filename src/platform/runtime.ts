@@ -47,6 +47,36 @@ export function hasAndroidNativeBridge(): boolean {
   return Boolean(windowSnapshot()?.PharmaTRACKAndroidKiosk);
 }
 
+/**
+ * True when the page is being served by an app shell rather than by a real
+ * web server: Tauri's custom protocol (tauri://localhost on Linux/macOS,
+ * https://tauri.localhost on Windows), a plain file:// bundle, or Android's
+ * WebViewAssetLoader origin.
+ *
+ * This is deliberately origin-based and does not depend on a bridge object
+ * being injected first, because it is used during boot — before React, and
+ * before anything decides whether a service worker may exist here.
+ */
+export function isNativeShellOrigin(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const url = new URL(window.location.href);
+    return (
+      url.protocol === 'tauri:' ||
+      url.protocol === 'file:' ||
+      url.hostname === 'tauri.localhost' ||
+      url.hostname.endsWith('appassets.androidplatform.net')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Any packaged shell: desktop Tauri window, Android WebView, file:// bundle. */
+export function isNativeShell(): boolean {
+  return isTauriRuntime() || hasAndroidNativeBridge() || isNativeShellOrigin();
+}
+
 export function isIOS(): boolean {
   if (typeof navigator === 'undefined') return false;
   const agent = navigator.userAgent.toLowerCase();

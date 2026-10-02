@@ -14,6 +14,8 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -22,7 +24,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewFeature
 import java.io.InputStream
 
 /**
@@ -53,6 +58,32 @@ class MainActivity : AppCompatActivity() {
         filePathCallback = null
     }
 
+    /**
+     * Routes service worker requests through the app's asset loader.
+     *
+     * A service worker gets its own network stack inside a WebView: its
+     * requests never reach WebViewClient.shouldInterceptRequest, so a worker
+     * asking for the app's own https://...androidplatform.net assets would get
+     * nothing back and every route chunk it handled would fail to load. The web
+     * build no longer registers a worker inside the app, but an install that
+     * picked one up earlier still has it on disk, so serve those requests from
+     * the APK assets instead of letting them fall off the end of the network.
+     */
+    private fun configureServiceWorkerAssetRouting() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)) return
+        try {
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(
+                object : ServiceWorkerClientCompat() {
+                    override fun shouldInterceptRequest(
+                        request: WebResourceRequest
+                    ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+                }
+            )
+        } catch (error: Throwable) {
+            Log.w(TAG, "Service worker asset routing is unavailable on this WebView", error)
+        }
+    }
+
     fun getWebView(): WebView? = if (::webView.isInitialized) webView else null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,6 +96,8 @@ class MainActivity : AppCompatActivity() {
             .setDomain(APP_ASSET_DOMAIN)
             .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
+
+        configureServiceWorkerAssetRouting()
 
         webView = WebView(this)
         webView.id = View.generateViewId()

@@ -211,22 +211,59 @@ const PendingQuickQuizLauncher: React.FC = () => {
  */
 const ResumePaintRecovery: React.FC = () => {
   useEffect(() => {
-    let timer: number | undefined;
+    let settleTimer: number | undefined;
     let guardTimer: number | undefined;
+    let firstFrame: number | undefined;
+    let secondFrame: number | undefined;
+
+    const cancelFrames = () => {
+      if (firstFrame !== undefined) window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== undefined) window.cancelAnimationFrame(secondFrame);
+      firstFrame = undefined;
+      secondFrame = undefined;
+    };
+
     const repaint = () => {
       if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const root = document.getElementById('root');
       if (!root) return;
-      window.clearTimeout(timer);
+      window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
+      cancelFrames();
+
+      // Dropping the compositing layer and immediately re-creating it forces
+      // the webview to rasterise this content into a NEW texture. Re-applying
+      // the same translateZ(0) on its own is a no-op the compositor is free to
+      // skip, which is why a lost/blank surface could survive the old version
+      // of this recovery (the Linux desktop build's black screen on resume).
       document.documentElement.classList.add('pharmatrack-resume-paint');
+      root.style.transform = 'none';
+      root.getBoundingClientRect();
       root.style.transform = 'translateZ(0)';
+      // Opacity marks the layer's contents dirty without affecting layout, and
+      // unlike a filter it does not become a containing block for the app's
+      // fixed headers, so nothing shifts while it is applied.
+      root.style.opacity = '0.999';
       root.getBoundingClientRect();
       window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
-      timer = window.setTimeout(() => {
+
+      const restore = () => {
         root.style.transform = '';
+        root.style.opacity = '';
         document.documentElement.classList.remove('pharmatrack-resume-paint');
-      }, 360);
+        window.clearTimeout(settleTimer);
+        cancelFrames();
+      };
+
+      // Release on the frame after the repaint actually lands rather than after
+      // a fixed delay, so the window is back to normal as soon as it is drawn.
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(restore);
+      });
+      // Frames are not delivered to a window that is still unmapped; the timer
+      // guarantees the styles never get stuck on.
+      settleTimer = window.setTimeout(restore, 600);
+
       guardTimer = window.setTimeout(() => {
         const style = window.getComputedStyle(root);
         if (!root.childElementCount || style.display === 'none' || style.visibility === 'hidden') {
@@ -239,8 +276,9 @@ const ResumePaintRecovery: React.FC = () => {
     window.addEventListener('focus', repaint);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      window.clearTimeout(timer);
+      window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
+      cancelFrames();
       window.removeEventListener('pageshow', repaint);
       window.removeEventListener('focus', repaint);
       document.removeEventListener('visibilitychange', onVisible);

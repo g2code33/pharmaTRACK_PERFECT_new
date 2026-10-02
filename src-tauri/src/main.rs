@@ -19,8 +19,8 @@ use std::{
 use ring::rand::{SecureRandom, SystemRandom};
 use tauri_plugin_shell::ShellExt;
 use tauri::{
-    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
-    WebviewUrl, WindowEvent,
+    webview::{PageLoadEvent, WebviewBuilder},
+    Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl, WindowEvent,
 };
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use tauri::RunEvent;
@@ -955,6 +955,52 @@ fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String>
 ///
 /// Kept as a free function (not inlined into the Linux-only block) so the
 /// parsing rules stay testable on every platform.
+/// Injected into the window at startup to make sure no service worker is
+/// serving the desktop app.
+///
+/// The shell serves its bundle from a custom protocol that browsers treat as a
+/// secure origin, so a service worker was able to register inside the app.
+/// Requests made *by* a service worker do not go through the shell's protocol
+/// handler, so once it was in charge it answered navigations out of its own
+/// cache — pinning the window to whatever build filled that cache — and failed
+/// every route chunk the cache did not contain ("Failed to fetch dynamically
+/// imported module").
+///
+/// The frontend removes the worker too, but a stale cached bundle is exactly
+/// what might be running, so the cleanup cannot live only in the bundle. This
+/// copy is injected by the native side and therefore always runs.
+const SHELL_SERVICE_WORKER_CLEANUP: &str = r#"
+(function () {
+  try {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    var wasControlled = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.getRegistrations()
+      .then(function (registrations) {
+        return Promise.all(registrations.map(function (registration) {
+          return registration.unregister().catch(function () { return false; });
+        }));
+      })
+      .then(function () {
+        if (typeof caches === 'undefined') return [];
+        return caches.keys().then(function (keys) {
+          return Promise.all(keys
+            .filter(function (key) { return key.indexOf('pharmatrack-shell-') === 0; })
+            .map(function (key) { return caches.delete(key).catch(function () { return false; }); }));
+        });
+      })
+      .then(function () {
+        if (!wasControlled) return;
+        try {
+          if (sessionStorage.getItem('pharmatrack:native-sw-cleanup')) return;
+          sessionStorage.setItem('pharmatrack:native-sw-cleanup', String(Date.now()));
+        } catch (storageError) { return; }
+        location.reload();
+      })
+      .catch(function () {});
+  } catch (error) {}
+})();
+"#;
+
 #[allow(dead_code)]
 fn safe_graphics_requested(raw: Option<&str>) -> bool {
     matches!(
@@ -1077,12 +1123,24 @@ fn main() {
                 _ => {}
             }
         })
+        .on_page_load(|webview, payload| {
+            // Every document this app loads gets the cleanup, including the
+            // very first one and anything a stale cache manages to serve.
+            if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {
+                let _ = webview.eval(SHELL_SERVICE_WORKER_CLEANUP);
+            }
+        })
         .setup(|app| {
             app.manage(lan_server::LanServerHandle::default());
             app.manage(PendingPharmaTrackLinks::default());
             let main_window = app
                 .get_webview_window("main")
                 .expect("main window must exist at startup");
+            // Runs before the user can navigate anywhere, and independently of
+            // whatever bundle the window ended up loading.
+            if let Err(error) = main_window.eval(SHELL_SERVICE_WORKER_CLEANUP) {
+                eprintln!("Service worker cleanup could not be injected: {error}");
+            }
             app.manage(MainWindowHandle(main_window));
             #[cfg(target_os = "windows")]
             register_windows_protocol_handler();

@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, RotateCw, Home, WifiOff } from 'lucide-react';
 import { isChunkLoadError } from '../utils/routeLoader';
+import { recoverServiceWorker } from '../utils/serviceWorkerRecovery';
 
 /**
  * Error boundary for the route outlet only.
@@ -49,25 +50,10 @@ class RouteErrorBoundary extends React.Component<Props, State> {
   private retryChunk = async () => {
     this.setState({ reloading: true });
     try {
-      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(
-          registrations.map(async (registration) => {
-            try {
-              await registration.update();
-            } catch {
-              /* ignore */
-            }
-            if (registration.waiting) {
-              try {
-                registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-              } catch {
-                /* ignore */
-              }
-            }
-          }),
-        );
-      }
+      // On the web this pulls the newest worker; in the desktop/Android shell
+      // it removes the worker and its cached app shell, which is what was
+      // blocking the page from loading in the first place.
+      await recoverServiceWorker();
     } catch {
       /* best-effort */
     } finally {
