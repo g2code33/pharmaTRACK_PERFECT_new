@@ -384,10 +384,7 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
       style={{ ...base, background: shape.fill, ...borderStyle, borderRadius: radius }}
     >
       {t ? (
-        <div
-          className={`w-full h-full flex flex-col ${t.anchor === 'ctr' ? 'justify-center' : t.anchor === 'b' ? 'justify-end' : 'justify-start'}`}
-          style={{ padding: '5px 9px' }}
-        >
+        <AutoFitText anchor={t.anchor}>
           {t.paragraphs.map((p, i) => (
             <ParagraphView
               key={i}
@@ -397,8 +394,65 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
               level={t.levels[p.level]}
             />
           ))}
-        </div>
+        </AutoFitText>
       ) : null}
+    </div>
+  );
+});
+
+/**
+ * Shrinks overflowing text to fit its frame — PowerPoint's "Shrink text on
+ * overflow" behaviour, applied live.
+ *
+ * Decks are routinely authored so text slightly (or heavily) overflows a
+ * frame; PowerPoint recomputes the shrink every time it renders, and saves
+ * only an approximation, so a static renderer that trusts the file clips the
+ * last lines (the "'Therapeutic Objective: To p…' cut off at the slide
+ * bottom" bug). After layout, this measures the real overflow and steps the
+ * whole block down via CSS `zoom` — which, unlike `transform: scale`,
+ * reflows the text — until it fits. Anchors stay honoured because the box is
+ * simultaneously widened so the zoomed result still fills the frame.
+ * Never enlarges (zoom > 1) and never goes below half size.
+ */
+const AutoFitText = memo(function AutoFitText({
+  anchor,
+  children,
+}: {
+  anchor?: string;
+  children: React.ReactNode;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof el.scrollHeight !== 'number') return;
+    // Always start from the natural size so re-layouts (slide switches,
+    // find-highlight re-renders) re-measure instead of compounding shrinks.
+    el.style.zoom = '';
+    el.style.width = '';
+    let s = 1;
+    for (let i = 0; i < 4; i++) {
+      const oy = el.scrollHeight - el.clientHeight;
+      const ox = el.scrollWidth - el.clientWidth;
+      if (oy <= 2 && ox <= 2) break;
+      const next = s * Math.max(0.6, Math.min(0.92, Math.min(
+        el.clientHeight / Math.max(el.scrollHeight, 1),
+        el.clientWidth / Math.max(el.scrollWidth, 1),
+      )));
+      s = Math.max(0.5, Math.min(s, next));
+      el.style.zoom = String(s);
+      el.style.width = `${100 / s}%`;
+      if (s <= 0.5) break;
+    }
+  });
+
+  return (
+    <div
+      ref={wrapRef}
+      className={`h-full flex flex-col ${anchor === 'ctr' ? 'justify-center' : anchor === 'b' ? 'justify-end' : 'justify-start'}`}
+      style={{ padding: '5px 9px' }}
+    >
+      {children}
     </div>
   );
 });
@@ -545,7 +599,15 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const [findOpts, setFindOpts] = useState({ caseSensitive: false, wholeWord: false });
   const [matchIdx, setMatchIdx] = useState(0);
   const [markCount, setMarkCount] = useState(0);
-  const [showNotes, setShowNotes] = useState(false);
+  // Notes pane mirrors PowerPoint's Normal view: visible under every slide
+  // until the user turns it off, and the choice sticks across sessions.
+  const [showNotes, setShowNotes] = useState<boolean>(() => {
+    try {
+      return (localStorage.getItem('pharmatrack:pptx-notes') ?? 'on') !== 'off';
+    } catch {
+      return true;
+    }
+  });
   const [zoomMenu, setZoomMenu] = useState(false);
   const [menu, setMenu] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -1414,8 +1476,19 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           )}
         </div>
         <button
-          onClick={() => setShowNotes((s) => !s)}
+          onClick={() =>
+            setShowNotes((s) => {
+              const next = !s;
+              try {
+                localStorage.setItem('pharmatrack:pptx-notes', next ? 'on' : 'off');
+              } catch {
+                /* private mode — the pane simply resets next session */
+              }
+              return next;
+            })
+          }
           title="Toggle speaker notes"
+          aria-pressed={showNotes}
           className={`${iconBtn} ${showNotes ? activeBtn : ''}`}
         >
           <StickyNote className="h-4 w-4" />
@@ -1580,16 +1653,22 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
               </p>
               {showNotes && currentSlide ? (
                 <div
-                  className="mt-3 w-full rounded-b-lg border border-t-0 border-slate-300 bg-white px-4 py-3 shadow-lg"
-                  style={{ width: deck.slideWidth * scale }}
+                  data-testid="pptx-notes-pane"
+                  className="mt-1 w-full overflow-y-auto rounded-lg border border-slate-300 bg-[#FBF9F4] px-4 py-3 text-left shadow-lg"
+                  style={{ width: deck.slideWidth * scale, maxHeight: '38vh' }}
                 >
-                  <p className="mb-1 text-[11px] font-black uppercase tracking-wider text-slate-400">
-                    Speaker notes
+                  <p className="mb-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-slate-400">
+                    Notes
                   </p>
                   {currentSlide.notes ? (
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{currentSlide.notes}</p>
+                    <p
+                      data-testid="pptx-notes-text"
+                      className="whitespace-pre-wrap text-[15px] leading-relaxed text-slate-700"
+                    >
+                      {currentSlide.notes}
+                    </p>
                   ) : (
-                    <p className="text-sm italic text-slate-400">No notes on this slide.</p>
+                    <p className="text-[15px] italic text-slate-400">No notes on this slide.</p>
                   )}
                 </div>
               ) : null}

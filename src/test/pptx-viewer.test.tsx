@@ -223,12 +223,16 @@ describe('PptxViewer', () => {
     expect(pageInput().value).toBe('3');
   });
 
-  it('toggles speaker notes', async () => {
+  it('shows speaker notes by default and toggles them off and on', async () => {
     mockFetchBlob(await buildDeck(DECK));
     render(<PptxViewer fileUrl="local:test-9" />);
     await waitFor(() => expect(pageInput().value).toBe('1'));
 
-    expect(screen.queryByText('Emphasise the beta blocker contraindication')).toBeNull();
+    // PowerPoint-style: the notes pane is visible under the slide on open.
+    expect(screen.getByTestId('pptx-notes-pane')).toBeTruthy();
+    expect(screen.getByText('Emphasise the beta blocker contraindication')).toBeTruthy();
+    fireEvent.click(screen.getByTitle('Toggle speaker notes'));
+    expect(screen.queryByTestId('pptx-notes-pane')).toBeNull();
     fireEvent.click(screen.getByTitle('Toggle speaker notes'));
     expect(screen.getByText('Emphasise the beta blocker contraindication')).toBeTruthy();
   });

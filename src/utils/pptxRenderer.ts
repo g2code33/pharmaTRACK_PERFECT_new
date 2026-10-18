@@ -474,9 +474,100 @@ function parseSpacingPt(pPr: Element, tag: string): number | undefined {
   return undefined;
 }
 
-/** a:buChar carries its glyph in char="•" (val= is not used by PowerPoint). */
+/**
+ * a:buChar carries its glyph in char="•" (val= is not used by PowerPoint).
+ *
+ * The raw glyph is normalised first: decks authored in PowerPoint commonly use
+ * Wingdings/Symbol bullet characters, which live in Unicode's private use
+ * area and render as tofu or unrelated letters in every real font. The map
+ * below covers the glyphs PowerPoint's bullet gallery actually produces;
+ * anything else from that range falls back to a plain bullet so a slide can
+ * never render with garbage in front of its text.
+ */
+const WINGDINGS_BULLETS: Record<number, string> = {
+  0x6c: '\u25CF', // l — filled circle
+  0x6d: '\u25A0', // m — filled square
+  0x6e: '\u25C6', // n — filled diamond
+  0x75: '\u25C6', // u — diamond
+  0x76: '\u27A2', // v — 3-D arrowhead (the classic PowerPoint sub-bullet)
+  0x77: '\u2794', // w — arrow
+  0x78: '\u27A2', // x — arrowhead
+  0x7a: '\u2726', // z — four-pointed star
+  0xa7: '\u25AA', // \u00A7 — small filled square
+  0xa8: '\u25A0', // \u00A8 — filled square
+  0xb4: '\u2022', // \u00B4
+  0xb7: '\u25CF', // \u00B7 — the classic Wingdings bullet
+  0xb8: '\u2756', // \u00B8 — diamond outline
+  0xb9: '\u25CB', // \u00B9 — circle outline
+  0xd8: '\u25BA', // \u00D8 — black right triangle
+  0xd9: '\u25C4', // \u00D9 — black left triangle
+  0xda: '\u25B2', // \u00DA — black up triangle
+  0xdb: '\u25BC', // \u00DB — black down triangle
+  0xe8: '\u25BA', // \u00E8 — right arrow
+  0xe9: '\u25C4', // \u00E9 — left arrow
+  0xea: '\u25B2', // \u00EA — up arrow
+  0xeb: '\u25BC', // \u00EB — down arrow
+  0xef: '\u2605', // \u00EF — star
+  0xf0: '\u2606', // \u00F0 — outline star
+  0xf1: '\u260E', // \u00F1 — telephone
+  0xf2: '\u270E', // \u00F2 — pencil
+  0xf3: '\u2702', // \u00F3 — scissors
+  0xf4: '\u261E', // \u00F4 — pointing hand
+  0xf5: '\u270B', // \u00F5
+  0xf6: '\u25CF', // \u00F6 — black circle
+  0xf7: '\u25AA', // \u00F7 — small square
+  0xf8: '\u2212', // \u00F8 — minus
+  0xf9: '\u25CB', // \u00F9 — white circle
+  0xfa: '\u25C4', // \u00FA
+  0xfb: '\u25CB', // \u00FB
+  0xfc: '\u2713', // \u00FC — check
+  0xfd: '\u2717', // \u00FD — cross
+  0xfe: '\u2717', // \u00FE — cross
+};
+
+/** Symbol-font bullets: mostly geometric/math shapes. */
+const SYMBOL_BULLETS: Record<number, string> = {
+  0xb7: '\u2022', // \u00B7 — bullet operator
+  0xa7: '\u25AA', // \u00A7
+  0xa8: '\u25AA', // \u00A8
+  0xd8: '\u25C6', // \u00D8 — lozenge
+  0xe5: '\u2794', // \u00E5 — right arrow
+  0xd2: '\u2194', // \u00D2 — left-right arrow
+  0xd5: '\u2195', // \u00D5 — up-down arrow
+  0xe9: '\u2713', // \u00E9 — check
+  0xf7: '\u29EB', // \u00F7 — lozenge
+  0xe6: '\u274F', // \u00E6 — white square
+  0x73: '\u25B2', // s — up triangle
+  0x74: '\u25BC', // t — down triangle
+  0x76: '\u25BA', // v — right triangle
+  0x75: '\u25C4', // u — left triangle
+};
+
+/**
+ * Normalises one bullet glyph for display. `font` is the a:buFont typeface
+ * ("Wingdings", "Symbol", ...); it decides which private-use map applies.
+ * Exported for tests.
+ */
+export function normalizeBulletGlyph(glyph: string, font?: string | null): string {
+  if (!glyph) return '\u2022';
+  const code = glyph.codePointAt(0) ?? 0;
+  // Private use area (Wingdings/Symbol shift their charset into
+  // U+F000\u2013U+F0FF): never show these raw \u2014 no real font draws them.
+  if (code >= 0xf000 && code <= 0xf0ff) {
+    const face = (font ?? '').toLowerCase();
+    const shifted = code - 0xf000;
+    return face.includes('symbol') ? SYMBOL_BULLETS[shifted] ?? '\u2022' : WINGDINGS_BULLETS[shifted] ?? '\u2022';
+  }
+  if (code < 0x20 || code === 0x7f) return '\u2022';
+  return glyph;
+}
+
 function bulletChar(el: Element): string {
-  return el.getAttribute('char') || el.getAttribute('val') || '•';
+  const raw = el.getAttribute('char') || el.getAttribute('val') || '\u2022';
+  // a:buFont (the bullet's font) sits alongside a:buChar inside a:pPr; when
+  // the glyph comes from Wingdings/Symbol it must be translated.
+  const buFont = el.parentElement ? child(el.parentElement, 'a:buFont')?.getAttribute('typeface') : null;
+  return normalizeBulletGlyph(raw, buFont);
 }
 
 function autoNumGlyph(type: string, n: number): string {
@@ -1534,9 +1625,28 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
     const notesFile = zip.file(notesPath);
     if (notesFile) {
       const notesDoc = new DOMParser().parseFromString(await notesFile.async('text'), 'text/xml');
-      const noteParas = Array.from(notesDoc.getElementsByTagName('a:p')).map((p) =>
-        Array.from(p.getElementsByTagName('a:t')).map((t) => t.textContent || '').join(''),
-      );
+      // PowerPoint's notes pane shows ONLY the notes placeholder's text. A
+      // notes slide can also carry other shapes (a mirrored copy of the slide
+      // text, slide-number boxes) which must not leak into the notes, so
+      // prefer the body-placeholder shape and fall back to every paragraph
+      // for minimal files that mark nothing.
+      const allNoteShapes = Array.from(notesDoc.getElementsByTagName('p:sp'));
+      const paragraphsOf = (sp: Element) =>
+        Array.from(sp.getElementsByTagName('a:p')).map((p) =>
+          Array.from(p.getElementsByTagName('a:t')).map((t) => t.textContent || '').join(''),
+        );
+      const notesBody = allNoteShapes.find((sp) => {
+        // Placeholders are <p:ph> in real files; a:ph is accepted defensively.
+        const ph = sp.getElementsByTagName('p:ph')[0] ?? sp.getElementsByTagName('a:ph')[0];
+        return ph?.getAttribute('type') === 'body';
+      });
+      const noteParas = notesBody
+        ? paragraphsOf(notesBody)
+        : allNoteShapes.length
+          ? allNoteShapes.flatMap(paragraphsOf)
+          : Array.from(notesDoc.getElementsByTagName('a:p')).map((p) =>
+              Array.from(p.getElementsByTagName('a:t')).map((t) => t.textContent || '').join(''),
+            );
       const lines = noteParas.map((t) => t.trim()).filter(Boolean);
       // PowerPoint repeats the slide number on the last note line.
       const last = lines[lines.length - 1];

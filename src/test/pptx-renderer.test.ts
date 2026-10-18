@@ -354,3 +354,119 @@ describe('pptx renderer — geometry', () => {
     await expect(renderPptx(new Blob(['this is not a zip file']))).rejects.toBeTruthy();
   });
 });
+
+describe('pptx renderer \u2014 bullet glyphs and notes scoping', () => {
+  it('translates Wingdings and Symbol bullet glyphs out of the private use area', async () => {
+    const { normalizeBulletGlyph } = await import('../utils/pptxRenderer');
+    // The classic Wingdings bullet (F0B7) and arrowhead (F076).
+    expect(normalizeBulletGlyph('\uF0B7', 'Wingdings')).toBe('\u25CF');
+    expect(normalizeBulletGlyph('\uF076', 'Wingdings')).toBe('\u27A2');
+    // The same private-use code point in Symbol space maps through Symbol.
+    expect(normalizeBulletGlyph('\uF0B7', 'Symbol')).toBe('\u2022');
+    // Unknown private-use characters fall back to a clean bullet, never tofu.
+    expect(normalizeBulletGlyph('\uF0FF', 'Wingdings')).toBe('\u2022');
+    expect(normalizeBulletGlyph('\uF061', 'Wingdings')).toBe('\u2022');
+    // Normal bullets pass through untouched.
+    expect(normalizeBulletGlyph('\u2022', 'Arial')).toBe('\u2022');
+    expect(normalizeBulletGlyph('-', 'Arial')).toBe('-');
+    expect(normalizeBulletGlyph('o', 'Arial')).toBe('o');
+    // Control characters are never shown as bullets.
+    expect(normalizeBulletGlyph('\u0000', 'Arial')).toBe('\u2022');
+  });
+
+  it('renders Wingdings buChar bullets as clean glyphs in parsed paragraphs', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+         <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+         <p:sldSz cx="9144000" cy="6858000"/>
+       </p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    // The bullet glyph is the Wingdings F0B7 character, written as an XML
+    // numeric character reference exactly like the byte-level original.
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}"><p:cSld><p:spTree>
+         <p:sp>
+           <p:nvSpPr><p:cNvPr id="2" name="Body 1"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+           <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="7315200" cy="2743200"/></a:xfrm></p:spPr>
+           <p:txBody>
+             <a:p>
+               <a:pPr>
+                 <a:buFont typeface="Wingdings"/>
+                 <a:buChar char="&#xF0B7;"/>
+               </a:pPr>
+               <a:r><a:t>Wingdings bullet line</a:t></a:r>
+             </a:p>
+           </p:txBody>
+         </p:sp>
+       </p:spTree></p:cSld></p:sld>`,
+    );
+    const deck = await renderPptx((await zip.generateAsync({ type: 'blob' })) as Blob);
+    const body = deck.slides[0].shapes.find((s) => s.type === 'text');
+    const para = body?.text?.paragraphs[0];
+    expect(para?.bullet).toBe('\u25CF');
+    deck.dispose();
+  });
+
+  it('scopes notes to the body placeholder when the notes slide mirrors slide text', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+         <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+         <p:sldSz cx="9144000" cy="6858000"/>
+       </p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<p:sld xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree>
+         <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+           <p:txBody><a:p><a:r><a:t>Slide title</a:t></a:r></a:p></p:txBody></p:sp>
+       </p:spTree></p:cSld></p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${NOTES_REL}" Target="../notesSlides/notesSlide1.xml"/>
+       </Relationships>`,
+    );
+    // A notes slide the way PowerPoint writes it: the notes live in the body
+    // placeholder; some exporters also mirror the slide's own text into a
+    // separate shape, which the notes pane must NOT show.
+    zip.file(
+      'ppt/notesSlides/notesSlide1.xml',
+      `<p:notes xmlns:p="${P}" xmlns:a="${A}">
+         <p:cSld><p:spTree>
+           <p:sp>
+             <p:nvSpPr><p:cNvPr id="3" name="Notes Placeholder"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+             <p:txBody>
+               <a:p><a:r><a:t>Actual speaker note line one</a:t></a:r></a:p>
+               <a:p><a:r><a:t>Actual speaker note line two</a:t></a:r></a:p>
+             </p:txBody>
+           </p:sp>
+           <p:sp>
+             <p:nvSpPr><p:cNvPr id="4" name="Mirror of slide text"/><p:nvPr/></p:nvSpPr>
+             <p:txBody><a:p><a:r><a:t>Slide title</a:t></a:r></a:p></p:txBody>
+           </p:sp>
+         </p:spTree></p:cSld>
+       </p:notes>`,
+    );
+    const deck = await renderPptx((await zip.generateAsync({ type: 'blob' })) as Blob);
+    expect(deck.slides[0].notes).toBe('Actual speaker note line one\nActual speaker note line two');
+    deck.dispose();
+  });
+});
