@@ -445,3 +445,62 @@ describe('PptxViewer with real PowerPoint structure', () => {
     expect(css).toContain('background-size: cover');
   });
 });
+
+describe('PptxViewer — bullet rendering regressions', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * The bullet separator must be a real non-breaking space. It was once the
+   * bare JSX text `\u00A0`, which React renders as the six literal characters
+   * "backslash u 0 0 A 0" after every bullet — the garbage prefix that made
+   * every bulleted line on the user's lecture decks unreadable.
+   */
+  it('renders a Wingdings bullet as a clean glyph followed by a real NBSP', async () => {
+    const slide = `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}">
+  <p:cSld><p:spTree>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+      <p:txBody>
+        <a:lstStyle>
+          <a:lvl1pPr marL="285750" indent="-285750">
+            <a:buFont typeface="Wingdings"/>
+            <a:buChar char="&#xF0B7;"/>
+            <a:defRPr><a:latin typeface="Symbol"/></a:defRPr>
+          </a:lvl1pPr>
+        </a:lstStyle>
+        <a:p><a:r><a:t>First run inherits the level</a:t></a:r></a:p>
+      </p:txBody>
+    </p:sp>
+  </p:spTree></p:cSld>
+</p:sld>`;
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', slide);
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+    render(<PptxViewer fileUrl="local:bullets" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    const stage = screen.getByTestId('pptx-stage');
+    // Nothing anywhere renders the literal escape sequence.
+    const allText = Array.from(stage.querySelectorAll('*')).map((el) => el.textContent || '');
+    for (const t of allText) expect(t).not.toContain('\\u00A0');
+
+    // The bullet span holds exactly: translated Wingdings F0B7 + NBSP.
+    const bulletSpan = stage.querySelector('span[aria-hidden="true"]') as HTMLElement;
+    expect(bulletSpan).toBeTruthy();
+    expect(bulletSpan.textContent).toBe('\u25CF\u00A0');
+
+    // The level's Symbol font (the bullet's font) never reaches text runs.
+    const runSpan = Array.from(stage.querySelectorAll('span')).find(
+      (el) => el.textContent === 'First run inherits the level',
+    ) as HTMLElement;
+    expect(runSpan).toBeTruthy();
+    expect((runSpan.style.fontFamily || '').toLowerCase()).not.toContain('symbol');
+  });
+});

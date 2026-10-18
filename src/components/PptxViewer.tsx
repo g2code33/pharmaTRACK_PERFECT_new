@@ -4,7 +4,7 @@ import {
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
   PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
+import { isSymbolBulletFont, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
 import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
@@ -221,24 +221,41 @@ const ParagraphView = memo(function ParagraphView({
   return (
     <div style={style} className={bullet ? 'flex items-start' : ''}>
       {bullet ? (
-        <span aria-hidden className="shrink-0 w-[1.4em] text-left whitespace-pre">{bullet}\u00A0</span>
+        // The trailing separator MUST be a real non-breaking space inside a
+        // JS string. As bare JSX text, "\u00A0" renders as the six literal
+        // characters backslash-u-0-0-A-0 after every bullet — the garbage
+        // prefix that made every bullet line unreadable.
+        <span aria-hidden className="shrink-0 w-[1.4em] text-left whitespace-pre">{bullet}{'\u00A0'}</span>
       ) : null}
       <span className="min-w-0 whitespace-pre-wrap break-words">
-        {p.runs.map((r, i) => (
-          <span
-            key={i}
-            style={{
-              fontSize: r.sizePt ? ptToPx(r.sizePt * fontScale) : undefined,
-              fontWeight: r.bold ?? level?.bold ? 700 : undefined,
-              fontStyle: r.italic ?? level?.italic ? 'italic' : undefined,
-              textDecoration: r.underline ? 'underline' : undefined,
-              color: r.color ?? level?.color,
-              fontFamily: r.font ?? level?.font,
-            }}
-          >
-            {r.text}
-          </span>
-        ))}
+        {p.runs.map((r, i) => {
+          // A symbol font (Wingdings/Symbol/…) on the LEVEL is the bullet's
+          // font, not a text font — PowerPoint never applies it to runs, and
+          // inheriting it garbles text ('I' draws as ∫, 'o' as ⊙). Runs that
+          // explicitly carry a symbol font are typed-bullet runs: their PUA
+          // characters are translated to real glyphs and the words render in
+          // the normal stack, matching PowerPoint's per-glyph fallback.
+          const symbolRun = isSymbolBulletFont(r.font) || (!r.font && isSymbolBulletFont(level?.font));
+          const text = symbolRun
+            ? Array.from(r.text).map((ch) => normalizeBulletGlyph(ch, r.font ?? level?.font)).join('')
+            : r.text;
+          const fontFamily = symbolRun ? undefined : r.font ?? (isSymbolBulletFont(level?.font) ? undefined : level?.font);
+          return (
+            <span
+              key={i}
+              style={{
+                fontSize: r.sizePt ? ptToPx(r.sizePt * fontScale) : undefined,
+                fontWeight: r.bold ?? level?.bold ? 700 : undefined,
+                fontStyle: r.italic ?? level?.italic ? 'italic' : undefined,
+                textDecoration: r.underline ? 'underline' : undefined,
+                color: r.color ?? level?.color,
+                fontFamily,
+              }}
+            >
+              {text}
+            </span>
+          );
+        })}
       </span>
     </div>
   );
@@ -405,14 +422,18 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
  * overflow" behaviour, applied live.
  *
  * Decks are routinely authored so text slightly (or heavily) overflows a
- * frame; PowerPoint recomputes the shrink every time it renders, and saves
+ * frame; PowerPoint recomputes the shrink every time it renders and saves
  * only an approximation, so a static renderer that trusts the file clips the
  * last lines (the "'Therapeutic Objective: To p…' cut off at the slide
- * bottom" bug). After layout, this measures the real overflow and steps the
- * whole block down via CSS `zoom` — which, unlike `transform: scale`,
- * reflows the text — until it fits. Anchors stay honoured because the box is
- * simultaneously widened so the zoomed result still fills the frame.
- * Never enlarges (zoom > 1) and never goes below half size.
+ * bottom" bug). After layout, this measures the real overflow and scales the
+ * block down until it fits.
+ *
+ * Scaling uses CSS `transform: scale`, never `zoom`: zoom re-rasterises text
+ * at the wrong device scale on WebKitGTK and comes out blurry, while a
+ * transform is applied crisply to the already-laid-out glyphs. The trade-off
+ * is that transform does not reflow, so the block's width is compensated
+ * (100/s %) to keep the visual width constant, and the transform origin
+ * follows the text anchor. Never enlarges, floors at ~60%.
  */
 const AutoFitText = memo(function AutoFitText({
   anchor,
@@ -428,29 +449,32 @@ const AutoFitText = memo(function AutoFitText({
     if (!el || typeof el.scrollHeight !== 'number') return;
     // Always start from the natural size so re-layouts (slide switches,
     // find-highlight re-renders) re-measure instead of compounding shrinks.
-    el.style.zoom = '';
+    el.style.transform = '';
     el.style.width = '';
     let s = 1;
     for (let i = 0; i < 4; i++) {
       const oy = el.scrollHeight - el.clientHeight;
       const ox = el.scrollWidth - el.clientWidth;
-      if (oy <= 2 && ox <= 2) break;
+      // Tolerate a few pixels: PowerPoint does not shrink hairline overflow,
+      // and this avoids any scaling for boxes that fit.
+      if (oy <= Math.max(4, el.clientHeight * 0.04) && ox <= 2) break;
       const next = s * Math.max(0.6, Math.min(0.92, Math.min(
         el.clientHeight / Math.max(el.scrollHeight, 1),
         el.clientWidth / Math.max(el.scrollWidth, 1),
       )));
-      s = Math.max(0.5, Math.min(s, next));
-      el.style.zoom = String(s);
+      s = Math.max(0.55, Math.min(s, next));
+      el.style.transform = `scale(${s})`;
       el.style.width = `${100 / s}%`;
-      if (s <= 0.5) break;
+      if (s <= 0.55) break;
     }
   });
 
+  const origin = anchor === 'ctr' ? 'center top' : anchor === 'b' ? 'center bottom' : 'top left';
   return (
     <div
       ref={wrapRef}
       className={`h-full flex flex-col ${anchor === 'ctr' ? 'justify-center' : anchor === 'b' ? 'justify-end' : 'justify-start'}`}
-      style={{ padding: '5px 9px' }}
+      style={{ padding: '5px 9px', transformOrigin: origin }}
     >
       {children}
     </div>
@@ -768,8 +792,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     const sh = deck.slideHeight;
     if (w < 10 || h < 10) return 1;
     if (zoom.mode === 'fitWidth') return clampZoom((w - 16) / sw);
-    return clampZoom(Math.min((w - 24) / sw, (h - 24) / sh));
-  }, [deck, zoom, containerSize]);
+    // PowerPoint's Normal view shows slide + notes in one window. When the
+    // notes pane is open, fit-screen reserves its space so both are visible
+    // without scrolling — the slide sits on top, the notes right beneath.
+    const notesReserve = showNotes ? Math.min(280, Math.max(150, h * 0.3)) : 0;
+    return clampZoom(Math.min((w - 24) / sw, (h - 24 - notesReserve) / sh));
+  }, [deck, zoom, containerSize, showNotes]);
 
   const currentScaleRef = useRef(1);
   currentScaleRef.current = scale;

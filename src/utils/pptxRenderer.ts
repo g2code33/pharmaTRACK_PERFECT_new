@@ -544,6 +544,22 @@ const SYMBOL_BULLETS: Record<number, string> = {
 };
 
 /**
+ * Fonts whose glyph tables are symbol/picture encodings rather than text
+ * alphabets. PowerPoint uses them for BULLET characters (via a:buFont and the
+ * master's level defaults) and NEVER applies them to text runs — but the
+ * level default carries the font in its defRPr, so a naive inheritance
+ * renders the first run of every paragraph through the symbol table (the
+ * "S\u@@AOabsorption" garbling on real lecture decks: 'I' draws as ∫, 'n' as
+ * ↑, 'v' as ∨, 'o' as ⊙ …). Exported for tests.
+ */
+const SYMBOL_BULLET_FONTS =
+  /^(wingdings|webdings|symbol|monotype sorts|mt extra|zapfdingbats|dingbats|marlett|bookshelf symbol|ms reference specialty|ms outlook)/i;
+
+export function isSymbolBulletFont(face?: string | null): boolean {
+  return Boolean(face) && SYMBOL_BULLET_FONTS.test(face!.trim());
+}
+
+/**
  * Normalises one bullet glyph for display. `font` is the a:buFont typeface
  * ("Wingdings", "Symbol", ...); it decides which private-use map applies.
  * Exported for tests.
