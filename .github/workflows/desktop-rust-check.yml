@@ -54,7 +54,21 @@ jobs:
 
       - name: Compile the desktop shell
         working-directory: src-tauri
-        run: cargo check --locked --all-targets
+        run: |
+          set -o pipefail
+          if ! cargo check --locked --all-targets 2>&1 | tee /tmp/cargo-check.log; then
+            # The runner does not install a rustc problem matcher, so compiler
+            # errors would only live in a log this branch cannot always read.
+            # Republish every error line with context as a check annotation.
+            python3 - <<'EOF'
+          lines = open('/tmp/cargo-check.log', errors='replace').read().splitlines()
+          errs = [' | '.join(lines[i:i+6]) for i, l in enumerate(lines) if l.startswith('error')]
+          for e in errs[:25]:
+              print('::error::' + e.replace('%', '%25').replace('\r', '%0D'))
+          print(f'::error::cargo check failed with {len(errs)} error line(s)')
+          EOF
+            exit 1
+          fi
 
       - name: Run desktop unit tests
         working-directory: src-tauri
