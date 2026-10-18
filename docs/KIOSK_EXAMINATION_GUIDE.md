@@ -36,6 +36,25 @@ must be supervised, timed centrally, or recovered across devices.
 - **A published exam**: a signed, immutable `.pharmaexam` package from the
   Examination Builder.
 
+### The admin console is password-locked
+
+Students run the same app as the invigilator, so the Admin Examination
+Control Center asks for the **administrator password** before it shows
+anything — sessions, results, and submitted work stay completely hidden
+behind the lock screen. Unlocking applies to that tab only; a new tab always
+starts locked, and **Lock console now** re-arms it instantly when you step
+away.
+
+- The console ships with the initial password and the **phantom PIN**
+  (the second secret) seeded from `src/examination/adminGate.ts`. **Change
+  both on first setup**: *Administrator access → Change console password*
+  requires the current password *and* the phantom PIN.
+- Only salted SHA-256 hashes are ever stored on the device — neither secret
+  is kept in plaintext, and a change re-salts the record immediately.
+- This gate protects the local console UI. The LAN authority itself has
+  always exposed no admin routes, so students cannot control an exam from
+  their devices regardless.
+
 ### Keep the host's address stable (recommended)
 
 Routers may hand the invigilator machine a different IP after every restart.

@@ -21,6 +21,13 @@ import { ExaminationHighAvailability, type AuthorityStatusView } from '../examin
 import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
 import { LanExamClient } from '../examination/network';
 import {
+  changeAdminPassword,
+  isAdminGateUnlocked,
+  lockAdminGate,
+  markAdminGateUnlocked,
+  verifyAdminPassword,
+} from '../examination/adminGate';
+import {
   createLanServerConfig,
   detectLanHost,
   isNativeLanServerAvailable,
@@ -63,6 +70,16 @@ const ExaminationAdmin: React.FC = () => {
   const [openEnrollment, setOpenEnrollment] = useState(false);
   const [lanImportMessage, setLanImportMessage] = useState('');
   const [reviewResultId, setReviewResultId] = useState('');
+  // Console password gate: students run the same app, so the admin console
+  // renders nothing until the device's stored password is presented.
+  const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
+  const [gatePassword, setGatePassword] = useState('');
+  const [gateError, setGateError] = useState('');
+  const [changeCurrent, setChangeCurrent] = useState('');
+  const [changeNext, setChangeNext] = useState('');
+  const [changeConfirm, setChangeConfirm] = useState('');
+  const [changePhantom, setChangePhantom] = useState('');
+  const [changeMessage, setChangeMessage] = useState('');
   /** Stable for the page's life: the real TCP server only exists in the app. */
   const nativeHostAvailable = isNativeLanServerAvailable();
 
@@ -82,6 +99,36 @@ const ExaminationAdmin: React.FC = () => {
   }, []);
   const [lanToken, setLanToken] = useState('');
   const [selectedForRelease, setSelectedForRelease] = useState<Set<string>>(new Set());
+
+  /**
+   * Registers this device as the ADMIN device session so every control the
+   * invigilator touches is audit-logged. The password gate decides whether
+   * this runs at all; the registration itself is the audit hook, not the
+   * security boundary.
+   */
+  const authenticateAdmin = useCallback(async () => {
+    const opened = await ExaminationRepository.open();
+    const existing = opened.snapshot.deviceSessions.find(
+      (device) =>
+        device.deviceId === adminDevice && device.role === 'ADMIN' && device.status === 'CONNECTED',
+    );
+    if (existing) {
+      setAdminAuthenticated(true);
+      setRepository(opened);
+      setMessage('Authorized administrator device session restored.');
+      return;
+    }
+    await opened.createDeviceSession({
+      deviceId: adminDevice,
+      role: 'ADMIN',
+      capabilities: ['authority-control', 'live-dashboard', 'failover-review'],
+    });
+    setAdminAuthenticated(true);
+    setRepository(opened);
+    setMessage(
+      'Administrator device session authorized locally; all controls are now audit logged.',
+    );
+  }, [adminDevice]);
 
   const refresh = useCallback(async () => {
     let opened = await ExaminationRepository.open();
@@ -147,10 +194,17 @@ const ExaminationAdmin: React.FC = () => {
   }, [selectedAttemptId, selectedSessionId]);
 
   useEffect(() => {
+    if (!gateUnlocked) return;
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, gateUnlocked]);
+
+  // A tab that is already unlocked (reload in the same tab) re-registers the
+  // admin device session without asking for the password again.
+  useEffect(() => {
+    if (gateUnlocked && !adminAuthenticated) void authenticateAdmin();
+  }, [gateUnlocked, adminAuthenticated, authenticateAdmin]);
 
   const selected = attempts.find((attempt) => attempt.id === selectedAttemptId) || null;
   const selectedStudent = repository?.snapshot.students.find(
@@ -191,30 +245,6 @@ const ExaminationAdmin: React.FC = () => {
         type: 'ADD_QUIZ_HISTORY',
         payload: examinationResultToQuizHistory(result, version),
       });
-  };
-
-  const authenticateAdmin = async () => {
-    const opened = await ExaminationRepository.open();
-    const existing = opened.snapshot.deviceSessions.find(
-      (device) =>
-        device.deviceId === adminDevice && device.role === 'ADMIN' && device.status === 'CONNECTED',
-    );
-    if (existing) {
-      setAdminAuthenticated(true);
-      setRepository(opened);
-      setMessage('Authorized administrator device session restored.');
-      return;
-    }
-    await opened.createDeviceSession({
-      deviceId: adminDevice,
-      role: 'ADMIN',
-      capabilities: ['authority-control', 'live-dashboard', 'failover-review'],
-    });
-    setAdminAuthenticated(true);
-    setRepository(opened);
-    setMessage(
-      'Administrator device session authorized locally; all controls are now audit logged.',
-    );
   };
 
   const action = async (attempt: StudentAttempt, kind: Action) => {
@@ -417,14 +447,64 @@ const ExaminationAdmin: React.FC = () => {
     }
   };
 
+  /** Password gate: unlock this tab's admin console. */
+  const unlockAdminGate = async () => {
+    setGateError('');
+    if (await verifyAdminPassword(gatePassword)) {
+      markAdminGateUnlocked();
+      setGateUnlocked(true);
+      setGatePassword('');
+    } else {
+      setGateError('Incorrect administrator password.');
+    }
+  };
+
+  /** Step away from the console: lock it now instead of waiting for the tab. */
+  const lockConsoleNow = () => {
+    lockAdminGate();
+    setGateUnlocked(false);
+    setAdminAuthenticated(false);
+    setGatePassword('');
+    setChangeCurrent('');
+    setChangeNext('');
+    setChangeConfirm('');
+    setChangePhantom('');
+    setChangeMessage('');
+  };
+
+  /** Change the console password — requires the current password and the
+   *  phantom PIN configured at setup; nothing is stored in plaintext. */
+  const performChangePassword = async () => {
+    setChangeMessage('');
+    if (changeNext !== changeConfirm) {
+      setChangeMessage('The new password and its confirmation do not match.');
+      return;
+    }
+    const result = await changeAdminPassword(changeCurrent, changeNext, changePhantom);
+    if (result.ok) {
+      setChangeMessage(
+        'Administrator password changed. The console now unlocks with the new password.',
+      );
+      setChangeCurrent('');
+      setChangeNext('');
+      setChangeConfirm('');
+      setChangePhantom('');
+    } else if (result.error === 'wrong-password') {
+      setChangeMessage('The current password is incorrect — nothing was changed.');
+    } else if (result.error === 'wrong-phantom-pin') {
+      setChangeMessage('The phantom PIN is incorrect — the password was not changed.');
+    } else {
+      setChangeMessage('The new password must be at least 8 characters.');
+    }
+  };
+
   /**
    * Pull the authority's authoritative view of this session on demand. The
    * 5-second refresh already does this while the authority runs; the button
    * exists so the invigilator can force a pull (and see any error verbatim)
    * instead of wondering whether the table is current.
    */
-  const importFromAuthority = async () => {
-    if (!session) return;
+  const importFromAuthority = async () => {    if (!session) return;
     setBusy(true);
     setLanImportMessage('');
     try {
@@ -520,6 +600,62 @@ const ExaminationAdmin: React.FC = () => {
       setBusy(false);
     }
   };
+
+  // Not unlocked: render ONLY the lock screen. No sessions, no results, no
+  // student data — a student who navigates here sees nothing but the prompt.
+  if (!gateUnlocked) {
+    return (
+      <div className="max-w-md mx-auto mt-16 space-y-4" data-testid="admin-gate-locked">
+        <div className="rounded-2xl bg-gradient-to-r from-slate-950 to-[#1B4332] text-white p-6">
+          <p className="text-xs uppercase tracking-widest text-emerald-300 font-black">
+            Examination Authority
+          </p>
+          <h1 className="text-2xl font-black">Admin Examination Control Center</h1>
+          <p className="text-white/70 mt-2 text-sm">
+            This console is password-protected. Students cannot open it — enter the
+            administrator password to continue.
+          </p>
+        </div>
+        <form
+          className="bg-white border rounded-2xl p-6 space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlockAdminGate();
+          }}
+        >
+          <label className="block text-sm font-black">
+            Administrator password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={gatePassword}
+              onChange={(event) => setGatePassword(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              placeholder="Console password"
+              data-testid="admin-gate-password"
+            />
+          </label>
+          {gateError && (
+            <p className="text-sm font-bold text-red-700" data-testid="admin-gate-error">
+              {gateError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy || !gatePassword}
+            className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
+            data-testid="admin-gate-unlock"
+          >
+            Unlock console
+          </button>
+          <p className="text-xs text-slate-500">
+            The password is stored only as a salted hash on this device. Unlocking applies to
+            this tab only; a new tab always starts locked.
+          </p>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
@@ -1346,6 +1482,96 @@ const ExaminationAdmin: React.FC = () => {
             className="mt-1 w-full rounded-lg border px-3 py-2"
           />
         </label>
+      </section>
+
+      {/* Administrator access: change the console password (requires the
+          phantom PIN) and lock the console when stepping away. */}
+      <section className="bg-white border rounded-2xl p-5 space-y-4" data-testid="admin-password-change">
+        <div className="flex flex-wrap justify-between items-center gap-2">
+          <div>
+            <h2 className="text-xl font-black">Administrator access</h2>
+            <p className="text-sm text-slate-500">
+              The console password keeps students out of this screen. Changing it requires the
+              phantom PIN configured at setup; both are stored only as salted hashes on this
+              device.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={lockConsoleNow}
+            className="rounded-lg bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 font-black"
+            data-testid="admin-lock-now"
+          >
+            Lock console now
+          </button>
+        </div>
+        <form
+          className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void performChangePassword();
+          }}
+        >
+          <label className="text-sm font-bold">
+            Current password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={changeCurrent}
+              onChange={(event) => setChangeCurrent(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-current"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            New password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={changeNext}
+              onChange={(event) => setChangeNext(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-next"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Confirm new password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={changeConfirm}
+              onChange={(event) => setChangeConfirm(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-confirm"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Phantom PIN (authorises the change)
+            <input
+              type="password"
+              autoComplete="off"
+              value={changePhantom}
+              onChange={(event) => setChangePhantom(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-phantom"
+            />
+          </label>
+          <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              disabled={busy || !changeCurrent || !changeNext || !changeConfirm || !changePhantom}
+              className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
+              data-testid="admin-change-submit"
+            >
+              Change console password
+            </button>
+            {changeMessage && (
+              <p className="text-sm font-bold" data-testid="admin-change-message">
+                {changeMessage}
+              </p>
+            )}
+          </div>
+        </form>
       </section>
       {message && <p className="rounded-lg bg-slate-100 p-3 font-semibold">{message}</p>}
     </div>

@@ -290,15 +290,62 @@ export class ExaminationRepository {
     return JSON.parse(JSON.stringify(this.state)) as ExaminationState;
   }
 
+  /**
+   * Every persisted write goes through one global chain. Repositories are
+   * opened per operation (there is no singleton), so without this, two
+   * instances encrypting their whole-state blobs concurrently could complete
+   * out of call order — the earlier caller's state silently winning and
+   * erasing whatever the later one had written.
+   */
+  private static writeChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Set only on the private repository handed to {@link exclusively}, whose
+   * save() must not re-join the chain it is already running inside.
+   */
+  private directWrite = false;
+
+  /**
+   * Runs an operation on a freshly loaded repository while no other write is
+   * in flight. This is how small appends (authority records, leases,
+   * replication snapshots) must be persisted: long-lived repository views —
+   * e.g. a high-availability coordinator created at page load — must never
+   * write their whole (stale) state blob, or they clobber concurrent updates
+   * such as a session's authority binding.
+   *
+   * The operation must not itself call {@link exclusively} (directly or via
+   * saveAuthorityRecord / saveAuthorityLease / saveReplicationSnapshot) —
+   * that would queue behind itself and deadlock.
+   */
+  static exclusively<T>(
+    operation: (repository: ExaminationRepository) => Promise<T>,
+  ): Promise<T> {
+    const run = ExaminationRepository.writeChain.then(async () => {
+      const repository = new ExaminationRepository(await loadExaminationState());
+      repository.directWrite = true;
+      return operation(repository);
+    });
+    ExaminationRepository.writeChain = run.catch(() => undefined);
+    return run;
+  }
+
   async save(): Promise<boolean> {
     if (this.savePromise) return this.savePromise;
-    this.savePromise = Promise.resolve().then(async () => {
+    const write = async (): Promise<boolean> => {
       try {
         return await saveExaminationState(this.state);
       } finally {
         this.savePromise = null;
       }
-    });
+    };
+    if (this.directWrite) {
+      this.savePromise = write();
+      return this.savePromise;
+    }
+    // Serialized: this save is applied after every save queued before it,
+    // and before every save queued after it.
+    this.savePromise = ExaminationRepository.writeChain.then(write, write);
+    ExaminationRepository.writeChain = this.savePromise.catch(() => undefined);
     return this.savePromise;
   }
 
@@ -1547,22 +1594,43 @@ export class ExaminationRepository {
   }
 
   async saveAuthorityRecord(record: ExamAuthorityRecord): Promise<void> {
+    // Keep this (possibly long-lived) view in sync for its own later reads…
     const index = this.state.authorities.findIndex((item) => item.serverId === record.serverId);
     if (index >= 0) this.state.authorities[index] = { ...this.state.authorities[index], ...record };
     else this.state.authorities.push(record);
-    await this.save();
+    // …but persist as a fresh-load append so no stale whole-state blob is
+    // ever written (see exclusively()).
+    await ExaminationRepository.exclusively(async (repository) => {
+      const latest = repository.state.authorities.findIndex(
+        (item) => item.serverId === record.serverId,
+      );
+      if (latest >= 0)
+        repository.state.authorities[latest] = { ...repository.state.authorities[latest], ...record };
+      else repository.state.authorities.push(record);
+      await repository.save();
+    });
   }
 
   async saveAuthorityLease(lease: ExamAuthorityLeaseRecord): Promise<void> {
     const index = this.state.authorityLeases.findIndex((item) => item.leaseId === lease.leaseId);
     if (index >= 0) this.state.authorityLeases[index] = lease;
     else this.state.authorityLeases.push(lease);
-    await this.save();
+    await ExaminationRepository.exclusively(async (repository) => {
+      const latest = repository.state.authorityLeases.findIndex(
+        (item) => item.leaseId === lease.leaseId,
+      );
+      if (latest >= 0) repository.state.authorityLeases[latest] = lease;
+      else repository.state.authorityLeases.push(lease);
+      await repository.save();
+    });
   }
 
   async saveReplicationSnapshot(snapshot: ExamReplicationSnapshot): Promise<void> {
     this.state.replicationSnapshots.push(snapshot);
-    await this.save();
+    await ExaminationRepository.exclusively(async (repository) => {
+      repository.state.replicationSnapshots.push(snapshot);
+      await repository.save();
+    });
   }
 
   /**

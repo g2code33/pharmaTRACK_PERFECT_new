@@ -187,12 +187,16 @@ function open() {
 
 beforeEach(() => {
   idbStore.clear();
+  // These tests exercise console features, not the password gate — start
+  // each one from an already-unlocked admin tab (sessionStorage flag).
+  sessionStorage.setItem('pharmatrack:admin-gate-unlocked', '1');
   lanMocks.native = true;
   lanMocks.running = false;
 });
 
 afterEach(() => {
   idbStore.clear();
+  sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
