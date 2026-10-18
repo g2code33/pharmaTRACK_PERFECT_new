@@ -294,6 +294,8 @@ export function createBrowserKioskAdapter(
       prevent(event, 'ATTEMPTED_PRINT', 'Printing was attempted in secure examination.');
     const onContext = (event: MouseEvent) =>
       prevent(event, 'ATTEMPTED_COPY_PASTE', 'Context menu was attempted in secure examination.');
+    const onDragStart = (event: DragEvent) =>
+      prevent(event, 'ATTEMPTED_COPY_PASTE', 'Dragging content out of the examination was attempted.');
     const onKey = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       const modifier = event.ctrlKey || event.metaKey;
@@ -310,13 +312,22 @@ export function createBrowserKioskAdapter(
       if (
         restrictions.developerTools &&
         (key === 'f12' || (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(key)))
-      )
+      ) {
+        // The shortcut is both cancelled AND reported. Cancelling keydown
+        // blocks the Ctrl+Shift+I/J/C chord outright in Chromium WebViews;
+        // F12 itself is reserved by some browsers and cannot be cancelled
+        // there, so the violation is still recorded for the audit trail —
+        // and the native kiosk (no devtools in production builds) remains the
+        // real boundary.
+        event.preventDefault();
+        event.stopPropagation();
         onViolation({
           violation: 'DEVELOPER_TOOL_ATTEMPT',
           detail:
-            'A developer-tools shortcut was attempted; browser enforcement is not guaranteed.',
-          prevented: false,
+            'A developer-tools shortcut was attempted and cancelled; OS-level tools remain outside browser reach.',
+          prevented: true,
         });
+      }
       if (restrictions.exit && key === 'escape')
         onViolation({
           violation: 'ATTEMPTED_EXIT',
@@ -448,6 +459,7 @@ export function createBrowserKioskAdapter(
       document.addEventListener('cut', onCopy);
       document.addEventListener('paste', onCopy);
       document.addEventListener('contextmenu', onContext);
+    document.addEventListener('dragstart', onDragStart);
     }
     if (restrictions.copyPaste || restrictions.printing || restrictions.developerTools || restrictions.exit)
       document.addEventListener('keydown', onKey, true);
@@ -482,6 +494,7 @@ export function createBrowserKioskAdapter(
         document.removeEventListener('cut', onCopy);
         document.removeEventListener('paste', onCopy);
         document.removeEventListener('contextmenu', onContext);
+        document.removeEventListener('dragstart', onDragStart);
       }
       if (restrictions.copyPaste || restrictions.printing || restrictions.developerTools || restrictions.exit)
         document.removeEventListener('keydown', onKey, true);

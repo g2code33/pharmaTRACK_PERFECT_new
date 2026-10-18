@@ -677,6 +677,84 @@ fn detect_lan_host() -> Option<String> {
     Some(ip.to_string())
 }
 
+/// A discovered examination authority on this LAN, as reported by its UDP
+/// discovery responder. `session_token` is present only when the invigilator
+/// enabled open enrollment for this session.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanDiscoveredAuthority {
+    pub endpoint: String,
+    pub session_id: String,
+    pub exam_version_id: String,
+    pub server_id: String,
+    pub authority_id: String,
+    pub authority_epoch: u64,
+    pub open_enrollment: bool,
+    pub session_token: Option<String>,
+}
+
+/// Zero-config discovery for student devices: broadcast the exam discovery
+/// probe on the LAN and collect every authority that answers within the
+/// timeout. This is what removes "type the invigilator's IP" from the student
+/// experience — the router may hand the host a different address every day,
+/// but the broadcast finds it wherever it is.
+#[tauri::command]
+fn discover_lan_exam_servers(timeout_ms: Option<u64>) -> Result<Vec<LanDiscoveredAuthority>, String> {
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(900).clamp(100, 3000));
+    let socket = std::net::UdpSocket::bind(("0.0.0.0", 0))
+        .map_err(|error| format!("Could not open discovery socket: {error}"))?;
+    socket
+        .set_broadcast(true)
+        .map_err(|error| format!("Could not enable discovery broadcast: {error}"))?;
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
+
+    // The authority's discovery responder listens on its HTTP port + 1; the
+    // admin UI only ever starts the default port (8787), so 8788 is probed.
+    let _ = socket.send_to(b"PHARMATRACK_EXAM_DISCOVER", ("255.255.255.255", 8788));
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut found: Vec<LanDiscoveredAuthority> = Vec::new();
+    let mut buffer = [0_u8; 2048];
+    while std::time::Instant::now() < deadline {
+        let Ok((size, _source)) = socket.recv_from(&mut buffer) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&buffer[..size]) else {
+            continue;
+        };
+        let endpoint = value
+            .get("endpoint")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if endpoint.is_empty() || found.iter().any(|item| item.endpoint == endpoint) {
+            continue;
+        }
+        let open_enrollment = value
+            .get("openEnrollment")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        found.push(LanDiscoveredAuthority {
+            endpoint,
+            session_id: value.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            exam_version_id: value.get("examVersionId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            server_id: value.get("serverId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            authority_id: value.get("authorityId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            authority_epoch: value.get("authorityEpoch").and_then(Value::as_u64).unwrap_or(0),
+            open_enrollment,
+            session_token: if open_enrollment {
+                value
+                    .get("sessionToken")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            } else {
+                None
+            },
+        });
+    }
+    Ok(found)
+}
+
 #[tauri::command]
 fn start_lan_exam_server(
     app: tauri::AppHandle,
@@ -1271,6 +1349,7 @@ fn main() {
             load_material_file_chunk,
             delete_material_file,
             detect_lan_host,
+            discover_lan_exam_servers,
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status

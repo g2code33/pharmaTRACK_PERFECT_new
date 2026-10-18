@@ -36,6 +36,18 @@ must be supervised, timed centrally, or recovered across devices.
 - **A published exam**: a signed, immutable `.pharmaexam` package from the
   Examination Builder.
 
+### Keep the host's address stable (recommended)
+
+Routers may hand the invigilator machine a different IP after every restart.
+Two defences, in order of strength:
+
+1. **DHCP reservation** in the router (bind the machine's MAC address to one
+   IP) or a **static IP** on the machine itself — one-time router setup.
+2. **Discovery makes it not matter**: student apps broadcast on the Wi-Fi and
+   find the authority wherever it currently lives (see Step 3), and the admin
+   page auto-detects this machine's current address when starting. Students
+   never type an IP on a properly run exam.
+
 ## Step 1 — Build and publish the exam (lecturer)
 
 1. Open **Examinations → Builder**.
@@ -78,11 +90,18 @@ examination server**:
    - `✓ Session session_…` — the session from Step 2 exists.
    If either shows ⚠, the button will tell you exactly what to do when clicked —
    it is never silently disabled.
-3. Click **Start LAN authority**. The panel shows the endpoint
+3. Optionally tick **Open enrollment**. With it on, student apps on the
+   examination Wi-Fi receive the session token via the discovery broadcast and
+   join with **zero typing** — their student identity and the exam password
+   still gate entry, and the token only ever authorizes student session routes
+   (the authority exposes no admin routes), so broadcasting it cannot hand out
+   control. Be aware the LAN protocol is plain HTTP with signed requests, so
+   the token is no more secret on the board than on the wire; leave enrollment
+   closed if your policy requires the token to be typed.
+4. Click **Start LAN authority**. The panel shows the endpoint
    (`http://<host>:8787`), the discovery endpoint, and the **session token**.
-4. Give the students two things (write them on the board): the **endpoint** and
-   the **session token**. Devices on the same Wi-Fi discover the server
-   automatically via UDP; the explicit endpoint always works as a fallback.
+   Write the exam password on the board — that is now the only thing a student
+   may ever need to type (and with discovery, not even the endpoint).
 
 ## Step 4 — Students enter the kiosk
 
@@ -94,8 +113,11 @@ On each student device:
 3. **Identity**: first-time users click *First-time registration* (first name +
    level → a one-time RX30 kiosk password is generated). Returning students
    type their name and password.
-4. Enter the **LAN authority endpoint** and **session token** from the board,
-   and the **exam password** if the paper has one.
+4. The app **finds the authority automatically** by broadcast (installed app
+   or Android build): one authority → endpoint and, with open enrollment, the
+   session token are filled in with zero typing; several → pick from a list;
+   none found (or in a plain browser) → type the endpoint/token from the board.
+   Enter the **exam password** if the paper has one.
 5. Click **Run readiness checks** — package validity, encrypted storage,
    capability policy, LAN reachability. The *Enter secure examination* button
    unlocks only when the required checks pass (a hint states this while it is
@@ -131,6 +153,41 @@ events reconcile against the journal. See
    visibility only — never scores.
 2. **Archive examination** when everyone is done: results and the audit history
    are retained; the session is closed.
+
+## Client lockdown (what a student device cannot do)
+
+During a secure examination the device is locked down in layers:
+
+- **Devtools shortcuts are cancelled**: F12, Ctrl+Shift+I/J/C, Ctrl+U — the
+  keydown is prevented *and* the attempt is written to the audit trail. In the
+  packaged app devtools are additionally compiled out of production builds and
+  the native command is refused while an exam is active.
+- **Copy resistance**: right-click, copy/paste/cut, printing, and dragging
+  content out of the exam are blocked; text selection is disabled everywhere
+  except the answer inputs the student must type into.
+- **The webview cannot be escaped**: navigation is gated to the exam route
+  (attempts are audited), the native kiosk holds fullscreen/always-on-top on
+  desktop, and the Android build applies its native kiosk adapter.
+
+The honest boundary, as always: browser-level blocking raises the bar but is
+not unbreakable on its own — which is exactly why every answer event is signed
+and revision-checked by the authority, so tampered traffic is rejected and
+logged rather than trusted.
+
+## No single point of failure
+
+- **Local-first answers**: every answer is written to the student device's
+  encrypted local storage *before* anything is sent to the network. Pull the
+  Wi-Fi mid-exam and students keep working; nothing is lost.
+- **Queued sync with automatic flush**: answer events queue locally and flush
+  to the authority on every answer, every timer tick, on reconnect (`online`),
+  on page visibility, and on the native resume event (a device that slept
+  through a network drop flushes the moment it wakes).
+- **Authority journal**: the invigilator machine keeps an append-only fsynced
+  journal — crash or power-cut, restart and it replays every accepted event.
+- **Confirmed failover**: a secondary authority can be promoted by explicit
+  admin confirmation (never automatically — that is the split-brain guard);
+  300-student failover and reconciliation are covered by the HA test suite.
 
 ## Troubleshooting
 

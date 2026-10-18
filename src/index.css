@@ -112,6 +112,27 @@ html.pharmatrack-resume-paint .app-shell {
   }
 }
 
+/* Secure examination lockdown ----------------------------------------------------
+   Applied to <html> by examination/kioskState while a secure exam is active.
+   Copy resistance for every surface the student did not type themselves:
+   questions and options cannot be selected or dragged out of the exam, while
+   the answer inputs keep full text selection and editing. The keyboard half
+   (F12 / Ctrl+Shift+I/J/C, copy/paste/print) is cancelled by the kiosk
+   adapter and audited as security events. */
+html.secure-exam-lockdown,
+html.secure-exam-lockdown body {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+html.secure-exam-lockdown input,
+html.secure-exam-lockdown textarea,
+html.secure-exam-lockdown select {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
 /* The navigation drawer --------------------------------------------------------
    Opening the drawer puts a full-screen translucent layer over the page. On
    Android that was enough to make the menu itself feel stuck: the page behind

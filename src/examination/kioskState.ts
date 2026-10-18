@@ -39,6 +39,8 @@ function restoredState(): SecureKioskState {
 }
 
 let state: SecureKioskState = restoredState();
+// A page reload inside an active exam must not leave the lockdown class off.
+syncLockdownClass(state.active);
 const listeners = new Set<Listener>();
 let blockedNavigationHandler: ((path: string) => void) | undefined;
 
@@ -52,6 +54,15 @@ export function subscribeSecureKiosk(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
+function syncLockdownClass(active: boolean): void {
+  if (typeof document === 'undefined') return;
+  // One class on <html>, styled in index.css: no text selection and no
+  // drag-and-drop anywhere except the form controls the student must be able
+  // to type into. This is the copy-resistance half of the lockdown; the
+  // keyboard shortcuts are cancelled by the kiosk adapter.
+  document.documentElement.classList.toggle('secure-exam-lockdown', active);
+}
+
 function publish(next: SecureKioskState): void {
   state = next;
   try {
@@ -62,6 +73,7 @@ function publish(next: SecureKioskState): void {
   } catch {
     // Route enforcement remains available in memory when storage is unavailable.
   }
+  syncLockdownClass(next.active);
   listeners.forEach((listener) => listener(state));
 }
 

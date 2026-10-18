@@ -32,6 +32,27 @@ export interface LanServerConfig {
   accessToken: string;
   package: Record<string, unknown>;
   session: ExamSession;
+  /**
+   * When true the discovery responder includes the session token, so student
+   * devices on the examination Wi-Fi join with zero typing (their identity and
+   * the exam password still gate entry). The token only authorizes student
+   * session routes — the authority exposes no admin routes — so broadcasting
+   * it cannot hand out control.
+   */
+  openEnrollment: boolean;
+}
+
+/** An examination authority found by broadcast on this LAN. */
+export interface LanDiscoveredAuthority {
+  endpoint: string;
+  sessionId: string;
+  examVersionId: string;
+  serverId: string;
+  authorityId: string;
+  authorityEpoch: number;
+  openEnrollment: boolean;
+  /** Present only when the invigilator enabled open enrollment. */
+  sessionToken?: string;
 }
 
 function token(): string {
@@ -50,6 +71,7 @@ export function createLanServerConfig(
   session: ExamSession,
   advertisedHost: string,
   port = DEFAULT_LAN_EXAM_PORT,
+  options: { openEnrollment?: boolean } = {},
 ): LanServerConfig {
   const snapshot = repository.snapshot;
   const version = snapshot.versions.find((item) => item.id === session.examVersionId);
@@ -73,6 +95,7 @@ export function createLanServerConfig(
       version,
     },
     session,
+    openEnrollment: options.openEnrollment ?? false,
   };
 }
 
@@ -99,6 +122,25 @@ export async function detectLanHost(): Promise<string | null> {
     return host && host.trim() ? host.trim() : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Zero-config discovery for student devices: broadcasts the exam discovery
+ * probe on the LAN and returns every authority that answered. This is what
+ * removes "type the invigilator's IP" — the router may hand the host a new
+ * address every day, but the broadcast finds it wherever it is. Browser
+ * preview cannot send UDP; it gets an empty list and keeps manual entry.
+ */
+export async function discoverLanAuthorities(timeoutMs = 900): Promise<LanDiscoveredAuthority[]> {
+  if (!isNativeLanServerAvailable()) return [];
+  try {
+    const found = await invoke<LanDiscoveredAuthority[]>('discover_lan_exam_servers', {
+      timeoutMs,
+    });
+    return found ?? [];
+  } catch {
+    return [];
   }
 }
 

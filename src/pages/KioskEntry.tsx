@@ -6,6 +6,11 @@ import {
   verifyExamPassword,
   type StagedPharmaExam,
 } from '../examination/package';
+import {
+  discoverLanAuthorities,
+  isNativeLanServerAvailable,
+  type LanDiscoveredAuthority,
+} from '../examination/lanServer';
 import { ExaminationRepository } from '../examination/service';
 import { LanExamClient, LocalExamAuthority, isLanEndpoint } from '../examination/network';
 import { encryptedStorageAvailable } from '../examination/secureStorage';
@@ -35,6 +40,8 @@ const KioskEntry: React.FC = () => {
   const [examPassword, setExamPassword] = useState('');
   const [lanEndpoint, setLanEndpoint] = useState('');
   const [lanToken, setLanToken] = useState('');
+  const [discovered, setDiscovered] = useState<LanDiscoveredAuthority[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
   const [sessionId, setSessionId] = useState('');
   const [registeredPassword, setRegisteredPassword] = useState('');
   const [student, setStudent] = useState<ExamStudent | null>(null);
@@ -60,6 +67,50 @@ const KioskEntry: React.FC = () => {
       })
       .catch(() => undefined);
   }, []);
+
+  /**
+   * Zero-config authority discovery: broadcast on this Wi-Fi and auto-fill
+   * whatever answers. One authority → endpoint (and, with open enrollment,
+   * the session token) land in the form with no typing at all. Several → the
+   * student picks from a list. None / browser → manual entry, unchanged.
+   * The last used endpoint is remembered across launches.
+   */
+  useEffect(() => {
+    if (!isNativeLanServerAvailable()) return;
+    let disposed = false;
+    try {
+      const remembered = window.localStorage.getItem('pharmatrack:lan-endpoint');
+      if (remembered && !disposed) setLanEndpoint(remembered);
+    } catch {
+      /* storage may be unavailable; discovery does not depend on it */
+    }
+    setDiscovering(true);
+    void discoverLanAuthorities()
+      .then((found) => {
+        if (disposed) return;
+        setDiscovered(found);
+        if (found.length === 1) {
+          const match = found[0];
+          setLanEndpoint(match.endpoint);
+          if (match.openEnrollment && match.sessionToken) setLanToken(match.sessionToken);
+        } else if (found.length > 1 && !lanEndpoint) {
+          setLanEndpoint(found[0].endpoint);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!disposed) setDiscovering(false);
+      });
+    return () => {
+      disposed = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pickDiscoveredAuthority = (authority: LanDiscoveredAuthority) => {
+    setLanEndpoint(authority.endpoint);
+    if (authority.openEnrollment && authority.sessionToken) setLanToken(authority.sessionToken);
+  };
 
   const choosePackage = async (file: File | undefined) => {
     if (!file) return;
@@ -340,6 +391,15 @@ const KioskEntry: React.FC = () => {
           ? 'Continue Exam on another supported device/session.'
           : 'New attempt started.',
       });
+      // Remember the authority that worked, so the next exam on this device
+      // starts one step further along the zero-config path.
+      if (lanEndpoint.trim()) {
+        try {
+          window.localStorage.setItem('pharmatrack:lan-endpoint', lanEndpoint.trim());
+        } catch {
+          /* remembering is an enhancement, never a gate */
+        }
+      }
       navigate(`/examination/secure/${result.attempt.id}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The examination could not be started.');
@@ -508,14 +568,56 @@ const KioskEntry: React.FC = () => {
           <Wifi className="text-[#2D6A4F]" />
           <h2 className="font-black text-xl">3. LAN and examination password</h2>
         </div>
+        {discovering && (
+          <p className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm font-bold text-sky-900" data-testid="discovery-status">
+            <Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Looking for the examination authority on this Wi-Fi…
+          </p>
+        )}
+        {!discovering && discovered && discovered.length === 0 && (
+          <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-bold text-amber-900" data-testid="discovery-status">
+            No examination authority answered on this Wi-Fi. Make sure the invigilator started it,
+            that you are on the examination network, then enter the endpoint below.
+          </p>
+        )}
+        {discovered && discovered.length > 0 && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 space-y-2" data-testid="discovered-authorities">
+            <p className="text-sm font-black text-emerald-900">
+              {discovered.length === 1
+                ? 'Examination authority found automatically — nothing to type.'
+                : `${discovered.length} examination authorities found — pick yours:`}
+            </p>
+            {discovered.map((authority) => (
+              <button
+                key={authority.endpoint}
+                type="button"
+                onClick={() => pickDiscoveredAuthority(authority)}
+                data-testid={`discovered-authority-${authority.serverId}`}
+                className={`w-full text-left rounded-lg border px-3 py-2 text-sm font-bold transition-colors ${
+                  lanEndpoint === authority.endpoint
+                    ? 'border-emerald-500 bg-white ring-2 ring-emerald-500/30'
+                    : 'border-emerald-200 bg-white hover:bg-emerald-100'
+                }`}
+              >
+                <span className="block">{authority.endpoint}</span>
+                <span className="block text-xs font-semibold text-slate-500">
+                  Authority {authority.serverId}
+                  {authority.openEnrollment
+                    ? ' · open enrollment: the session token is filled in for you'
+                    : ' · session token still required'}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="grid sm:grid-cols-3 gap-3">
           <label className="text-sm font-bold">
             LAN authority endpoint
             <input
               value={lanEndpoint}
               onChange={(event) => setLanEndpoint(event.target.value)}
+              data-testid="lan-endpoint-input"
               className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="http://192.168.1.20:8787"
+              placeholder="Found automatically — or type http://192.168.1.20:8787"
             />
           </label>
           <label className="text-sm font-bold">
@@ -524,6 +626,7 @@ const KioskEntry: React.FC = () => {
               type="password"
               value={lanToken}
               onChange={(event) => setLanToken(event.target.value)}
+              data-testid="lan-token-input"
               className="mt-1 w-full rounded-lg border px-3 py-2"
               placeholder="Provided by examination admin"
             />

@@ -448,10 +448,15 @@ const SecureExamination: React.FC = () => {
     window.addEventListener('pageshow', handleWakeup);
     document.addEventListener('visibilitychange', handleWakeup);
     window.addEventListener('online', handleWakeup);
+    // The native shell fires this on resume (Android discards the WebView
+    // surface while backgrounded); a device that slept through a network drop
+    // flushes its queued answer events the moment it is back.
+    window.addEventListener('pharmatrack:resume', handleWakeup);
     return () => {
       window.removeEventListener('pageshow', handleWakeup);
       document.removeEventListener('visibilitychange', handleWakeup);
       window.removeEventListener('online', handleWakeup);
+      window.removeEventListener('pharmatrack:resume', handleWakeup);
     };
   }, [repository, attempt, submitted]);
 

@@ -58,6 +58,7 @@ const ExaminationAdmin: React.FC = () => {
   const [lanStatus, setLanStatus] = useState<LanServerStatus | null>(null);
   const [lanHost, setLanHost] = useState('');
   const [lanHostDetected, setLanHostDetected] = useState(false);
+  const [openEnrollment, setOpenEnrollment] = useState(false);
   /** Stable for the page's life: the real TCP server only exists in the app. */
   const nativeHostAvailable = isNativeLanServerAvailable();
 
@@ -230,7 +231,9 @@ const ExaminationAdmin: React.FC = () => {
     }
     setBusy(true);
     try {
-      const config = createLanServerConfig(repository, session, lanHost.trim());
+      const config = createLanServerConfig(repository, session, lanHost.trim(), undefined, {
+        openEnrollment,
+      });
       const status = await startLanExamServer(config);
       await repository.setSessionAuthority(
         session.id,
@@ -571,8 +574,8 @@ const ExaminationAdmin: React.FC = () => {
           </div>
         </div>
         <div className="grid md:grid-cols-3 gap-3">
-          <label className="text-sm font-bold">
-            Advertised LAN host/IP
+          <div className="text-sm font-bold">
+            <span>Advertised LAN host/IP</span>
             <input
               value={lanHost}
               onChange={(event) => { setLanHost(event.target.value); setLanHostDetected(false); }}
@@ -585,7 +588,20 @@ const ExaminationAdmin: React.FC = () => {
                 ? 'Auto-detected: this device’s Wi-Fi address. Students must be on the same network.'
                 : 'This must be THIS machine’s Wi-Fi address — student devices connect straight to it.'}
             </span>
-          </label>
+            <label className="mt-2 flex items-start gap-2 text-xs font-bold" data-testid="open-enrollment-toggle">
+              <input
+                type="checkbox"
+                checked={openEnrollment}
+                onChange={(event) => setOpenEnrollment(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Open enrollment — student apps on this Wi-Fi discover the authority automatically
+                and join without typing the session token (their identity and the exam password
+                still gate entry). The token only authorizes student routes, never admin actions.
+              </span>
+            </label>
+          </div>
           <div className="rounded-lg bg-slate-50 border p-3 text-sm">
             <strong>Status</strong>
             <br />
@@ -598,7 +614,14 @@ const ExaminationAdmin: React.FC = () => {
               {lanStatus?.activeAttempts ?? 0} · submitted {lanStatus?.submittedAttempts ?? 0}
             </span>
             <br />
-            <span className="text-slate-500">Discovery: {lanStatus?.discoveryEndpoint || '—'}</span>
+            <span className="text-slate-500">
+              Discovery: {lanStatus?.discoveryEndpoint || '—'}
+              {lanStatus?.running
+                ? openEnrollment
+                  ? ' · students on this Wi-Fi join automatically (open enrollment)'
+                  : ' · students still enter the session token from the board'
+                : ''}
+            </span>
           </div>
           <label className="text-sm font-bold">
             Session token for student devices

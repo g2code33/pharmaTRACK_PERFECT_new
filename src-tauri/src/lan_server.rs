@@ -39,6 +39,13 @@ pub struct LanServerConfig {
     pub access_token: String,
     pub package: Value,
     pub session: Value,
+    /// When true, the discovery responder includes the session token so a
+    /// student device that is already on the examination Wi-Fi can join with
+    /// zero typing (their identity and the exam password still gate entry).
+    /// The token only ever authorizes student session routes; this authority
+    /// exposes no admin routes, so broadcasting it cannot hand out control.
+    #[serde(default)]
+    pub open_enrollment: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -704,7 +711,20 @@ fn discovery_loop(port: u16, state: Arc<Mutex<ServerState>>, stop: Arc<AtomicBoo
         if let Ok((size, source)) = socket.recv_from(&mut buffer) {
             if &buffer[..size] == b"PHARMATRACK_EXAM_DISCOVER" {
                 if let Ok(locked) = state.lock() {
-                    let response = json!({"protocolVersion":PROTOCOL_VERSION,"endpoint":locked.endpoint,"sessionId":locked.config.session_id,"examVersionId":locked.config.exam_version_id,"serverId":locked.config.server_id}).to_string();
+                    let open = locked.config.open_enrollment;
+                    let mut response = json!({
+                        "protocolVersion":PROTOCOL_VERSION,
+                        "endpoint":locked.endpoint,
+                        "sessionId":locked.config.session_id,
+                        "examVersionId":locked.config.exam_version_id,
+                        "serverId":locked.config.server_id,
+                        "authorityId":locked.config.authority_id,
+                        "authorityEpoch":locked.config.authority_epoch,
+                        "openEnrollment":open,
+                    });
+                    if open {
+                        response["sessionToken"] = json!(locked.config.access_token);
+                    }
                     let _ = socket.send_to(response.as_bytes(), source);
                 }
             }
