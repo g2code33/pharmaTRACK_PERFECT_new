@@ -1,11 +1,12 @@
 {
   "name": "pharmatrack",
   "private": true,
-  "version": "1.4.7",
+  "version": "1.4.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:desktop": "tsc && vite build --mode desktop",
     "preview": "vite preview",
     "build:development": "tsc && vite build --mode development",
     "build:staging": "tsc && vite build --mode staging",
