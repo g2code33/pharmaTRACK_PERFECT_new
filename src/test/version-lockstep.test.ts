@@ -42,12 +42,38 @@ describe('every artefact ships the same version', () => {
 
   it('bumps only the app in package-lock.json, never a dependency', () => {
     // Blind find-and-replace across the lockfile once rewrote three
-    // dependencies that happened to share the old version number.
-    const lines = read('package-lock.json').split('\n');
-    const bumped = lines
-      .map((line, index) => ({ line: line.trim(), index }))
-      .filter(({ line }) => line === `"version": "${version}",`);
-    expect(bumped.map(({ index }) => index)).toEqual([2, 8]);
+    // dependencies that happened to share the old version number. The
+    // robust guard: the app's own two entries carry the app version, and
+    // every real dependency's version must still match the version inside
+    // the registry tarball URL it resolves to. A dependency may legitimately
+    // publish a version identical to the app's (es-errors and get-intrinsic
+    // both sat at 1.3.0), so counting occurrences of the version string is
+    // not a valid check — the tarball correspondence is.
+    const lock = JSON.parse(read('package-lock.json')) as {
+      version: string;
+      packages: Record<string, { version?: string; resolved?: string }>;
+    };
+    expect(lock.version).toBe(version);
+    expect(lock.packages['']?.version).toBe(version);
+
+    const checked: string[] = [];
+    for (const [pkgPath, entry] of Object.entries(lock.packages)) {
+      if (!pkgPath.startsWith('node_modules/') || !entry.version) continue;
+      // Registry tarball URLs are .../<slug>-<version>.tgz; the slug may
+      // itself contain hyphens and digits (workerd-darwin-64), so anchor on
+      // the version we are validating instead of parsing it out.
+      const base = (entry.resolved ?? '').split('/').pop() ?? '';
+      if (!base.endsWith('.tgz')) continue; // git/file/link deps
+      if (!base.endsWith(`-${entry.version}.tgz`)) {
+        throw new Error(
+          `${pkgPath} says version ${entry.version} but resolves to ${base} — ` +
+            'a find-and-replace across the lockfile rewrote a dependency',
+        );
+      }
+      checked.push(pkgPath);
+    }
+    // The sweep must actually cover the dependency tree, not pass vacuously.
+    expect(checked.length).toBeGreaterThan(100);
   });
 
   it('Android derives its own, so it cannot disagree', () => {
