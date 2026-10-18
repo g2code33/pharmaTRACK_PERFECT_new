@@ -60,15 +60,20 @@ jobs:
           if ! cargo check --locked --all-targets 2>&1 | tee /tmp/cargo-check.log; then
             # The runner does not install a rustc problem matcher, so compiler
             # errors would only live in a log this branch cannot always read.
-            # Republish error contexts plus the log tail as check annotations.
+            # Republish error contexts (and a log tail) as annotations. Steps
+            # may only emit 10 error + 10 warning annotations, so budget them.
             python3 - <<'EOF'
-          lines = open('/tmp/cargo-check.log', errors='replace').read().splitlines()
-          errs = [i for i, l in enumerate(lines) if 'error' in l.lower()]
-          print(f'::error::cargo check failed; log holds {len(lines)} lines, {len(errs)} mention error')
-          for i in errs[:15]:
-              print('::error::' + ' | '.join(lines[i:i+6]).replace('%', '%25')[:700])
-          for l in lines[-35:]:
-              print('::error::TAIL: ' + l.replace('%', '%25')[:230])
+          import re
+          ansi = re.compile(r'\x1b\[[0-9;]*m')
+          raw = open('/tmp/cargo-check.log', errors='replace').read().splitlines()
+          lines = [ansi.sub('', l) for l in raw]
+          errs = [i for i, l in enumerate(lines) if l.startswith('error')]
+          print(f'::error::cargo check failed; {len(errs)} error line(s) in {len(lines)} log lines')
+          for i in errs[:8]:
+              msg = ' | '.join(lines[i:i+6])[:700]
+              print('::error::' + msg.replace('%', '%25').replace('\r', '%0D'))
+          for l in lines[-10:]:
+              print('::warning::TAIL: ' + l[:230].replace('%', '%25').replace('\r', '%0D'))
           EOF
             exit 1
           fi
