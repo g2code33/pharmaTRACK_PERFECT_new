@@ -245,7 +245,7 @@ jobs:
             fi
           }
           check_sig_names_this_version "release/PharmaTRACK-$VERSION-windows-x64.msi.sig" "PharmaTRACK_${VERSION}_x64_en-US.msi"
-          check_sig_names_this_version "release/pharmatrack_${VERSION}_amd64.deb.sig" "pharmatrack_${VERSION}_amd64.deb"
+          check_sig_names_this_version "release/pharmatrack_${VERSION}_amd64.deb.sig" "PharmaTRACK_${VERSION}_amd64.deb"
           echo "All desktop artifacts verified as version $VERSION."
 
       # The desktop updater manifest, built from the real signatures emitted

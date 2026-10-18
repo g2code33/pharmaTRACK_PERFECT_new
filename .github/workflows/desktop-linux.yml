@@ -137,28 +137,29 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          # Exact expected path: tauri names the deb with the app version.
-          # A find|head scan once let a stale, cached previous-version deb
-          # ship as this release.
-          DEB_SRC="src-tauri/target/release/bundle/deb/pharmatrack_${VERSION}_amd64.deb"
+          # Exact expected path: tauri names the deb after productName
+          # (PharmaTRACK_<version>_amd64.deb — capital P; the release asset is
+          # renamed to lowercase only afterwards). A find|head scan once let a
+          # stale, cached previous-version deb ship as this release.
+          DEB_SRC="src-tauri/target/release/bundle/deb/PharmaTRACK_${VERSION}_amd64.deb"
           if [ ! -f "$DEB_SRC" ]; then
             echo "::error title=Linux build output missing::Expected $DEB_SRC. Found instead:"
-            ls -R src-tauri/target/release/bundle 2>/dev/null || echo "(no bundle directory)"
+            ls -R src-tauri/target/release/bundle 2>/dev/null | head -c 400 || echo "(no bundle directory)"
             exit 1
           fi
           cp "$DEB_SRC" "pharmatrack_${VERSION}_amd64.deb"
           if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-            sig="src-tauri/target/release/bundle/deb/pharmatrack_${VERSION}_amd64.deb.sig"
+            sig="src-tauri/target/release/bundle/deb/PharmaTRACK_${VERSION}_amd64.deb.sig"
             if [ ! -f "$sig" ]; then
               echo "::error title=Linux updater signature missing::No .sig at $sig; the desktop updater would ship an unusable latest.json."
               exit 1
             fi
             # The .sig is base64 wrapping a minisign block whose trusted
-            # comment names the exact signed file (…file:pharmatrack_<v>_amd64.deb).
+            # comment names the exact signed file (…file:PharmaTRACK_<v>_amd64.deb).
             # Verify it names THIS version before shipping it.
             decoded="$(node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(process.argv[1],'utf8'),'base64').toString())" "$sig")"
-            if ! printf '%s' "$decoded" | grep -q "file:pharmatrack_${VERSION}_amd64.deb"; then
-              echo "::error title=Linux updater signature mismatch::$sig was not signed for pharmatrack_${VERSION}_amd64.deb. Decoded signature:"
+            if ! printf '%s' "$decoded" | grep -q "file:PharmaTRACK_${VERSION}_amd64.deb"; then
+              echo "::error title=Linux updater signature mismatch::$sig was not signed for PharmaTRACK_${VERSION}_amd64.deb. Decoded signature:"
               printf '%s\n' "$decoded"
               exit 1
             fi
