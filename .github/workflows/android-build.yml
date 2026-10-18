@@ -148,6 +148,13 @@ jobs:
         if: env.BUILD_MODE == 'release'
         env:
           PHARMA_ANDROID_SKIP_GRADLE_SIGNING: 'true'
+          # Gradle itself never signs (apksigner does, one step later), but
+          # build.gradle.kts fails closed whenever a release keystore is
+          # present without the signing env — so hand them over here too,
+          # exactly like android-apk-verify.yml does for its build step.
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
