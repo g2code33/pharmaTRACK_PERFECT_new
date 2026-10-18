@@ -5,6 +5,15 @@ import RouteErrorBoundary from './RouteErrorBoundary';
 import RouteLoading from './RouteLoading';
 import { scheduleRoutePrefetch } from '../utils/routeLoader';
 import { scheduleBackgroundWork } from '../utils/idleScheduler';
+import {
+  clearIntegrityResult,
+  integrityRepairHint,
+  lastIntegrityResult,
+  verifyInstallation,
+  type IntegrityResult,
+} from '../utils/integrityCheck';
+import { enforceNativeShellNoServiceWorker } from '../pwa';
+import { isNativeShell } from '../platform/runtime';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
@@ -255,8 +264,15 @@ const Layout: React.FC = () => {
    * filtered connection, `check()` can sit there indefinitely. That left the
    * version pill stuck on "Checking…" and disabled for the rest of the
    * session — the app looked permanently behind. Every check is now bounded.
+   *
+   * The budget is generous on purpose: a kiosk on a congested or throttled
+   * link can take tens of seconds just for the manifest round trip to
+   * GitHub, and a timeout that fires while the server is still answering
+   * reads as "updating is broken" on that machine — forever, because every
+   * retry hits the same cap. 60s fails only when the connection is genuinely
+   * unusable, and the download itself is not capped at all.
    */
-  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 20000): Promise<T> =>
+  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 60000): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(
         () => reject(new Error(`The update server did not answer within ${Math.round(ms / 1000)}s. Check your connection and try again.`)),
@@ -426,6 +442,45 @@ const Layout: React.FC = () => {
       minTimeRemaining: 18,
       runWhenTimedOut: false,
     });
+  }, []);
+
+  // Installation self-verification (packaged shell only, once, while idle).
+  // A partially-unpacked update or a disk error leaves files whose content no
+  // longer matches the release; the shell then serves them with the MIME their
+  // bytes imply and modules fail to load with errors that name nothing. This
+  // turns that into a banner that names the files and the repair command.
+  const [integrityDamage, setIntegrityDamage] = useState<IntegrityResult | null>(
+    () => lastIntegrityResult(),
+  );
+  const integrityCheckedRef = useRef(false);
+  useEffect(() => {
+    if (integrityCheckedRef.current) return;
+    integrityCheckedRef.current = true;
+    void verifyInstallation().then((result) => {
+      // A clean (or unrunnable) check must clear a stale stored failure —
+      // e.g. one recorded while a leftover service worker was intercepting
+      // every asset fetch — or the banner would outlive the problem.
+      setIntegrityDamage(result && !result.ok ? result : null);
+      if (!result || result.ok) clearIntegrityResult();
+    });
+  }, []);
+
+  // Leftover service workers must never control the packaged app: their own
+  // fetches bypass the shell's protocol handler, so every /assets/ request
+  // they intercept fails or comes back mis-typed (the 'application/pdf' MIME
+  // crash). The boot purge reloads once; if that reload was interrupted, this
+  // watchdog keeps purging (with a bounded budget) until the page is clean.
+  const [swStuck, setSwStuck] = useState(false);
+  useEffect(() => {
+    if (!isNativeShell()) return;
+    const enforce = () => {
+      void enforceNativeShellNoServiceWorker().then((status) => {
+        if (status === 'exhausted') setSwStuck(true);
+      });
+    };
+    enforce();
+    const id = window.setInterval(enforce, 15000);
+    return () => window.clearInterval(id);
   }, []);
 
   if (kioskState.active) {
@@ -770,6 +825,70 @@ const Layout: React.FC = () => {
           })}
         </div>
       </nav>
+
+      {swStuck && (
+        <div
+          role="alert"
+          data-testid="sw-stuck-banner"
+          className="fixed bottom-3 left-1/2 z-[200] w-[min(94vw,44rem)] -translate-x-1/2 rounded-2xl border border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/95 p-4 shadow-2xl"
+        >
+          <p className="text-sm font-black text-amber-800 dark:text-amber-200">
+            A leftover service worker is blocking this app
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+            It intercepts this app's own files and breaks pages. It has been removed, but this
+            window needs one clean restart: <span className="font-bold">close PharmaTRACK completely and open it again.</span>
+          </p>
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setSwStuck(false)}
+              className="rounded-lg px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {integrityDamage && !integrityDamage.ok && (
+        <div
+          role="alert"
+          data-testid="integrity-damage-banner"
+          className="fixed bottom-3 left-1/2 z-[200] w-[min(94vw,44rem)] -translate-x-1/2 rounded-2xl border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/95 p-4 shadow-2xl"
+        >
+          <p className="text-sm font-black text-red-800 dark:text-red-200">
+            This copy of PharmaTRACK is damaged
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-red-700 dark:text-red-300">
+            {integrityDamage.corrupted.length > 0 && (
+              <>
+                {integrityDamage.corrupted.length} file{integrityDamage.corrupted.length === 1 ? '' : 's'} no
+                longer match the release (first: <span className="font-mono break-all">{integrityDamage.corrupted[0]}</span>).
+              </>
+            )}
+            {integrityDamage.missing.length > 0 && (
+              <>
+                {integrityDamage.missing.length > 0 && integrityDamage.corrupted.length > 0 ? ' ' : ''}
+                {integrityDamage.missing.length} file{integrityDamage.missing.length === 1 ? '' : 's'} could not be read.
+              </>
+            )}
+            {' '}Pages may fail to load until it is repaired. Nothing you saved is affected.
+          </p>
+          <p className="mt-2 rounded-lg bg-white/70 dark:bg-black/30 px-2 py-1.5 font-mono text-[10px] leading-relaxed break-all select-text text-red-900 dark:text-red-200">
+            {integrityRepairHint()}
+          </p>
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIntegrityDamage(null)}
+              className="rounded-lg px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:text-red-200 dark:hover:bg-red-900/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <UpdateDialog
         state={updateFlow}

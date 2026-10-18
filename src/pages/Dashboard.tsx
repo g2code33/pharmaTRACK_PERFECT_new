@@ -149,7 +149,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         <div className="space-y-5">
-          <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
+          <section className="perf-deferred-card bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
             <h2 className="font-black text-gray-800 mb-3 flex items-center gap-2"><Calendar className="w-5 h-5 text-[#FFB703]" /> Upcoming exams</h2>
             {brief.upcomingExams.length === 0 ? <p className="text-sm text-gray-500">No exam in the next 60 days.</p> : (
               <div className="space-y-2">
@@ -163,7 +163,7 @@ const Dashboard: React.FC = () => {
             )}
           </section>
 
-          <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
+          <section className="perf-deferred-card bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
             <h2 className="font-black text-gray-800 mb-3 flex items-center gap-2"><Target className="w-5 h-5 text-blue-600" /> Quiz performance</h2>
             <p className="text-3xl font-black text-gray-900">{brief.quizAccuracy === null ? '—' : `${brief.quizAccuracy}%`}</p>
             <p className="text-xs text-gray-500 mb-3">Accuracy across saved attempts</p>
@@ -177,7 +177,7 @@ const Dashboard: React.FC = () => {
             <Link to="/quiz" className="inline-block mt-3 text-sm font-bold text-[#2D6A4F]">Take a quiz</Link>
           </section>
 
-          <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
+          <section className="perf-deferred-card bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-black text-gray-800">Semester progress</h2>
               <span className="font-black text-[#2D6A4F]">{brief.stats.semesterProgress}%</span>
@@ -228,7 +228,7 @@ function Stat({ label, value, detail }: { label: string; value: string; detail: 
 function Panel({ title, href, empty, children }: { title: string; href: string; empty: string; children: ReactNode }) {
   const list = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : [];
   return (
-    <section className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
+    <section className="perf-deferred-card bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-5">
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-black text-gray-800">{title}</h2>
         <Link to={href} className="text-sm font-bold text-[#2D6A4F]">Open</Link>

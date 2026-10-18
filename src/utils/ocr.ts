@@ -1,7 +1,7 @@
 import * as pdfjs from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
+import { ensurePdfWorker } from './pdfWorker';
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+ensurePdfWorker();
 
 /**
  * Optional OCR for scanned handouts.

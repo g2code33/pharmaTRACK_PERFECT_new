@@ -112,6 +112,39 @@ html.pharmatrack-resume-paint .app-shell {
   }
 }
 
+/* Deferred content must not silently vanish from a printout or a PDF export:
+   skipping paint is a screen-scrolling optimisation only. */
+@media print {
+  .perf-deferred-card,
+  .perf-deferred-row {
+    content-visibility: visible !important;
+  }
+}
+
+/* Desktop-webview scroll performance ----------------------------------------------
+   The packaged app renders in a system webview (WebView2 on Windows, WebKitGTK
+   on Linux). On modest hardware — especially Linux laptops, where WebKitGTK
+   often rasterises through software compositing — three things turn any long
+   page into a slideshow:
+
+   1. backdrop-filter: it forces the blurred backdrop to be re-rendered on
+      every scrolled frame. The rule further up only disables it in wide
+      windows; a narrower desktop window still paid for it.
+   2. Smooth scroll animation on the main scroller: on a weak compositor the
+      glide animation runs on the main thread and competes with the scroll
+      itself. The in-app jumps that wanted the glide can live without it in
+      the packaged app; the reader/viewer scrollers already force `auto`.
+   3. Layout+paint of the entire page: the perf-deferred rules above make
+      offscreen cards and rows free on every engine, so the scroller only
+      ever pays for what is on screen. */
+.native-desktop-shell [class*="backdrop-blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.native-desktop-shell .app-page-main {
+  scroll-behavior: auto;
+}
+
 /* Secure examination lockdown ----------------------------------------------------
    Applied to <html> by examination/kioskState while a secure exam is active.
    Copy resistance for every surface the student did not type themselves:

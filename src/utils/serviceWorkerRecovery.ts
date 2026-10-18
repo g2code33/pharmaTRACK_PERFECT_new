@@ -74,6 +74,33 @@ export async function deleteShellCaches(): Promise<boolean> {
 }
 
 /**
+ * Drops EVERY cache in this origin. Only meaningful in a packaged shell,
+ * where the origin belongs to this app alone and any cache that exists was
+ * put there by a service worker that should never have been registered —
+ * including caches named by older worker versions whose prefix no longer
+ * matches, which deleteShellCaches deliberately keeps on the web.
+ */
+export async function deleteAllCaches(): Promise<boolean> {
+  if (typeof caches === 'undefined') return false;
+  let removed = false;
+  try {
+    const keys = await caches.keys();
+    await Promise.all(
+      keys.map(async (key) => {
+        try {
+          removed = (await caches.delete(key)) || removed;
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
+  return removed;
+}
+
+/**
  * Web path: pull a fresh worker and activate a waiting one so the refreshed
  * index/asset pair wins on the next load. Never throws.
  */
@@ -110,7 +137,11 @@ export async function recoverServiceWorker(): Promise<void> {
   if (!serviceWorkerAvailable()) return;
   if (isNativeShell()) {
     await unregisterAllServiceWorkers();
-    await deleteShellCaches();
+    // In a packaged shell nothing in this origin is cacheable data worth
+    // keeping: the app ships its own files. A partial cleanup that keeps
+    // caches named by an older worker version is how a broken response can
+    // survive every recovery attempt.
+    await deleteAllCaches();
     return;
   }
   await refreshServiceWorker();

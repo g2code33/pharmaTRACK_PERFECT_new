@@ -19,6 +19,14 @@ import { ExaminationRepository } from '../examination/service';
 import { examinationResultToQuizHistory } from '../examination/results';
 import { ExaminationHighAvailability, type AuthorityStatusView } from '../examination/ha';
 import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
+import { LanExamClient } from '../examination/network';
+import {
+  changeAdminPassword,
+  isAdminGateUnlocked,
+  lockAdminGate,
+  markAdminGateUnlocked,
+  verifyAdminPassword,
+} from '../examination/adminGate';
 import {
   createLanServerConfig,
   detectLanHost,
@@ -48,6 +56,7 @@ const ExaminationAdmin: React.FC = () => {
   const [results, setResults] = useState<ExaminationResult[]>([]);
   const [authority, setAuthority] = useState<AuthorityStatusView | null>(null);
   const [selectedAttemptId, setSelectedAttemptId] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState('');
   const [adminId, setAdminId] = useState('local-admin');
   const [adminDevice, setAdminDevice] = useState('admin-device');
   const [reason, setReason] = useState('Authorized examination administration');
@@ -59,6 +68,18 @@ const ExaminationAdmin: React.FC = () => {
   const [lanHost, setLanHost] = useState('');
   const [lanHostDetected, setLanHostDetected] = useState(false);
   const [openEnrollment, setOpenEnrollment] = useState(false);
+  const [lanImportMessage, setLanImportMessage] = useState('');
+  const [reviewResultId, setReviewResultId] = useState('');
+  // Console password gate: students run the same app, so the admin console
+  // renders nothing until the device's stored password is presented.
+  const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
+  const [gatePassword, setGatePassword] = useState('');
+  const [gateError, setGateError] = useState('');
+  const [changeCurrent, setChangeCurrent] = useState('');
+  const [changeNext, setChangeNext] = useState('');
+  const [changeConfirm, setChangeConfirm] = useState('');
+  const [changePhantom, setChangePhantom] = useState('');
+  const [changeMessage, setChangeMessage] = useState('');
   /** Stable for the page's life: the real TCP server only exists in the app. */
   const nativeHostAvailable = isNativeLanServerAvailable();
 
@@ -79,41 +100,111 @@ const ExaminationAdmin: React.FC = () => {
   const [lanToken, setLanToken] = useState('');
   const [selectedForRelease, setSelectedForRelease] = useState<Set<string>>(new Set());
 
-  const refresh = useCallback(async () => {
+  /**
+   * Registers this device as the ADMIN device session so every control the
+   * invigilator touches is audit-logged. The password gate decides whether
+   * this runs at all; the registration itself is the audit hook, not the
+   * security boundary.
+   */
+  const authenticateAdmin = useCallback(async () => {
     const opened = await ExaminationRepository.open();
+    const existing = opened.snapshot.deviceSessions.find(
+      (device) =>
+        device.deviceId === adminDevice && device.role === 'ADMIN' && device.status === 'CONNECTED',
+    );
+    if (existing) {
+      setAdminAuthenticated(true);
+      setRepository(opened);
+      setMessage('Authorized administrator device session restored.');
+      return;
+    }
+    await opened.createDeviceSession({
+      deviceId: adminDevice,
+      role: 'ADMIN',
+      capabilities: ['authority-control', 'live-dashboard', 'failover-review'],
+    });
+    setAdminAuthenticated(true);
+    setRepository(opened);
+    setMessage(
+      'Administrator device session authorized locally; all controls are now audit logged.',
+    );
+  }, [adminDevice]);
+
+  const refresh = useCallback(async () => {
+    let opened = await ExaminationRepository.open();
+    const allSessions = opened.snapshot.sessions;
+    // The admin chooses which examination to view; by default the live (or
+    // most recent) one is shown, and every past session stays visitable.
     const nextSession =
-      opened.snapshot.sessions.find((item) =>
+      allSessions.find((item) => item.id === selectedSessionId) ||
+      allSessions.find((item) =>
         ['ACTIVE', 'CREATED', 'READY', 'RECOVERY'].includes(item.status),
       ) ||
-      opened.snapshot.sessions[opened.snapshot.sessions.length - 1] ||
+      allSessions[allSessions.length - 1] ||
       null;
+
+    let lan: LanServerStatus | null = null;
+    try {
+      lan = await lanExamServerStatus();
+    } catch {
+      lan = null;
+    }
+    // While the native authority runs, pull its authoritative view so the
+    // invigilator sees every submitted attempt — with the work itself — even
+    // though the students answered on their own devices.
+    const authorityServesThisSession =
+      !!lan?.running &&
+      !!nextSession?.authorityAccessToken &&
+      (!nextSession.authorityEndpoint || nextSession.authorityEndpoint === lan.endpoint);
+    if (lan && authorityServesThisSession && nextSession) {
+      try {
+        const client = new LanExamClient(lan.endpoint, window.fetch.bind(window), {
+          token: nextSession.authorityAccessToken,
+        });
+        const authorityState = await client.state(nextSession.id);
+        const outcome = await opened.importLanAuthorityState(nextSession.id, authorityState);
+        if (outcome.gradedResults > 0)
+          setLanImportMessage(
+            `Imported ${outcome.gradedResults} newly submitted attempt(s) from the LAN authority.`,
+          );
+        opened = await ExaminationRepository.open();
+      } catch (error) {
+        // The authority may be mid-restart; the manual import button reports details.
+        console.warn('Automatic import from the LAN authority failed.', error);
+      }
+    }
+
     setRepository(opened);
     setSession(nextSession);
     if (nextSession?.authorityAccessToken) setLanToken(nextSession.authorityAccessToken);
-    setAttempts(
-      opened.snapshot.attempts.filter((attempt) => activeStatuses.includes(attempt.status)),
-    );
-    setResults(opened.snapshot.results);
-    if (!selectedAttemptId && opened.snapshot.attempts[0])
-      setSelectedAttemptId(opened.snapshot.attempts[0].id);
+    const sessionAttempts = nextSession
+      ? opened.snapshot.attempts.filter((attempt) => attempt.sessionId === nextSession.id)
+      : [];
+    setAttempts(sessionAttempts.filter((attempt) => activeStatuses.includes(attempt.status)));
+    const attemptIds = new Set(sessionAttempts.map((attempt) => attempt.id));
+    setResults(opened.snapshot.results.filter((result) => attemptIds.has(result.attemptId)));
+    if (!selectedAttemptId && sessionAttempts[0]) setSelectedAttemptId(sessionAttempts[0].id);
     try {
       const coordinator = new ExaminationHighAvailability(opened);
       setAuthority(await coordinator.initialize());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Authority status unavailable.');
     }
-    try {
-      setLanStatus(await lanExamServerStatus());
-    } catch {
-      setLanStatus(null);
-    }
-  }, [selectedAttemptId]);
+    setLanStatus(lan);
+  }, [selectedAttemptId, selectedSessionId]);
 
   useEffect(() => {
+    if (!gateUnlocked) return;
     void refresh();
     const timer = window.setInterval(() => void refresh(), 5000);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, gateUnlocked]);
+
+  // A tab that is already unlocked (reload in the same tab) re-registers the
+  // admin device session without asking for the password again.
+  useEffect(() => {
+    if (gateUnlocked && !adminAuthenticated) void authenticateAdmin();
+  }, [gateUnlocked, adminAuthenticated, authenticateAdmin]);
 
   const selected = attempts.find((attempt) => attempt.id === selectedAttemptId) || null;
   const selectedStudent = repository?.snapshot.students.find(
@@ -154,30 +245,6 @@ const ExaminationAdmin: React.FC = () => {
         type: 'ADD_QUIZ_HISTORY',
         payload: examinationResultToQuizHistory(result, version),
       });
-  };
-
-  const authenticateAdmin = async () => {
-    const opened = await ExaminationRepository.open();
-    const existing = opened.snapshot.deviceSessions.find(
-      (device) =>
-        device.deviceId === adminDevice && device.role === 'ADMIN' && device.status === 'CONNECTED',
-    );
-    if (existing) {
-      setAdminAuthenticated(true);
-      setRepository(opened);
-      setMessage('Authorized administrator device session restored.');
-      return;
-    }
-    await opened.createDeviceSession({
-      deviceId: adminDevice,
-      role: 'ADMIN',
-      capabilities: ['authority-control', 'live-dashboard', 'failover-review'],
-    });
-    setAdminAuthenticated(true);
-    setRepository(opened);
-    setMessage(
-      'Administrator device session authorized locally; all controls are now audit logged.',
-    );
   };
 
   const action = async (attempt: StudentAttempt, kind: Action) => {
@@ -380,6 +447,97 @@ const ExaminationAdmin: React.FC = () => {
     }
   };
 
+  /** Password gate: unlock this tab's admin console. */
+  const unlockAdminGate = async () => {
+    setGateError('');
+    if (await verifyAdminPassword(gatePassword)) {
+      markAdminGateUnlocked();
+      setGateUnlocked(true);
+      setGatePassword('');
+    } else {
+      setGateError('Incorrect administrator password.');
+    }
+  };
+
+  /** Step away from the console: lock it now instead of waiting for the tab. */
+  const lockConsoleNow = () => {
+    lockAdminGate();
+    setGateUnlocked(false);
+    setAdminAuthenticated(false);
+    setGatePassword('');
+    setChangeCurrent('');
+    setChangeNext('');
+    setChangeConfirm('');
+    setChangePhantom('');
+    setChangeMessage('');
+  };
+
+  /** Change the console password — requires the current password and the
+   *  phantom PIN configured at setup; nothing is stored in plaintext. */
+  const performChangePassword = async () => {
+    setChangeMessage('');
+    if (changeNext !== changeConfirm) {
+      setChangeMessage('The new password and its confirmation do not match.');
+      return;
+    }
+    const result = await changeAdminPassword(changeCurrent, changeNext, changePhantom);
+    if (result.ok) {
+      setChangeMessage(
+        'Administrator password changed. The console now unlocks with the new password.',
+      );
+      setChangeCurrent('');
+      setChangeNext('');
+      setChangeConfirm('');
+      setChangePhantom('');
+    } else if (result.error === 'wrong-password') {
+      setChangeMessage('The current password is incorrect — nothing was changed.');
+    } else if (result.error === 'wrong-phantom-pin') {
+      setChangeMessage('The phantom PIN is incorrect — the password was not changed.');
+    } else {
+      setChangeMessage('The new password must be at least 8 characters.');
+    }
+  };
+
+  /**
+   * Pull the authority's authoritative view of this session on demand. The
+   * 5-second refresh already does this while the authority runs; the button
+   * exists so the invigilator can force a pull (and see any error verbatim)
+   * instead of wondering whether the table is current.
+   */
+  const importFromAuthority = async () => {    if (!session) return;
+    setBusy(true);
+    setLanImportMessage('');
+    try {
+      const status = await lanExamServerStatus();
+      if (!status.running)
+        throw new Error('The LAN authority is not running on this device.');
+      if (!session.authorityAccessToken)
+        throw new Error('This session has no authority token to authenticate with.');
+      if (session.authorityEndpoint && session.authorityEndpoint !== status.endpoint)
+        throw new Error('The running authority belongs to a different examination session.');
+      const client = new LanExamClient(status.endpoint, window.fetch.bind(window), {
+        token: session.authorityAccessToken,
+      });
+      const authorityState = await client.state(session.id);
+      const outcome = await (await ExaminationRepository.open()).importLanAuthorityState(
+        session.id,
+        authorityState,
+      );
+      setLanImportMessage(
+        `Imported from the authority: ${outcome.importedAttempts} new attempt(s), ` +
+          `${outcome.updatedAttempts} refreshed, ${outcome.gradedResults} newly graded. ` +
+          'Results and per-question work are now on this device permanently.',
+      );
+      await refresh();
+    } catch (error) {
+      setLanImportMessage(
+        error instanceof Error ? error.message : 'Import from the LAN authority failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const failover = async () => {
     if (!adminAuthenticated) {
       setMessage('Authenticate this administrator device before failover.');
@@ -443,6 +601,62 @@ const ExaminationAdmin: React.FC = () => {
     }
   };
 
+  // Not unlocked: render ONLY the lock screen. No sessions, no results, no
+  // student data — a student who navigates here sees nothing but the prompt.
+  if (!gateUnlocked) {
+    return (
+      <div className="max-w-md mx-auto mt-16 space-y-4" data-testid="admin-gate-locked">
+        <div className="rounded-2xl bg-gradient-to-r from-slate-950 to-[#1B4332] text-white p-6">
+          <p className="text-xs uppercase tracking-widest text-emerald-300 font-black">
+            Examination Authority
+          </p>
+          <h1 className="text-2xl font-black">Admin Examination Control Center</h1>
+          <p className="text-white/70 mt-2 text-sm">
+            This console is password-protected. Students cannot open it — enter the
+            administrator password to continue.
+          </p>
+        </div>
+        <form
+          className="bg-white border rounded-2xl p-6 space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlockAdminGate();
+          }}
+        >
+          <label className="block text-sm font-black">
+            Administrator password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={gatePassword}
+              onChange={(event) => setGatePassword(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              placeholder="Console password"
+              data-testid="admin-gate-password"
+            />
+          </label>
+          {gateError && (
+            <p className="text-sm font-bold text-red-700" data-testid="admin-gate-error">
+              {gateError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy || !gatePassword}
+            className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
+            data-testid="admin-gate-unlock"
+          >
+            Unlock console
+          </button>
+          <p className="text-xs text-slate-500">
+            The password is stored only as a salted hash on this device. Unlocking applies to
+            this tab only; a new tab always starts locked.
+          </p>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto space-y-5">
       <header className="rounded-2xl bg-gradient-to-r from-slate-950 to-[#1B4332] text-white p-6">
@@ -474,6 +688,61 @@ const ExaminationAdmin: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Session picker: every examination ever administered on this device
+          stays visitable — live ones first, archived ones any time later. */}
+      <section className="bg-white border rounded-2xl p-4 flex flex-wrap items-center gap-3" data-testid="session-picker">
+        <label htmlFor="admin-session-picker" className="text-sm font-black whitespace-nowrap">
+          Viewing examination
+        </label>
+        <select
+          id="admin-session-picker"
+          className="flex-1 min-w-[16rem] rounded-lg border px-3 py-2 text-sm font-bold bg-white"
+          value={session?.id ?? ''}
+          onChange={(event) => {
+            setSelectedSessionId(event.target.value);
+            setSelectedAttemptId('');
+            setReviewResultId('');
+            setSelectedForRelease(new Set());
+          }}
+        >
+          {(repository?.snapshot.sessions ?? []).length === 0 && (
+            <option value="">No examination sessions yet</option>
+          )}
+          {[...(repository?.snapshot.sessions ?? [])].reverse().map((item) => {
+            const exam = repository?.snapshot.exams.find((candidate) => candidate.id === item.examId);
+            return (
+              <option key={item.id} value={item.id}>
+                {exam?.title || 'Examination'} · {new Date(item.createdAt).toLocaleDateString()} ·{' '}
+                {item.status}
+                {item.status === 'CLOSED' ? ' (archived — still viewable)' : ''}
+              </option>
+            );
+          })}
+        </select>
+        {lanStatus?.running && session?.authorityAccessToken && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void importFromAuthority()}
+            className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 text-xs font-black shadow-sm disabled:opacity-40"
+            data-testid="import-from-authority"
+          >
+            Import work from the LAN authority
+          </button>
+        )}
+        {lanImportMessage && (
+          <p className="text-xs font-bold text-emerald-800 w-full" data-testid="lan-import-message">
+            {lanImportMessage}
+          </p>
+        )}
+        <p className="text-xs text-slate-500 w-full">
+          While the LAN authority runs, every submitted attempt is pulled into this device's
+          encrypted examination store automatically — scores, each student's answers, and the
+          audit trail. Pick any past session above to revisit its results at any time.
+        </p>
+      </section>
+
       <section className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {[
           ['Connected students', stats.connectedStudents],
@@ -843,6 +1112,7 @@ const ExaminationAdmin: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
+
                 {results.map((result) => {
                   const student = repository?.snapshot.students.find(
                     (s) => s.id === result.studentId,
@@ -926,7 +1196,19 @@ const ExaminationAdmin: React.FC = () => {
                         {new Date(result.submittedAt).toLocaleTimeString()}
                       </td>
                       <td className="p-2">
-                        {attemptPolicy === 'ON_RELEASE' && (
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() =>
+                              setReviewResultId(
+                                reviewResultId === result.id ? '' : result.id,
+                              )
+                            }
+                            className="px-2 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-white font-bold"
+                            data-testid={`review-work-${result.attemptId}`}
+                          >
+                            {reviewResultId === result.id ? 'Close work' : 'Review work'}
+                          </button>
+                          {attemptPolicy === 'ON_RELEASE' && (
                           <div className="flex gap-1">
                             {relStatus !== 'RELEASED' ? (
                               <button
@@ -965,6 +1247,7 @@ const ExaminationAdmin: React.FC = () => {
                             )}
                           </div>
                         )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -973,6 +1256,118 @@ const ExaminationAdmin: React.FC = () => {
             </table>
           </div>
         )}
+
+        {/* Per-question work review: the invigilator sees exactly what each
+            student wrote, question by question, with the marking. */}
+        {results
+          .filter((result) => result.id === reviewResultId)
+          .map((result) => {
+            const version = repository?.snapshot.versions.find(
+              (candidate) => candidate.id === result.examVersionId,
+            );
+            const student = repository?.snapshot.students.find(
+              (candidate) => candidate.id === result.studentId,
+            );
+            return (
+              <div
+                key={result.id}
+                data-testid="result-work-review"
+                className="rounded-xl border-2 border-emerald-300 bg-emerald-50/60 p-4 space-y-3"
+              >
+                <div className="flex flex-wrap justify-between items-center gap-2">
+                  <div>
+                    <h3 className="font-black text-slate-900">
+                      {student?.firstName || result.studentId} — submitted work
+                    </h3>
+                    <p className="text-xs text-slate-600">
+                      {result.score}/{result.maxMarks} ({result.percentage}%) ·{' '}
+                      {result.answerStatistics.correct} correct ·{' '}
+                      {result.answerStatistics.incorrect} incorrect ·{' '}
+                      {result.answerStatistics.unanswered} unanswered ·{' '}
+                      {Math.round(result.durationSeconds / 60)} min · submitted{' '}
+                      {new Date(result.submittedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setReviewResultId('')}
+                    className="rounded-lg border px-3 py-1 text-xs font-bold"
+                  >
+                    Close review
+                  </button>
+                </div>
+                {result.securityEventSummary &&
+                  Object.keys(result.securityEventSummary).length > 0 && (
+                    <p className="text-xs text-amber-800 font-bold">
+                      Security:{' '}
+                      {Object.entries(result.securityEventSummary)
+                        .map(([type, count]) => `${type} ×${count}`)
+                        .join(' · ')}
+                    </p>
+                  )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm bg-white rounded-lg border">
+                    <thead className="bg-slate-100 text-left text-xs uppercase">
+                      <tr>
+                        <th className="p-2">#</th>
+                        <th className="p-2">Question</th>
+                        <th className="p-2">Student's answer</th>
+                        <th className="p-2">Correct answer</th>
+                        <th className="p-2">Marks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.questionResults.map((questionResult, index) => {
+                        const question = version?.questions.find(
+                          (candidate) => candidate.id === questionResult.questionId,
+                        );
+                        const optionText =
+                          question?.options &&
+                          questionResult.answer !== '' &&
+                          /^\d+$/.test(questionResult.answer)
+                            ? question.options[Number(questionResult.answer)]
+                            : undefined;
+                        const correctText = question?.options
+                          ? question.correctOption != null
+                            ? question.options[question.correctOption]
+                            : question.correctAnswer
+                          : undefined;
+                        return (
+                          <tr
+                            key={questionResult.questionId}
+                            className={
+                              questionResult.isCorrect
+                                ? 'border-b bg-emerald-50'
+                                : questionResult.answer.trim()
+                                  ? 'border-b bg-red-50'
+                                  : 'border-b bg-slate-50'
+                            }
+                          >
+                            <td className="p-2 font-black">{index + 1}</td>
+                            <td className="p-2">
+                              <p className="font-bold">{question?.questionText || 'Question unavailable'}</p>
+                              {question?.explanation && (
+                                <p className="text-xs text-slate-500 mt-1">{question.explanation}</p>
+                              )}
+                            </td>
+                            <td className="p-2 font-bold">
+                              {questionResult.answer.trim()
+                                ? optionText || questionResult.answer
+                                : '— not answered —'}
+                            </td>
+                            <td className="p-2 text-xs text-slate-600">{correctText ?? '—'}</td>
+                            <td className="p-2 font-black whitespace-nowrap">
+                              {questionResult.marksAwarded}/{questionResult.maxMarks}{' '}
+                              {questionResult.isCorrect ? '✓' : '✗'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
 
         {/* Release Audit Trail */}
         {repository && repository.snapshot.resultReleaseAudits.length > 0 && (
@@ -1087,6 +1482,96 @@ const ExaminationAdmin: React.FC = () => {
             className="mt-1 w-full rounded-lg border px-3 py-2"
           />
         </label>
+      </section>
+
+      {/* Administrator access: change the console password (requires the
+          phantom PIN) and lock the console when stepping away. */}
+      <section className="bg-white border rounded-2xl p-5 space-y-4" data-testid="admin-password-change">
+        <div className="flex flex-wrap justify-between items-center gap-2">
+          <div>
+            <h2 className="text-xl font-black">Administrator access</h2>
+            <p className="text-sm text-slate-500">
+              The console password keeps students out of this screen. Changing it requires the
+              phantom PIN configured at setup; both are stored only as salted hashes on this
+              device.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={lockConsoleNow}
+            className="rounded-lg bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 font-black"
+            data-testid="admin-lock-now"
+          >
+            Lock console now
+          </button>
+        </div>
+        <form
+          className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void performChangePassword();
+          }}
+        >
+          <label className="text-sm font-bold">
+            Current password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={changeCurrent}
+              onChange={(event) => setChangeCurrent(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-current"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            New password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={changeNext}
+              onChange={(event) => setChangeNext(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-next"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Confirm new password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={changeConfirm}
+              onChange={(event) => setChangeConfirm(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-confirm"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Phantom PIN (authorises the change)
+            <input
+              type="password"
+              autoComplete="off"
+              value={changePhantom}
+              onChange={(event) => setChangePhantom(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-phantom"
+            />
+          </label>
+          <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              disabled={busy || !changeCurrent || !changeNext || !changeConfirm || !changePhantom}
+              className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
+              data-testid="admin-change-submit"
+            >
+              Change console password
+            </button>
+            {changeMessage && (
+              <p className="text-sm font-bold" data-testid="admin-change-message">
+                {changeMessage}
+              </p>
+            )}
+          </div>
+        </form>
       </section>
       {message && <p className="rounded-lg bg-slate-100 p-3 font-semibold">{message}</p>}
     </div>

@@ -36,6 +36,25 @@ must be supervised, timed centrally, or recovered across devices.
 - **A published exam**: a signed, immutable `.pharmaexam` package from the
   Examination Builder.
 
+### The admin console is password-locked
+
+Students run the same app as the invigilator, so the Admin Examination
+Control Center asks for the **administrator password** before it shows
+anything — sessions, results, and submitted work stay completely hidden
+behind the lock screen. Unlocking applies to that tab only; a new tab always
+starts locked, and **Lock console now** re-arms it instantly when you step
+away.
+
+- The console ships with the initial password and the **phantom PIN**
+  (the second secret) seeded from `src/examination/adminGate.ts`. **Change
+  both on first setup**: *Administrator access → Change console password*
+  requires the current password *and* the phantom PIN.
+- Only salted SHA-256 hashes are ever stored on the device — neither secret
+  is kept in plaintext, and a change re-salts the record immediately.
+- This gate protects the local console UI. The LAN authority itself has
+  always exposed no admin routes, so students cannot control an exam from
+  their devices regardless.
+
 ### Keep the host's address stable (recommended)
 
 Routers may hand the invigilator machine a different IP after every restart.
@@ -153,6 +172,38 @@ events reconcile against the journal. See
    visibility only — never scores.
 2. **Archive examination** when everyone is done: results and the audit history
    are retained; the session is closed.
+
+## Where the admin sees results and submitted work — at any time
+
+Students answer on their own devices; the authority (the invigilator's
+machine) is the record of what happened. The **Admin Examination Control
+Center** pulls that record onto the invigilator's device:
+
+- **Automatically, while the authority runs.** Every refresh (the page polls
+  every 5 seconds) imports the authority's full view of the session — every
+  submitted attempt, each student's answers question by question, and the
+  audit trail — into this device's encrypted examination store. **Import work
+  from the LAN authority** does the same on demand and reports any error
+  verbatim.
+- **Scores** appear in the *Examination-wide results* table as soon as an
+  attempt is submitted: score, maximum, percentage, answered/unanswered, and
+  the submission time.
+- **The work itself.** **Review work** on any row shows every question with
+  the text, the option or text the student actually submitted, the correct
+  answer, the marks awarded, and the security summary for that attempt. This
+  is the evidence base for a regrade appeal or an academic-integrity review.
+- **Any time, including after the exam is long over.** The *Viewing
+  examination* picker at the top lists every session ever administered on
+  this device — live ones first, closed/archived ones forever after. Pick any
+  past session to see its results and work again. Imported results live in
+  this device's encrypted local store, so they survive app restarts.
+
+Two honest limits: the import happens while the authority is running (or can
+be triggered from it) — an attempt submitted to an authority that is already
+stopped and never imported stays in that authority's journal file on disk
+until the authority is started again — and the review shows questions in the
+version's canonical order, because each student's on-device shuffle seed
+lives on the student's device, not on the authority.
 
 ## Client lockdown (what a student device cannot do)
 

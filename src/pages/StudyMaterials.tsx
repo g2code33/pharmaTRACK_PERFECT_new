@@ -39,7 +39,10 @@ import {
 import * as pdfjs from 'pdfjs-dist';
 
 // Set worker path
-// Offline-first worker initialization\nimport pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';\npdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// Offline-first worker initialization
+import { ensurePdfWorker } from '../utils/pdfWorker';
+
+ensurePdfWorker();
 
 const StudyMaterials: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, getSlidesForTopic, addActivity } = useApp();
@@ -656,7 +659,7 @@ const StudyMaterials: React.FC = () => {
                 const completedCount = slides.filter((s) => s.status === 'completed').length;
 
                 return (
-                  <div key={topic.id} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                  <div key={topic.id} className="perf-deferred-card bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
                     {/* Topic Header */}
                     <div
                       className="flex items-center gap-3 p-4 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
@@ -758,7 +761,7 @@ const StudyMaterials: React.FC = () => {
                             {slides.map((slide, idx) => (
                               <div
                                 key={slide.id}
-                                className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
+                                className="perf-deferred-row flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
                               >
                                 <button
                                   onClick={() => handleSlideStatus(

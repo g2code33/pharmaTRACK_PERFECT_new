@@ -124,6 +124,9 @@ function open() {
 
 beforeEach(() => {
   idbStore.clear();
+  // These tests exercise console features, not the password gate — start
+  // each one from an already-unlocked admin tab (sessionStorage flag).
+  sessionStorage.setItem('pharmatrack:admin-gate-unlocked', '1');
   lanMocks.native = false;
   lanMocks.detectedHost = null;
   lanMocks.startLanExamServer.mockReset();
@@ -131,6 +134,7 @@ beforeEach(() => {
 
 afterEach(() => {
   idbStore.clear();
+  sessionStorage.clear();
 });
 
 describe('start prerequisites are visible, not a dead button', () => {

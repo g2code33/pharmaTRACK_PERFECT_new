@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { offsetsAreMeasured, pageNumberAtOffset, pagesByDistance } from '../utils/pageOffsets';
 import * as pdfjs from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
+import { ensurePdfWorker } from '../utils/pdfWorker';
 import {
   ChevronUp, ChevronDown, ZoomIn, ZoomOut, RotateCw, RotateCcw,
   Search, X, Loader2, Download, AlertTriangle, Highlighter, Printer,
@@ -12,7 +12,7 @@ import SelectionPopup, { overlayFor } from './SelectionPopup';
 import type { Highlight, HighlightColor, HighlightRect } from '../types';
 import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+ensurePdfWorker();
 
 /**
  * Full-featured canvas PDF viewer.

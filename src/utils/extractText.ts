@@ -32,8 +32,9 @@ import { readBlobArrayBuffer } from './fileGuard';
 // Bundle the worker locally. This previously pointed at a CDN, which meant
 // PDF processing failed or silently half-completed whenever the user was
 // offline - the usual case for this app.
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import { ensurePdfWorker } from './pdfWorker';
+
+ensurePdfWorker();
 
 export interface ExtractedPage {
   page: number;
