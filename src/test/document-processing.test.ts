@@ -15,7 +15,12 @@ import {
   splitWordIntoSections,
   validateWordDocument,
 } from '../utils/wordProcessor';
-import { processAnyFile } from '../utils/universalProcessor';
+import {
+  extractPdfText,
+  extractPptxSlideTexts,
+  extractDocxText,
+} from '../utils/extractText';
+import { readBlobArrayBuffer } from '../utils/fileGuard';
 
 const wordXml = (paragraphs: string[]) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -132,35 +137,46 @@ describe('DOCX processing', () => {
   });
 });
 
-describe('universal processor', () => {
-  it('extracts text from a real PDF page', async () => {
+describe('extraction service (search/AI only — never the opening path)', () => {
+  it('extracts text from a real PDF page and reports failure, not a throw', async () => {
     // Vitest does not resolve Vite's ?url worker import. Point pdf.js at the
     // same local worker file directly; no CDN or internet is involved.
     pdfjs.GlobalWorkerOptions.workerSrc = resolve(
       'node_modules/pdfjs-dist/build/pdf.worker.min.js',
     );
-    const result = await processAnyFile(makePdf());
-    expect(result.type).toBe('pdf');
+    const bytes = new Uint8Array(await readBlobArrayBuffer(makePdf()));
+    const result = await extractPdfText(bytes);
+    expect(result.failed).toBe(false);
     expect(result.pages).toHaveLength(1);
     expect(result.pages[0].text).toContain('Beta blockers');
     expect(result.text).toContain('--- Page 1 ---');
-    URL.revokeObjectURL(result.previewUrl);
+
+    // A corrupt PDF reports failure instead of throwing — extraction can
+    // never take the material's openability down with it.
+    const broken = await extractPdfText(new TextEncoder().encode('not a pdf'));
+    expect(broken.failed).toBe(true);
+    expect(broken.text).toBe('');
   });
 
-  it('processes DOCX through the same browser-compatible byte reader used in production', async () => {
-    const result = await processAnyFile(await makeDocx(['Mammoth extraction works offline.']));
-    expect(result.type).toBe('docx');
+  it('extracts DOCX through the same browser-compatible byte reader used in production', async () => {
+    const file = await makeDocx(['Mammoth extraction works offline.']);
+    const result = await extractDocxText(file);
+    expect(result.failed).toBe(false);
     expect(result.text).toContain('Mammoth extraction works offline.');
     expect(result.pages[0].text).toContain('Mammoth extraction');
-    URL.revokeObjectURL(result.previewUrl);
+
+    const corrupt = await extractDocxText(new TextEncoder().encode('garbage').buffer as ArrayBuffer);
+    expect(corrupt.failed).toBe(true);
   });
 
-  it('extracts PPTX slide text in slide order', async () => {
-    const result = await processAnyFile(await makePptx());
-    expect(result.type).toBe('pptx');
-    expect(result.pages.map((page) => page.pageNumber)).toEqual([1, 2]);
+  it('extracts PPTX slide text in slide order, without parsing layouts or media', async () => {
+    const result = await extractPptxSlideTexts(await makePptx());
+    expect(result.failed).toBe(false);
+    expect(result.pages.map((page) => page.page)).toEqual([1, 2]);
     expect(result.text).toContain('Beta blockers');
     expect(result.text).toContain('Check asthma');
-    URL.revokeObjectURL(result.previewUrl);
+
+    const corrupt = await extractPptxSlideTexts(new TextEncoder().encode('garbage').buffer as ArrayBuffer);
+    expect(corrupt.failed).toBe(true);
   });
 });

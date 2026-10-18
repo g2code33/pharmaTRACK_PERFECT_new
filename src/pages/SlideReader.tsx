@@ -3,10 +3,14 @@ import { nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-import { loadFileBytes, saveFile } from '../utils/storage';
-import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { loadFileBytes } from '../utils/storage';
+import { routeMaterial, mimeForKind, sniffMaterialKind, type MaterialKind } from '../documents/registry';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
+// DOCX and XLSX engines are heavy enough to earn their own chunks: they are
+// downloaded the first time a document of that kind is opened, not upfront.
+const DocxViewer = React.lazy(() => import('../components/DocxViewer'));
+const XlsxViewer = React.lazy(() => import('../components/XlsxViewer'));
 import AIChatPanel from '../components/AIChatPanel';
 import { loadSlideText } from '../utils/storage';
 import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
@@ -433,39 +437,17 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-      let sniffed = sniffMaterialKind(data);
-      let bytesForViewer = data;
+      // Identify from the bytes, then hand the ORIGINAL file to the viewer.
+      // No conversion, extraction or OCR runs before a document opens: the
+      // PPTX viewer renders the real slides, the DOCX/XLSX viewers lay out
+      // the real document, and the stored file is never overwritten — the
+      // old behaviour here converted presentations to PDF and replaced the
+      // original, losing it permanently.
+      const sniffed = sniffMaterialKind(data);
       const updates: Partial<import('../types').Slide> = {};
 
-      if (sniffed === 'pptx') {
-        setLoadMessage('Converting PowerPoint to original-layout PDF…');
-        const { convertNativeMaterialPptxToPdf, convertPptxToPdf } = await import('../utils/pptxToPdf');
-        let converted = await convertNativeMaterialPptxToPdf(materialId);
-        if (!converted) {
-          converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
-            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-          }), (progress, message) => {
-            if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
-          });
-        }
-        if (!isMounted) return;
-        bytesForViewer = converted.pdfBytes;
-        sniffed = 'pdf';
-        const saved = await saveFile(materialId, converted.pdfBytes);
-        if (saved) {
-          updates.fileType = 'pdf';
-          updates.materialKind = 'pdf';
-          if (converted.text) updates.contentText = converted.text;
-          if (converted.pageCount) updates.pageCount = converted.pageCount;
-          updates.fileSize = converted.pdfBytes.byteLength;
-          updates.visualStatus = 'ok';
-        }
-      }
-
-      const mime = fileType === 'pdf' || sniffed === 'pdf'
-        ? 'application/pdf'
-        : 'application/octet-stream';
-      const blob = new Blob([bytesForViewer as unknown as BlobPart], { type: mime });
+      const mime = mimeForKind(sniffed, fileType);
+      const blob = new Blob([data as unknown as BlobPart], { type: mime });
       const newUrl = URL.createObjectURL(blob);
       setOpenedKind(sniffed);
       setFileUrl(newUrl);
@@ -474,7 +456,7 @@ const SlideReader: React.FC = () => {
       if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
         updates.materialKind = sniffed;
       }
-      if (knownSize == null) updates.fileSize = bytesForViewer.byteLength;
+      if (knownSize == null) updates.fileSize = data.byteLength;
       if (Object.keys(updates).length) {
         dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
       }
@@ -657,10 +639,17 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    // Canvas-rendered viewer. The old <iframe> clipped the bottom of every
-    // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
-    // iframe) and exposed no page count, search or navigation.
-    if (currentMaterial?.fileType === 'pdf' || openedKind === 'pdf') {
+    if (!currentMaterial) return null;
+
+    // The registry decides which engine renders this file — from its bytes
+    // when we have them, else from stored metadata. Every route below opens
+    // the ORIGINAL file; none waits for extraction or conversion.
+    const route = routeMaterial(currentMaterial, openedKind);
+
+    if (route.viewer === 'pdf') {
+      // Canvas-rendered viewer. The old <iframe> clipped the bottom of every
+      // document (a `minHeight: 85vh` wrapper around an `absolute inset-0`
+      // iframe) and exposed no page count, search or navigation.
       return (
         <PdfViewer
           fileUrl={fileUrl}
@@ -682,10 +671,11 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    if (currentMaterial?.fileType === 'text' && shouldOpenAsPresentation(currentMaterial, openedKind)) {
+    if (route.viewer === 'pptx') {
       return (
         <PptxViewer
           fileUrl={fileUrl}
+          resumeKey={`local:${currentMaterial.id}`}
           title={currentMaterial.title}
           extractedText={currentMaterial.contentText}
           uploadDate={currentMaterial.createdAt}
@@ -702,7 +692,44 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    if (currentMaterial?.fileType === 'text') {
+    if (route.viewer === 'docx') {
+      return (
+        <React.Suspense fallback={<div className="flex h-full items-center justify-center gap-2 text-sm font-bold text-gray-400"><Loader2 className="h-5 w-5 animate-spin" /> Loading Word viewer…</div>}>
+          <DocxViewer
+            fileUrl={fileUrl}
+            title={currentMaterial.title}
+            uploadDate={currentMaterial.createdAt}
+            onAskAi={handleAskAiAboutSelection}
+          />
+        </React.Suspense>
+      );
+    }
+
+    if (route.viewer === 'xlsx') {
+      return (
+        <React.Suspense fallback={<div className="flex h-full items-center justify-center gap-2 text-sm font-bold text-gray-400"><Loader2 className="h-5 w-5 animate-spin" /> Loading spreadsheet viewer…</div>}>
+          <XlsxViewer
+            fileUrl={fileUrl}
+            title={currentMaterial.title}
+            onSheetChange={(current, total, text) => {
+              setPage(current);
+              setPageCount(total);
+              setPageText(text ?? '');
+            }}
+          />
+        </React.Suspense>
+      );
+    }
+
+    if (route.viewer === 'image') {
+      return (
+        <div className="w-full flex items-center justify-center p-4 bg-gray-900 h-full min-h-[85vh]">
+          <img src={fileUrl} className="max-w-full shadow-2xl rounded-lg" alt="visual material" />
+        </div>
+      );
+    }
+
+    if (route.viewer === 'text') {
       return (
         <div className="w-full h-full overflow-auto bg-white p-8">
           <pre className="max-w-4xl mx-auto whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-700">
@@ -712,15 +739,28 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    if (currentMaterial?.fileType === 'jpg' || currentMaterial?.fileType === 'png') {
-      return (
-        <div className="w-full flex items-center justify-center p-4 bg-gray-900 h-full min-h-[85vh]">
-          <img src={fileUrl} className="max-w-full shadow-2xl rounded-lg" alt="visual material" />
+    // Unsupported format: say so clearly and keep the original downloadable —
+    // a blank screen helps nobody.
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-gray-100 p-4" data-testid="unsupported-format-card">
+        <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-xl">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-amber-50">
+            <AlertTriangle className="h-7 w-7 text-amber-500" />
+          </div>
+          <h3 className="text-lg font-bold text-gray-900">This file type can’t be displayed here</h3>
+          <p className="mt-2 text-sm text-gray-500">
+            {route.limitations ?? 'This file type is not supported for viewing.'}
+          </p>
+          <a
+            href={fileUrl}
+            download={currentMaterial.originalName || currentMaterial.title || 'download'}
+            className="mt-6 flex items-center justify-center gap-2 rounded-lg bg-[#2D6A4F] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#24523e] transition-colors"
+          >
+            Download Original
+          </a>
         </div>
-      );
-    }
-
-    return null;
+      </div>
+    );
   };
 
   useEffect(() => {

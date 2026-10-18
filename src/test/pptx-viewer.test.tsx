@@ -98,7 +98,9 @@ describe('PptxViewer', () => {
 
     fireEvent.click(nextBtn());
     expect(pageInput().value).toBe('2');
-    expect(stageContains('Beta blockers')).toBe(true);
+    // Slides parse on demand from the lazy deck, so the stage content lands
+    // a tick after the page counter moves.
+    await waitFor(() => expect(stageContains('Beta blockers')).toBe(true));
 
     fireEvent.keyDown(window, { key: 'ArrowRight' });
     expect(pageInput().value).toBe('3');
@@ -144,7 +146,7 @@ describe('PptxViewer', () => {
 
     fireEvent.click(screen.getByTestId('pptx-thumb-3'));
     expect(pageInput().value).toBe('3');
-    expect(stageContains('Side effects')).toBe(true);
+    await waitFor(() => expect(stageContains('Side effects')).toBe(true));
   });
 
   it('zooms in/out and shows the percentage', async () => {
@@ -331,9 +333,11 @@ describe('PptxViewer', () => {
     expect(screen.getByText('Download Original')).toBeTruthy();
 
     fireEvent.click(screen.getByText('View Extracted Text'));
-    // Flat fallback lists every slide's text and can go back to slides.
+    // Flat fallback lists every slide's text and can go back to slides. The
+    // slide texts are read on demand (light XML pass), so they land a beat
+    // after the mode switch.
     expect(screen.getByText('Back to Slides')).toBeTruthy();
-    expect(screen.getByText('Intro body text')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('Intro body text')).toBeTruthy());
     expect(screen.getByText('List of side effects')).toBeTruthy();
     fireEvent.click(screen.getByText('Back to Slides'));
     expect(pageInput().value).toBe('1');

@@ -1,19 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
-import * as pdfjs from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
-import * as mammoth from 'mammoth';
 import { ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
 import { inspectFile } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
+import {
+  extractPdfText, extractPptxSlideTexts, extractDocxText, extractSpreadsheetText,
+} from '../utils/extractText';
 import { saveFile } from '../utils/storage';
 import {
-  Upload, FileText, Image as ImageIcon, Presentation, X, CheckCircle2,
+  Upload, FileText, Image as ImageIcon, Presentation, FileSpreadsheet, X, CheckCircle2,
   AlertCircle, Loader2, ScanLine, Trash2,
 } from 'lucide-react';
-
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 /**
  * The single upload path for the whole app.
@@ -28,7 +26,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
  * navigation belongs to the viewer, not the data model.
  */
 
-export type UploadKind = 'pdf' | 'docx' | 'pptx' | 'image' | 'text';
+export type UploadKind = 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'image' | 'text';
 
 export interface UploadedMaterial {
   /** Per-page text, stored in the search index so deep keywords are findable. */
@@ -84,7 +82,24 @@ const kindOf = (file: File): UploadKind => {
   if (ext === 'pdf') return 'pdf';
   if (ext === 'docx' || ext === 'doc') return 'docx';
   if (ext === 'pptx' || ext === 'pptm' || ext === 'ppt') return 'pptx';
+  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'csv') return 'xlsx';
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
+  return 'text';
+};
+
+/**
+ * The REAL kind recorded on the material. Upload buckets are coarse; the
+ * material kind is what the viewer registry routes on, and it must stay
+ * truthful — the original .ppt never becomes a "pdf", a .pptx never becomes
+ * a "pdf". Nothing is converted at upload any more.
+ */
+const materialKindFor = (kind: UploadKind, file: File): MaterialKind => {
+  const ext = file.name.toLowerCase().split('.').pop() ?? '';
+  if (kind === 'pdf') return 'pdf';
+  if (kind === 'docx') return 'docx';
+  if (kind === 'pptx') return ext === 'ppt' ? 'ppt' : 'pptx';
+  if (kind === 'xlsx') return 'xlsx';
+  if (kind === 'image') return 'image';
   return 'text';
 };
 
@@ -99,6 +114,7 @@ const uploadKindFromDetected = (detected: MaterialKind | 'ole' | 'text', file: F
     case 'pdf': return 'pdf';
     case 'docx': return 'docx';
     case 'pptx': return 'pptx';
+    case 'xlsx': return 'xlsx';
     case 'image': return 'image';
     default: return kindOf(file);
   }
@@ -107,6 +123,7 @@ const uploadKindFromDetected = (detected: MaterialKind | 'ole' | 'text', file: F
 const iconFor = (kind: UploadKind) => {
   if (kind === 'image') return ImageIcon;
   if (kind === 'pptx') return Presentation;
+  if (kind === 'xlsx') return FileSpreadsheet;
   return FileText;
 };
 
@@ -123,7 +140,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   // supported extension is still listed explicitly (so nothing gets greyed
   // out the way `.pptm`/`.doc` used to), and `inspectFile()`'s byte-sniffing
   // below is the real gatekeeper regardless of what the OS dialog shows.
-  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
+  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.xlsx,.xlsm,.xls,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
   maxSizeMb = MAX_DEFAULT_MB,
   compact = false,
 }) => {
@@ -151,50 +168,18 @@ const FileUploader: React.FC<FileUploaderProps> = ({
 
   /* ---------------- per-type processing ---------------- */
 
-  const processPdf = async (
-    item: QueueItem,
-    buffer: ArrayBuffer,
-  ): Promise<{ text: string; pages: number; ocr: boolean; pageTexts: { page: number; text: string }[] }> => {
-    const bytes = new Uint8Array(buffer);
-    const hasText = await pdfHasTextLayer(bytes);
-
-    // OCR only when the user asked for it, or when the file plainly has no
-    // text layer and they ticked the scanned-document box.
-    if (!hasText && ocrRequestedRef.current) {
-      update(item.id, { status: 'ocr', message: 'Scanned document — reading text…' });
-      const pages = await ocrPdf(
-        bytes,
-        (p: OcrProgress) => update(item.id, { progress: p.progress, message: p.status }),
-        item.controller.signal,
-      );
-      return {
-        text: pages.map((p) => `--- Page ${p.page} ---\n${p.text}`).join('\n\n'),
-        pages: pages.length,
-        ocr: true,
-        pageTexts: pages,
-      };
-    }
-
-    const pdf = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
-    let text = '';
-    const pageTexts: { page: number; text: string }[] = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-      if (item.controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const pageText = content.items.map((it: any) => it.str).join(' ');
-      pageTexts.push({ page: i, text: pageText });
-      text += `--- Page ${i} ---\n${pageText}\n\n`;
-      update(item.id, { progress: i / pdf.numPages, message: `Reading page ${i} of ${pdf.numPages}…` });
-    }
-    const pages = pdf.numPages;
-    pdf.destroy();
-
-    // Flag it so the UI can suggest OCR, rather than silently storing nothing.
-    if (!hasText) update(item.id, { looksScanned: true });
-    return { text, pages, ocr: false, pageTexts };
-  };
-
+  /**
+   * The upload pipeline, in one place:
+   *
+   *   1. Save the ORIGINAL file — nothing is converted, re-encoded or
+   *      replaced at upload any more (PPTX decks used to be turned into
+   *      reconstructed PDFs and the original was discarded).
+   *   2. Extract text BEST-EFFORT for search and AI context. Every extractor
+   *      catches its own failures: a file whose text cannot be read still
+   *      uploads, still opens, still downloads. Extraction never gates
+   *      anything the user sees.
+   *   3. OCR only when the user ticked the scanned-document box.
+   */
   const processFile = async (item: QueueItem) => {
     try {
       update(item.id, { status: 'reading', progress: 0, message: 'Opening file…' });
@@ -203,45 +188,90 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let text = '';
       let pages = 1;
       let usedOcr = false;
+      let textFailed = false;
       let visualStatus: VisualStatus = 'unknown';
       let pageTexts: { page: number; text: string }[] = [];
-      let bytesToSave: Uint8Array<ArrayBufferLike> = new Uint8Array(buffer);
-      let fileType: UploadedMaterial['fileType'] = fileTypeFor(item.kind, item.file);
-      let materialKind: MaterialKind = item.kind === 'pptx' ? 'pptx' : item.kind === 'docx' ? 'docx' : item.kind === 'image' ? 'image' : item.kind;
-      let sizeBytes = item.file.size;
+      // The original bytes, always: what is saved is exactly what was chosen.
+      const bytesToSave: Uint8Array<ArrayBufferLike> = new Uint8Array(buffer);
+      const fileType: UploadedMaterial['fileType'] = fileTypeFor(item.kind, item.file);
+      const materialKind = materialKindFor(item.kind, item.file);
+      const sizeBytes = item.file.size;
 
       if (item.kind === 'pdf') {
-        const r = await processPdf(item, buffer);
-        text = r.text; pages = r.pages; usedOcr = r.ocr;
-        pageTexts = r.pageTexts;
+        const bytes = new Uint8Array(buffer);
+        const hasText = await pdfHasTextLayer(bytes);
+        let ocrRan = false;
+        // OCR only when the user asked for it, or when the file plainly has
+        // no text layer and they ticked the scanned-document box. An OCR
+        // failure downgrades to "no text", never to a failed upload.
+        if (!hasText && ocrRequestedRef.current) {
+          update(item.id, { status: 'ocr', message: 'Scanned document — reading text…' });
+          try {
+            const ocrPages = await ocrPdf(
+              bytes,
+              (p: OcrProgress) => update(item.id, { progress: p.progress, message: p.status }),
+              item.controller.signal,
+            );
+            text = ocrPages.map((p) => `--- Page ${p.page} ---\n${p.text}`).join('\n\n');
+            pages = ocrPages.length;
+            pageTexts = ocrPages;
+            usedOcr = true;
+            ocrRan = true;
+          } catch (err) {
+            if ((err as DOMException)?.name === 'AbortError') throw err;
+            console.warn('PDF OCR failed — continuing without text:', err);
+          }
+        }
+        if (!ocrRan) {
+          const r = await extractPdfText(bytes, {
+            onProgress: (done, total) => update(item.id, {
+              progress: done / total, message: `Reading page ${done} of ${total}…`,
+            }),
+            signal: item.controller.signal,
+          });
+          text = r.text;
+          pageTexts = r.pages;
+          pages = r.pages.length || 1;
+          textFailed = r.failed;
+          // Flag it so the UI can suggest OCR, rather than silently storing nothing.
+          if (!hasText && !r.failed) update(item.id, { looksScanned: true });
+        }
+        visualStatus = 'ok';
       } else if (item.kind === 'docx') {
-        const r = await mammoth.extractRawText({ arrayBuffer: buffer });
-        text = r.value;
+        const r = await extractDocxText(buffer);
+        text = r.text; textFailed = r.failed;
+        pageTexts = r.pages;
+        visualStatus = 'ok';
       } else if (item.kind === 'pptx') {
-        // PowerPoint uploads are normalised to PDF immediately. The reader then
-        // uses the fast, bounded PDF renderer instead of reparsing a PPTX on
-        // every open, which fixes the freezes users saw with large decks and
-        // makes all presentations behave like regular handouts.
-        const { convertPptxToPdf } = await import('../utils/pptxToPdf');
-        const converted = await convertPptxToPdf(item.file, (progress, message) => {
-          update(item.id, { status: 'reading', progress, message });
-        });
-        text = converted.text;
-        pages = converted.pageCount;
-        pageTexts = converted.pageTexts;
-        bytesToSave = converted.pdfBytes;
-        fileType = 'pdf';
-        materialKind = 'pdf';
-        sizeBytes = converted.pdfBytes.byteLength;
+        // The original deck is stored as-is; the reader renders its real
+        // slides on demand (lazy parse). Text for search comes from the light
+        // slide-XML pass — no rendering, no layouts, no media, milliseconds
+        // even for large decks.
+        const r = await extractPptxSlideTexts(item.file);
+        text = r.text; textFailed = r.failed;
+        pageTexts = r.pages;
+        pages = r.pages.length || 1;
+        visualStatus = materialKind === 'ppt' ? 'unknown' : 'ok';
+      } else if (item.kind === 'xlsx') {
+        const r = await extractSpreadsheetText(new Uint8Array(buffer));
+        text = r.text; textFailed = r.failed;
+        pageTexts = r.pages;
+        pages = r.pages.length || 1;
         visualStatus = 'ok';
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
           update(item.id, { status: 'ocr', message: 'Reading text from image…' });
-          text = await ocrImage(item.file, (p) => update(item.id, { progress: p.progress, message: p.status }));
-          usedOcr = true;
+          try {
+            text = await ocrImage(item.file, (p) => update(item.id, { progress: p.progress, message: p.status }));
+            usedOcr = true;
+          } catch (err) {
+            console.warn('Image OCR failed — continuing without text:', err);
+            text = `[Image: ${item.file.name}]`;
+          }
         } else {
           text = `[Image: ${item.file.name}]`;
         }
+        visualStatus = 'ok';
       } else {
         text = await item.file.text();
       }
@@ -268,12 +298,22 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         return;
       }
 
+      const doneMessage = () => {
+        if (item.kind === 'pptx') {
+          return materialKind === 'ppt'
+            ? 'Stored — legacy .ppt cannot be displayed, use Download Original'
+            : `PowerPoint · ${pages} slide${pages === 1 ? '' : 's'}${textFailed ? ' · no readable text' : ''}`;
+        }
+        if (item.kind === 'xlsx') return `Spreadsheet · ${pages} sheet${pages === 1 ? '' : 's'}${textFailed ? ' · no readable text' : ''}`;
+        if (usedOcr) return `Read ${pages} page(s) with OCR`;
+        if (textFailed) return `Ready${pages > 1 ? ` · ${pages} page(s)` : ''} · text could not be read (still viewable)`;
+        return `Ready · ${pages} page(s)`;
+      };
+
       update(item.id, {
         status: 'done',
         progress: 1,
-        message: item.kind === 'pptx'
-          ? `Converted to PDF · ${pages} slide${pages === 1 ? '' : 's'}`
-          : usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`,
+        message: doneMessage(),
         usedOcr,
       });
 
@@ -395,7 +435,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
           {dragging ? 'Drop to upload' : 'Tap to browse or drop files here'}
         </p>
         <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-slate-400 sm:max-w-none">
-          PDF · Word · PowerPoint (converted to PDF) · Images — up to {maxSizeMb} MB each
+          PDF · Word · PowerPoint · Spreadsheets · Images — up to {maxSizeMb} MB each
         </p>
       </div>
 

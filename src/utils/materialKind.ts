@@ -8,7 +8,7 @@
  */
 import type { Slide } from '../types';
 
-export type MaterialKind = 'pdf' | 'pptx' | 'ppt' | 'docx' | 'image' | 'text' | 'unknown';
+export type MaterialKind = 'pdf' | 'pptx' | 'ppt' | 'docx' | 'xlsx' | 'image' | 'text' | 'unknown';
 export type OcrStatus = 'not_needed' | 'done' | 'skipped' | 'failed' | 'unknown';
 export type VisualStatus = 'ok' | 'failed' | 'unknown';
 
@@ -28,6 +28,7 @@ export function kindFromExtension(ext: string | undefined): MaterialKind {
   if (e === 'pptx' || e === 'pptm') return 'pptx';
   if (e === 'ppt') return 'ppt';
   if (e === 'docx' || e === 'doc') return 'docx';
+  if (e === 'xlsx' || e === 'xlsm' || e === 'xls' || e === 'csv') return 'xlsx';
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'].includes(e)) return 'image';
   if (e === 'txt' || e === 'md' || e === 'csv') return 'text';
   return 'unknown';
@@ -42,6 +43,7 @@ export function inferMaterialKind(
   if (/\.ppt$/i.test(name)) return 'ppt';
   if (/\.pdf$/i.test(name) || slide.fileType === 'pdf') return 'pdf';
   if (/\.docx$|\.doc$/i.test(name)) return 'docx';
+  if (/\.(xlsx|xlsm|xls|csv)$/i.test(name)) return 'xlsx';
   if (slide.fileType === 'jpg' || slide.fileType === 'png') return 'image';
   // Upload stores `--- Slide N ---` at the start of extracted text. The
   // localStorage preview keeps that marker even after the 2000-character cap.
@@ -72,6 +74,7 @@ export function typeLabel(kind: MaterialKind): string {
     case 'pptx': return 'PowerPoint';
     case 'ppt': return 'PowerPoint (.ppt)';
     case 'docx': return 'Word';
+    case 'xlsx': return 'Spreadsheet';
     case 'image': return 'Image';
     case 'text': return 'Text';
     default: return 'Unknown';
@@ -195,6 +198,10 @@ export function sniffMaterialKind(bytes: Uint8Array): MaterialKind {
       includesAscii(bytes, 'word/document.xml', 0, headEnd) ||
       includesAscii(bytes, 'word/document.xml', tailStart, bytes.length)
     ) return 'docx';
+    if (
+      includesAscii(bytes, 'xl/workbook.xml', 0, headEnd) ||
+      includesAscii(bytes, 'xl/workbook.xml', tailStart, bytes.length)
+    ) return 'xlsx';
     return 'unknown';
   }
   return 'text';

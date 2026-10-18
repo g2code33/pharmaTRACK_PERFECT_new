@@ -4,7 +4,7 @@ import {
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
   PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { renderPptx, ptToPx, type PptxDocument, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
+import { openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
 import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
@@ -436,9 +436,11 @@ const THUMB_W = 132;
 
 const Thumb = memo(function Thumb({
   index, active, deck, onGo,
-}: { index: number; active: number; deck: PptxDocument; onGo: (n: number) => void }) {
+}: { index: number; active: number; deck: PptxDeck; onGo: (n: number) => void }) {
   const ref = useRef<HTMLButtonElement>(null);
   const [inView, setInView] = useState(false);
+  /** Slide data, parsed on demand from the lazy deck — never upfront. */
+  const [slide, setSlide] = useState<PptxSlide | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -458,6 +460,18 @@ const Thumb = memo(function Thumb({
     io.observe(el);
     return () => io.disconnect();
   }, []);
+
+  // Parse the thumbnail's slide only when it is actually shown (or near the
+  // active slide). On a 150-slide deck that keeps the sidebar's cost at a
+  // handful of parsed slides instead of the whole file.
+  useEffect(() => {
+    let cancelled = false;
+    if (slide || !inView) return;
+    void deck.getSlide(index).then((s) => {
+      if (!cancelled) setSlide(s);
+    });
+    return () => { cancelled = true; };
+  }, [inView, index, deck, slide]);
 
   const isActive = active === index;
   // Always render the neighbourhood of the current slide; the rest only when
@@ -479,7 +493,13 @@ const Thumb = memo(function Thumb({
       >
         {rendered ? (
           <div className="pointer-events-none absolute left-0 top-0 origin-top-left" style={{ transform: `scale(${k})`, width: deck.slideWidth }}>
-            <SlideCanvas slide={deck.slides[index - 1]} sw={deck.slideWidth} sh={deck.slideHeight} showImages={false} />
+            {slide ? (
+              <SlideCanvas slide={slide} sw={deck.slideWidth} sh={deck.slideHeight} showImages={false} />
+            ) : (
+              <div className="flex items-center justify-center bg-slate-100" style={{ width: deck.slideWidth, height: deck.slideHeight }}>
+                <Loader2 className="h-4 w-4 animate-spin text-slate-300" />
+              </div>
+            )}
           </div>
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-slate-400">
@@ -501,7 +521,15 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   onTextExtracted, onCreateHighlight, onAskAi, onSlideChange,
 }) => {
   const positionKey = resumeKey || fileUrl;
-  const [deck, setDeck] = useState<PptxDocument | null>(null);
+  const [deck, setDeck] = useState<PptxDeck | null>(null);
+  /** Slide on screen — parsed on demand from the lazy deck. */
+  const [currentSlideData, setCurrentSlideData] = useState<PptxSlide | null>(null);
+  /** True while the requested slide is still parsing (large decks, fast flips). */
+  const [slidePending, setSlidePending] = useState(false);
+  /** Light per-slide texts, built in the background for Find / text mode. */
+  const [textIndex, setTextIndex] = useState<{ slide: number; text: string }[] | null>(null);
+  const [textIndexBuilding, setTextIndexBuilding] = useState(false);
+  const [exportState, setExportState] = useState<{ busy: boolean; progress: number; error: string | null }>({ busy: false, progress: 0, error: null });
   const [mediaEpoch, setMediaEpoch] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -532,12 +560,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const deckRef = useRef<PptxDocument | null>(null);
+  const deckRef = useRef<PptxDeck | null>(null);
   const jumpAppliedRef = useRef(false);
   const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const resumeFrameRef = useRef<number | null>(null);
 
-  const total = deck?.slides.length ?? 0;
+  const total = deck?.slideCount ?? 0;
 
   const setFsChromeVisible = useCallback((visible: boolean) => {
     if (fsChromeVisibleRef.current === visible) return;
@@ -560,17 +588,25 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     (async () => {
       try {
         const blob = await (await fetch(fileUrl)).blob();
-        const parsed = await renderPptx(blob, { lazyMedia: true });
-        if (cancelled) {
+        // The lazy deck parses presentation.xml, slide order and the slide
+        // the user starts on — not the whole file. A 150-slide lecture no
+        // longer spends seconds (or freezes) before the first slide appears;
+        // every other slide parses on demand while navigating.
+        const parsed = await openPptxDeck(blob, { lazyMedia: true });
+        if (!parsed.slideCount) {
           parsed.dispose();
+          if (!cancelled) {
+            setError('No slides were found in this file.');
+            setLoading(false);
+          }
           return;
         }
         let start = 1;
         const saved = loadSavedSlide(positionKey);
-        if (saved && saved >= 1 && saved <= parsed.slides.length) start = saved;
-        if (jumpToPage && jumpToPage >= 1 && jumpToPage <= parsed.slides.length) start = jumpToPage;
+        if (saved && saved >= 1 && saved <= parsed.slideCount) start = saved;
+        if (jumpToPage && jumpToPage >= 1 && jumpToPage <= parsed.slideCount) start = jumpToPage;
+        const first = await parsed.getSlide(start);
         await parsed.ensureSlideMedia(start);
-        if (start !== 1) await parsed.ensureSlideMedia(1);
         if (cancelled) {
           parsed.dispose();
           return;
@@ -578,9 +614,13 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
         const prev = deckRef.current;
         if (prev && prev !== parsed) prev.dispose();
         deckRef.current = parsed;
+        setCurrentSlideData(first);
+        setSlide(start);
         setDeck(parsed);
-        onTextExtracted?.(parsed.slides.map((s) => ({ page: s.slideNumber, text: s.text })));
         setLoading(false);
+        // Slide texts for Find / text mode are extracted in the background
+        // (a light XML pass, no visual parsing) so they never delay opening.
+        setTextIndex(null);
       } catch (err) {
         console.error('PPTX parse failed:', err);
         if (!cancelled) {
@@ -607,8 +647,8 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     jumpAppliedRef.current = true;
     let start = 1;
     const saved = loadSavedSlide(positionKey);
-    if (saved && saved >= 1 && saved <= deck.slides.length) start = saved;
-    if (jumpToPage && jumpToPage >= 1 && jumpToPage <= deck.slides.length) start = jumpToPage;
+    if (saved && saved >= 1 && saved <= deck.slideCount) start = saved;
+    if (jumpToPage && jumpToPage >= 1 && jumpToPage <= deck.slideCount) start = jumpToPage;
     setSlide(start);
     setPageInput(String(start));
     void deck.ensureSlideMedia(start).then(() => setMediaEpoch((n) => n + 1));
@@ -624,12 +664,23 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   // the student is actually looking at — never the whole deck.
   useEffect(() => {
     if (!deck) return;
-    const current = deck.slides[slide - 1];
-    onSlideChange?.(slide, deck.slides.length, current?.text ?? '');
     let cancelled = false;
-    // Pictures for this slide only. Neighbouring slides stay as text until shown.
-    deck.ensureSlideMedia(slide).then(() => {
-      if (!cancelled) setMediaEpoch((n) => n + 1);
+    // The slide may still be parsing on demand (first visit to a far slide).
+    // Until it lands, keep the previous slide on screen rather than flashing
+    // a blank stage; onSlideChange fires with the real text once it is here.
+    setSlidePending(true);
+    void deck.getSlide(slide).then(async (s) => {
+      if (cancelled) return;
+      if (s) {
+        setCurrentSlideData(s);
+        onSlideChange?.(slide, deck.slideCount, s.text);
+      }
+      // Pictures for this slide only. Neighbouring slides stay as text until shown.
+      await deck.ensureSlideMedia(slide);
+      if (!cancelled) {
+        setMediaEpoch((n) => n + 1);
+        setSlidePending(false);
+      }
     });
     return () => { cancelled = true; };
   }, [deck, slide, onSlideChange]);
@@ -911,8 +962,33 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   }, [deck, slide, total, findOpen, zoomMenu, menu, infoOpen, fs, mode, go, zoomBy]);
 
   /* ---------------- find across slides ---------------- */
+  /* ---------------- find / text index ---------------- */
+
+  // The full text of the deck is only needed once the user actually searches
+  // (or opens text mode). Until then nothing extracts anything — mirroring
+  // the PDF viewer, where the text pass runs when Find opens, not on load.
+  const wantTextIndex = Boolean((findOpen || initialQuery) && query.trim()) || mode === 'text' || infoOpen;
+
+  // Build the index at most once per deck: a state flag in the dependency
+  // list would cancel the in-flight build the moment it flipped, leaving the
+  // find bar stuck on "Searching…" forever.
+  const textIndexStartedFor = useRef<PptxDeck | null>(null);
+  useEffect(() => {
+    if (!deck || !wantTextIndex || textIndexStartedFor.current === deck) return;
+    textIndexStartedFor.current = deck;
+    setTextIndexBuilding(true);
+    void deck.textIndex()
+      .then((entries) => {
+        setTextIndex(entries);
+        setTextIndexBuilding(false);
+        onTextExtracted?.(entries.map((e) => ({ page: e.slide, text: e.text })));
+      })
+      .catch(() => setTextIndexBuilding(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deck, wantTextIndex]);
+
   const matches = useMemo(() => {
-    if (!deck || !query.trim()) return [] as number[];
+    if (!deck || !query.trim() || !textIndex) return [] as number[];
     const q = query.trim();
     let re: RegExp | null = null;
     if (findOpts.wholeWord) {
@@ -922,15 +998,15 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
         re = null;
       }
     }
-    return deck.slides
-      .filter((s) => {
-        if (re) return re.test(s.text);
-        const t = findOpts.caseSensitive ? s.text : s.text.toLowerCase();
+    return textIndex
+      .filter((e) => {
+        if (re) return re.test(e.text);
+        const t = findOpts.caseSensitive ? e.text : e.text.toLowerCase();
         const needle = findOpts.caseSensitive ? q : q.toLowerCase();
         return t.includes(needle);
       })
-      .map((s) => s.slideNumber);
-  }, [deck, query, findOpts]);
+      .map((e) => e.slide);
+  }, [deck, query, findOpts, textIndex]);
 
   const goToMatch = useCallback(
     (idx: number) => {
@@ -1033,12 +1109,43 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     a.click();
   }, [fileUrl, title]);
 
+  /**
+   * Explicit, user-initiated "Export as PDF". This is the ONLY place the
+   * PPTX→PDF conversion runs — never as a prerequisite for viewing. The
+   * original file is untouched; the export is written to a separate download.
+   */
+  const exportPdf = useCallback(async () => {
+    if (exportState.busy) return;
+    setExportState({ busy: true, progress: 0, error: null });
+    try {
+      const blob = await (await fetch(fileUrl)).blob();
+      const { convertPptxToPdf } = await import('../utils/pptxToPdf');
+      const converted = await convertPptxToPdf(blob, (progress) => {
+        setExportState((s) => (s.busy ? { ...s, progress } : s));
+      });
+      const base = title?.trim() || 'presentation';
+      const url = URL.createObjectURL(new Blob([converted.pdfBytes as unknown as BlobPart], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = /\.pdf$/i.test(base) ? base : `${base}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (err) {
+      console.error('PPTX export failed:', err);
+      setExportState({ busy: false, progress: 0, error: 'The PDF export could not be created. The original file is unaffected.' });
+      setTimeout(() => setExportState((s) => ({ ...s, error: null })), 6000);
+      return;
+    }
+    setExportState({ busy: false, progress: 0, error: null });
+  }, [fileUrl, title, exportState.busy]);
+
+
   /* ---------------- derived ---------------- */
-  const currentSlide = deck && deck.slides.length ? deck.slides[slide - 1] : undefined;
+  const currentSlide = currentSlideData ?? undefined;
   const zoomLabel =
     zoom.mode === 'fitWidth' ? 'Fit Width' : zoom.mode === 'fit' ? 'Fit to Screen' : `${Math.round(scale * 100)}%`;
-  const textSlides = deck ? deck.slides.filter((s) => s.text.trim()).length : 0;
-  const hasSlides = Boolean(deck && deck.slides.length);
+  const textSlides = textIndex ? textIndex.filter((e) => e.text.trim()).length : 0;
+  const hasSlides = Boolean(deck && deck.slideCount);
   /**
    * A readable zip with no slides is just as unrenderable as a broken file,
    * so it gets the same never-a-blank-viewer treatment.
@@ -1139,29 +1246,41 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           ) : null}
           {deck && hasSlides ? (
             <div className="mx-auto max-w-3xl space-y-4">
-              {deck.slides.map((s) => (
-                <div key={s.slideNumber} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-                  <div className="mb-1 flex items-center gap-2">
-                    <span className="text-xs font-black uppercase tracking-wider text-[#2D6A4F]">Slide {s.slideNumber}</span>
-                    {s.title ? <span className="text-sm font-bold text-gray-900 truncate">{s.title}</span> : null}
+              {(textIndex ?? []).map((e) => {
+                const slideText = e.text || '';
+                // "Notes: …" is appended by the text pass; split it back out
+                // so the panel keeps its shape.
+                const notesSplit = slideText.split(/^Notes: /m);
+                const bodyText = (notesSplit[0] ?? '').trim();
+                const notes = notesSplit.length > 1 ? notesSplit.slice(1).join('Notes: ').trim() : '';
+                // First line acts as the heading (title placeholder), the
+                // rest are body paragraphs — one element per line, so each
+                // paragraph is selectable and searchable on its own.
+                const [headline, ...bodyLines] = bodyText ? bodyText.split('\n') : [];
+                return (
+                  <div key={e.slide} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className="text-xs font-black uppercase tracking-wider text-[#2D6A4F]">Slide {e.slide}</span>
+                      {headline ? <span className="text-sm font-bold text-gray-900 truncate">{headline}</span> : null}
+                    </div>
+                    {bodyLines.length ? (
+                      <div className="space-y-1">
+                        {bodyLines.map((line, i) => (
+                          <p key={i} className="text-sm leading-relaxed text-gray-700">{line}</p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm italic text-gray-400">No text on this slide.</p>
+                    )}
+                    {notes ? (
+                      <div className="mt-3 rounded-lg bg-amber-50 p-3">
+                        <p className="mb-1 text-[11px] font-black uppercase tracking-wider text-amber-700">Speaker notes</p>
+                        <p className="whitespace-pre-wrap text-sm text-amber-900">{notes}</p>
+                      </div>
+                    ) : null}
                   </div>
-                  {s.body.length ? (
-                    <div className="space-y-1">
-                      {s.body.map((b, i) => (
-                        <p key={i} className="text-sm leading-relaxed text-gray-700">{b}</p>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm italic text-gray-400">No text on this slide.</p>
-                  )}
-                  {s.notes ? (
-                    <div className="mt-3 rounded-lg bg-amber-50 p-3">
-                      <p className="mb-1 text-[11px] font-black uppercase tracking-wider text-amber-700">Speaker notes</p>
-                      <p className="whitespace-pre-wrap text-sm text-amber-900">{s.notes}</p>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <pre className="mx-auto max-w-3xl whitespace-pre-wrap rounded-xl border border-gray-200 bg-white p-5 font-sans text-sm leading-relaxed text-gray-700 shadow-sm">
@@ -1387,7 +1506,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           </label>
           {query.trim().length >= 1 && (
             <span className="text-xs font-bold tabular-nums text-slate-500">
-              {matches.length ? `${matchIdx + 1} of ${matches.length}` : 'Not found'}
+              {matches.length ? `${matchIdx + 1} of ${matches.length}` : textIndexBuilding ? 'Searching…' : 'Not found'}
             </span>
           )}
           <span className="text-[11px] text-slate-400 hidden sm:inline">
@@ -1418,10 +1537,10 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
               </span>
             </div>
             <div className="flex flex-1 gap-1 overflow-x-auto overflow-y-hidden px-2 pb-2 sm:flex-col sm:gap-0 sm:overflow-x-hidden sm:overflow-y-auto sm:p-0">
-              {deck.slides.map((s) => (
+              {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
                 <Thumb
-                  key={s.slideNumber}
-                  index={s.slideNumber}
+                  key={n}
+                  index={n}
                   active={slide}
                   deck={deck}
                   onGo={go}
@@ -1519,7 +1638,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
                   ...(uploadDate ? ([['Added', formatDateTime(uploadDate)]] as [string, string][]) : []),
                   ['Created', formatDateTime(deck.dates?.created)],
                   ['Modified', formatDateTime(deck.dates?.modified)],
-                  ['Text extraction', textSlides ? `${textSlides} of ${total} slide(s) contain text` : 'No text found'],
+                  ['Text extraction', textIndexBuilding ? 'Reading…' : textSlides ? `${textSlides} of ${total} slide(s) contain text` : 'No text found'],
                 ] as [string, string][]
               ).map(([k, v]) => (
                 <div key={k} className="flex justify-between gap-4 border-b border-slate-100 pb-2">

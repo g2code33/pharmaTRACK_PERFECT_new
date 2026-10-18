@@ -9,7 +9,9 @@ import { saveFile, loadFile, loadFileBytes, deleteFile, deleteSlideText } from '
 import FileUploader, { type UploadedMaterial } from '../components/FileUploader';
 import { kindFromExtension, materialMetaFromUpload } from '../utils/materialKind';
 import { indexDocument, removeFromIndex } from '../utils/searchIndex';
-import { processAnyFile } from '../utils/universalProcessor';
+import {
+  extractPdfText, extractPptxSlideTexts, extractDocxText, extractSpreadsheetText,
+} from '../utils/extractText';
 import {
   Upload,
   FileText,
@@ -167,29 +169,58 @@ const StudyMaterials: React.FC = () => {
     processFile(file);
   };
 
+  /**
+   * Attach a file to the slide form. The ORIGINAL file is always kept (it is
+   * what gets saved and what the reader opens); text is extracted
+   * best-effort for the form's preview, and a file whose text cannot be read
+   * is still attachable — extraction never gates anything the user sees.
+   */
   const processFile = async (file: File) => {
     setCurrentFileBlob(file);
-    
+
     try {
-      // 🚀 PharmaGAME Universal Logic
-      const result = await processAnyFile(file);
-      
-      setSlideForm(prev => ({ 
-        ...prev, 
-        fileType: result.type as any, 
+      const kind = kindFromExtension(file.name.toLowerCase().split('.').pop());
+      let text = '';
+      let pages: { page: number; text: string }[] = [];
+      if (kind === 'pdf') {
+        const r = await extractPdfText(new Uint8Array(await file.arrayBuffer()));
+        text = r.text; pages = r.pages;
+      } else if (kind === 'pptx' || kind === 'ppt') {
+        const r = await extractPptxSlideTexts(file);
+        text = r.text; pages = r.pages;
+      } else if (kind === 'docx') {
+        const r = await extractDocxText(await file.arrayBuffer());
+        text = r.text; pages = r.pages;
+      } else if (kind === 'xlsx') {
+        const r = await extractSpreadsheetText(new Uint8Array(await file.arrayBuffer()));
+        text = r.text; pages = r.pages;
+      } else {
+        text = await file.text();
+        pages = [{ page: 1, text }];
+      }
+
+      setSlideForm(prev => ({
+        ...prev,
+        fileType: (kind === 'pdf' ? 'pdf' : 'text') as typeof prev.fileType,
         title: prev.title || file.name.replace(/\.[^/.]+$/, ''),
-        contentText: result.text
+        contentText: text,
       }));
 
       // Create high-speed UI preview
       const reader = new FileReader();
       reader.onload = () => setFileData(reader.result as string);
       reader.readAsDataURL(file);
-      
     } catch (err: any) {
-      console.error('File sync failed:', err);
-      alert(`PharmaGAME Sync Error: ${err.message || 'File structure is unreadable'}`);
-      setCurrentFileBlob(null);
+      console.warn('Text extraction failed — the file is still attached and openable:', err);
+      setSlideForm(prev => ({
+        ...prev,
+        fileType: 'text' as typeof prev.fileType,
+        title: prev.title || file.name.replace(/\.[^/.]+$/, ''),
+        contentText: '',
+      }));
+      const reader = new FileReader();
+      reader.onload = () => setFileData(reader.result as string);
+      reader.readAsDataURL(file);
     }
   };
 

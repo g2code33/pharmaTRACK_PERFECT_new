@@ -48,7 +48,7 @@ export interface Slide {
    * archives keep working. Presentations used to be stored as `text` with the
    * extension removed from the title.
    */
-  materialKind?: 'pdf' | 'pptx' | 'ppt' | 'docx' | 'image' | 'text' | 'unknown';
+  materialKind?: 'pdf' | 'pptx' | 'ppt' | 'docx' | 'xlsx' | 'image' | 'text' | 'unknown';
   /** Original filename, including the extension the title no longer has. */
   originalName?: string;
   fileSize?: number;

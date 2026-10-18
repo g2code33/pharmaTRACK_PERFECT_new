@@ -19,6 +19,8 @@ import type { AppState, LearningStatus, Slide, TopicLearningRecord } from '../ty
 import { STATUS_LABEL } from '../utils/learningEngine';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
+const DocxViewer = React.lazy(() => import('../components/DocxViewer'));
+const XlsxViewer = React.lazy(() => import('../components/XlsxViewer'));
 import { format } from 'date-fns';
 import {
   Archive,
@@ -223,10 +225,20 @@ const ArchiveViewer: React.FC = () => {
     );
   }
 
-  const previewKind = (p: PreviewState): 'pdf' | 'pptx' | 'image' | 'docx' | 'other' => {
-    const t = `${p.blobType} ${String(p.slide.fileType || '')}`.toLowerCase();
+  const previewKind = (p: PreviewState): 'pdf' | 'pptx' | 'image' | 'docx' | 'xlsx' | 'text' | 'other' => {
+    // The material's real kind wins; archives taken before it existed fall
+    // back to the blob's MIME type and the legacy fileType field.
+    const mk = (p.slide as { materialKind?: string }).materialKind;
+    if (mk === 'pdf') return 'pdf';
+    if (mk === 'pptx') return 'pptx';
+    if (mk === 'docx') return 'docx';
+    if (mk === 'xlsx') return 'xlsx';
+    if (mk === 'image') return 'image';
+    if (mk === 'text') return 'text';
+    const t = `${p.blobType} ${String(p.slide.fileType || '')} ${p.slide.originalName || ''}`.toLowerCase();
     if (t.includes('pdf')) return 'pdf';
     if (t.includes('presentationml') || t.includes('pptx')) return 'pptx';
+    if (t.includes('spreadsheetml') || /.xlsx| .xlsm| .xls| .csv/.test(` ${t} `)) return 'xlsx';
     if (t.includes('wordprocessingml') || t.includes('docx')) return 'docx';
     if (t.startsWith('image') || t.includes('png') || t.includes('jpg') || t.includes('jpeg') || t.includes('gif') || t.includes('webp')) return 'image';
     return 'other';
@@ -702,7 +714,14 @@ const ArchiveViewer: React.FC = () => {
                     {preview.url && kind === 'pdf' && <div className="h-[70vh]"><PdfViewer fileUrl={preview.url} title={preview.slide.title} jumpToPage={previewPage} /></div>}
                     {preview.url && kind === 'pptx' && <div className="h-[70vh]"><PptxViewer fileUrl={preview.url} title={preview.slide.title} jumpToPage={previewPage} /></div>}
                     {preview.url && kind === 'image' && <img src={preview.url} alt={preview.slide.title} className="max-h-[70vh] mx-auto" />}
-                    {kind === 'docx' && (
+                    {kind === 'docx' && preview.url && (
+                      <div className="h-[70vh]">
+                        <React.Suspense fallback={<div className="flex h-full items-center justify-center text-gray-500"><Loader2 className="w-6 h-6 animate-spin" /></div>}>
+                          <DocxViewer fileUrl={preview.url} title={preview.slide.title} />
+                        </React.Suspense>
+                      </div>
+                    )}
+                    {kind === 'docx' && !preview.url && (
                       <div className="p-4">
                         <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Document text</p>
                         {preview.docxText ? (
@@ -710,6 +729,13 @@ const ArchiveViewer: React.FC = () => {
                         ) : (
                           <p className="text-sm text-gray-500">Text could not be extracted from this document.</p>
                         )}
+                      </div>
+                    )}
+                    {kind === 'xlsx' && preview.url && (
+                      <div className="h-[70vh]">
+                        <React.Suspense fallback={<div className="flex h-full items-center justify-center text-gray-500"><Loader2 className="w-6 h-6 animate-spin" /></div>}>
+                          <XlsxViewer fileUrl={preview.url} title={preview.slide.title} />
+                        </React.Suspense>
                       </div>
                     )}
                     {!preview.url && (

@@ -6,6 +6,7 @@ import { convertPptxToPdf } from '../utils/pptxToPdf';
 
 const converterSource = fs.readFileSync(path.resolve(__dirname, '../utils/pptxToPdf.ts'), 'utf8');
 const readerSource = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const viewerSource = fs.readFileSync(path.resolve(__dirname, '../components/PptxViewer.tsx'), 'utf8');
 const nativeSource = fs.readFileSync(path.resolve(__dirname, '../../src-tauri/src/main.rs'), 'utf8');
 
 const slideXml = (title: string, body: string) => `<?xml version="1.0"?>
@@ -54,9 +55,18 @@ describe('PPTX to PDF conversion', () => {
   it('prefers native LibreOffice conversion in the desktop app before browser fallback', () => {
     expect(converterSource).toContain('convertNativeMaterialPptxToPdf');
     expect(converterSource).toContain("convert_material_pptx_to_pdf_native");
-    expect(readerSource.indexOf('convertNativeMaterialPptxToPdf(materialId)')).toBeGreaterThan(-1);
-    expect(readerSource.indexOf('convertNativeMaterialPptxToPdf(materialId)')).toBeLessThan(readerSource.indexOf('convertPptxToPdf(new Blob'));
     expect(nativeSource).toContain('LibreOffice/soffice');
     expect(nativeSource).toContain('--convert-to');
+  });
+
+  it('is an explicit export in the viewer, never a prerequisite for opening', () => {
+    // The reader opens the ORIGINAL PPTX (lazy deck render) and contains no
+    // conversion call at all; conversion runs only from the viewer's
+    // user-initiated "Export as PDF" action.
+    expect(readerSource).not.toContain('convertPptxToPdf');
+    expect(readerSource).not.toContain('convertNativeMaterialPptxToPdf');
+    expect(readerSource).not.toContain('saveFile(');
+    expect(viewerSource).toContain('Export as PDF');
+    expect(viewerSource).toContain("import('../utils/pptxToPdf')");
   });
 });

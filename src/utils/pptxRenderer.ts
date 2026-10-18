@@ -1286,7 +1286,55 @@ function parseGroup(grp: Element, ctx: ShapeCtx): void {
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Promise<PptxDocument> {
+/* ------------------------------------------------------------------ */
+/* Deck: lazy, cached, bounded                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A parsed-but-not-materialised deck.
+ *
+ * `renderPptx` (below) eagerly parses every slide for callers that want the
+ * whole document at once (PDF export, tests). The reader instead opens a
+ * deck: presentation dimensions, slide order and the first requested slide
+ * are parsed, and every other slide is parsed on demand behind a bounded
+ * LRU cache. Opening a 150-slide lecture therefore costs one slide's parse,
+ * not 150 — that upfront whole-deck parse is what used to freeze the reader
+ * and is the reason PPTX files were once converted to PDF on open.
+ */
+export interface PptxDeck {
+  slideCount: number;
+  /** CSS pixels. */
+  slideWidth: number;
+  slideHeight: number;
+  dates?: { created?: string; modified?: string };
+  fileSize: number;
+  /**
+   * Parses and returns slide `n` (1-based). Results are cached; the cache is
+   * bounded, so a long browsing session cannot accumulate every slide's
+   * shapes. Media (pictures) is not decoded by this call — the viewer calls
+   * `ensureSlideMedia` for the slide on screen, exactly like before.
+   */
+  getSlide: (n: number) => Promise<PptxSlide | null>;
+  /** Parses every slide (eager path / export). Returns them in deck order. */
+  parseAllSlides: () => Promise<PptxSlide[]>;
+  /**
+   * Ordered slide texts WITHOUT a visual parse: shape runs, table cells and
+   * speaker notes only. This is what find-in-deck and text extraction use,
+   * so searching a deck never triggers layout/theme parsing.
+   */
+  textIndex: (onProgress?: (done: number, total: number) => void) => Promise<{ slide: number; text: string }[]>;
+  /** Decodes the pictures of one slide. No-op when already loaded. */
+  ensureSlideMedia: (slideNumber: number) => Promise<void>;
+  /** Releases every object URL and cache entry. The deck is unusable after. */
+  dispose: () => void;
+}
+
+/** Parsed slides kept for instant prev/next. Small: these are the heavy objects. */
+const DECK_SLIDE_CACHE = 16;
+/** The LRU never evicts the most recent slides — the one on screen is among them. */
+const DECK_KEEP_HOT = 4;
+
+export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): Promise<PptxDeck> {
   activeTheme = null; // never inherit another deck's theme
   const lazyMedia = Boolean(opts?.lazyMedia);
   const zip = await JSZip.loadAsync(blob);
@@ -1294,20 +1342,86 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
   const { w: slideWidth, h: slideHeight } = await parsePresentationSize(zip);
   const dates = await parseDates(zip);
 
-  const slides: PptxSlide[] = [];
+  /* ---- shared, deck-lifetime caches (immutable parts of the file) ---- */
+
+  // Relationships are tiny XML docs but were re-parsed per slide AND per
+  // layout AND per master before; a deck with 100 slides sharing 2 layouts
+  // parsed the same master >100 times.
+  const relsCache = new Map<string, Promise<Map<string, Rel>>>();
+  const loadRelsCached = (partPath: string): Promise<Map<string, Rel>> => {
+    const hit = relsCache.get(partPath);
+    if (hit) return hit;
+    const p = loadRelsFor(zip, partPath);
+    relsCache.set(partPath, p);
+    return p;
+  };
+
+  // Layouts (and the master + theme each one pulls in) are shared by every
+  // slide that uses them; parse each distinct layout exactly once.
+  const layoutCache = new Map<string, Promise<LayoutInfo | null>>();
+  const loadLayoutCached = (slideRels: Map<string, Rel>): Promise<LayoutInfo | null> => {
+    const layoutRel = Array.from(slideRels.values()).find((r) => r.type.endsWith('/slideLayout'));
+    if (!layoutRel) return Promise.resolve(null);
+    const layoutPath = resolveZipPath('ppt/slides', layoutRel.target);
+    const hit = layoutCache.get(layoutPath);
+    if (hit) return hit;
+    const p = loadLayoutInfo(zip, slideRels, (u) => urlRevoke.push(u), lazyMedia);
+    layoutCache.set(layoutPath, p);
+    return p;
+  };
+
+  /* ---- media bookkeeping (refcounted per slide, revoked when unused) ---- */
+
   const urlRevoke: string[] = [];
+  const urlByPath = new Map<string, string>();
+  /** Which slide numbers still hold a live reference to each media path. */
+  const pathRefs = new Map<string, Set<number>>();
+  /** Media paths decoded for a given slide number (for eviction/refcount). */
+  const slideLoadedPaths = new Map<number, string[]>();
   const jobs = new Map<number, { rels: Map<string, Rel>; slideBgPath?: string; layoutBgPath?: string }>();
+  const loadedMedia = new Set<number>();
+  const inflight = new Map<number, Promise<void>>();
+  let alive = true;
 
-  for (let i = 0; i < slideFiles.length; i++) {
+  const urlFor = async (path: string, forSlide: number): Promise<string | undefined> => {
+    if (!alive) return undefined;
+    const cached = urlByPath.get(path);
+    if (cached) {
+      pathRefs.get(path)?.add(forSlide);
+      return cached;
+    }
+    const media = zip.file(path);
+    if (!media) return undefined;
+    try {
+      const url = URL.createObjectURL(await media.async('blob'));
+      if (!alive) {
+        try { URL.revokeObjectURL(url); } catch { /* disposed mid-load */ }
+        return undefined;
+      }
+      urlRevoke.push(url);
+      urlByPath.set(path, url);
+      let refs = pathRefs.get(path);
+      if (!refs) { refs = new Set(); pathRefs.set(path, refs); }
+      refs.add(forSlide);
+      return url;
+    } catch {
+      return undefined;
+    }
+  };
+
+  /* ---- per-slide visual parse (the old renderPptx loop body) ---- */
+
+  const parseSlideAt = async (i: number): Promise<PptxSlide | null> => {
     const slidePath = slideFiles[i];
+    if (!slidePath) return null;
     const content = await zip.file(slidePath)?.async('text');
-    if (!content) continue;
+    if (!content) return null;
     const doc = new DOMParser().parseFromString(content, 'text/xml');
-    const rels = await loadRelsFor(zip, slidePath);
+    const rels = await loadRelsCached(slidePath);
 
-    // Embedded images. The viewer asks for lazy media so a 200-slide image
-    // deck does not decode every picture before the first slide is shown.
-    // Callers that omit the flag (and the unit tests) still get URLs now.
+    // Embedded images. Eager parses decode every picture of the slide now
+    // (callers that omit lazyMedia — and the unit tests — still get URLs
+    // immediately). Lazy decks defer to ensureSlideMedia.
     const imageUrls = new Map<string, string>();
     if (!lazyMedia) {
       for (const [rid, rel] of rels) {
@@ -1316,16 +1430,19 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
         const media = zip.file(path);
         if (!media) continue;
         try {
-          const url = URL.createObjectURL(await media.async('blob'));
-          imageUrls.set(rid, url);
-          urlRevoke.push(url);
+          const url = await urlFor(path, i + 1);
+          if (url) {
+            imageUrls.set(rid, url);
+            const list = slideLoadedPaths.get(i + 1) ?? [];
+            if (!list.includes(path)) { list.push(path); slideLoadedPaths.set(i + 1, list); }
+          }
         } catch {
           /* unreadable media — skip */
         }
       }
     }
 
-    const layout = await loadLayoutInfo(zip, rels, (u) => urlRevoke.push(u), lazyMedia);
+    const layout = await loadLayoutCached(rels);
     const cSld = doc.getElementsByTagName('p:cSld')[0] || doc.documentElement;
     const spTree = cSld.getElementsByTagName('p:spTree')[0] || cSld;
 
@@ -1340,17 +1457,18 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
         layoutBgPath: layout?.backgroundImagePath,
       });
     } else {
-      const slideBgImage = await backgroundPicture(
-        zip,
-        slideBg,
-        'ppt/slides',
-        rels,
-        (u) => urlRevoke.push(u),
-      );
+      const slideBgPath = embeddedPicturePath(slideBg, 'ppt/slides', rels);
+      const slideBgImage = slideBgPath ? await urlFor(slideBgPath, i + 1) : undefined;
+      if (slideBgPath && slideBgImage) {
+        const list = slideLoadedPaths.get(i + 1) ?? [];
+        list.push(slideBgPath); slideLoadedPaths.set(i + 1, list);
+      }
       backgroundImageUrl = slideBgImage ?? layout?.backgroundImageUrl;
     }
 
-    // Apply this slide's theme for the (synchronous) parse below.
+    // Apply this slide's theme for the (synchronous) parse below. The shape
+    // section never awaits, so concurrent slide parses cannot interleave a
+    // different deck's — or slide's — active theme into it.
     activeTheme = layout?.theme ?? activeTheme;
 
     let nextId = 0;
@@ -1434,7 +1552,7 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
     tableTexts.forEach((p) => parts.push(p));
     if (notes) parts.push(`Notes: ${notes}`);
 
-    slides.push({
+    return {
       slideNumber: i + 1,
       title,
       body,
@@ -1444,43 +1562,73 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
       background,
       backgroundImageUrl,
       shapes,
-    });
+    };
+  };
 
-    // Keep the UI thread free on large lazy decks. Eager parses stay synchronous
-    // so existing tests do not pick up an extra turn.
-    if (lazyMedia && (i + 1) % 4 === 0 && i < slideFiles.length - 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
+  /* ---- bounded slide cache ---- */
 
-  const fullText = slides.length
-    ? slides.map((s) => `--- Slide ${s.slideNumber} ---\n${s.text}`).join('\n\n')
-    : '';
+  const parsedSlides = new Map<number, PptxSlide>(); // insertion order = LRU order
+  const slideInflight = new Map<number, Promise<PptxSlide | null>>();
+  /** Set by parseAllSlides: eager decks keep every slide cached (see below). */
+  let allParsed = false;
 
-  const loadedMedia = new Set<number>(lazyMedia ? [] : slides.map((s) => s.slideNumber));
-  const inflight = new Map<number, Promise<void>>();
-  const urlByPath = new Map<string, string>();
-  let alive = true;
-
-  const urlFor = async (path: string): Promise<string | undefined> => {
-    if (!alive) return undefined;
-    const cached = urlByPath.get(path);
-    if (cached) return cached;
-    const media = zip.file(path);
-    if (!media) return undefined;
-    try {
-      const url = URL.createObjectURL(await media.async('blob'));
-      if (!alive) {
-        try { URL.revokeObjectURL(url); } catch { /* disposed mid-load */ }
-        return undefined;
+  const revokeSlideMedia = (n: number) => {
+    const paths = slideLoadedPaths.get(n);
+    if (!paths) return;
+    for (const path of paths) {
+      const refs = pathRefs.get(path);
+      if (!refs) continue;
+      refs.delete(n);
+      if (refs.size === 0) {
+        const url = urlByPath.get(path);
+        if (url) {
+          try { URL.revokeObjectURL(url); } catch { /* already revoked */ }
+        }
+        urlByPath.delete(path);
+        pathRefs.delete(path);
       }
-      urlRevoke.push(url);
-      urlByPath.set(path, url);
-      return url;
-    } catch {
-      return undefined;
+    }
+    slideLoadedPaths.delete(n);
+  };
+
+  const evictColdSlides = () => {
+    if (allParsed) return;
+    while (parsedSlides.size > DECK_SLIDE_CACHE - DECK_KEEP_HOT) {
+      // Map iterates oldest-inserted first; the hot (recent) tail is never touched.
+      const oldest = parsedSlides.keys().next();
+      if (oldest.done) break;
+      parsedSlides.delete(oldest.value);
+      jobs.delete(oldest.value);
+      revokeSlideMedia(oldest.value);
     }
   };
+
+  const getSlide = async (n: number): Promise<PptxSlide | null> => {
+    if (!alive || n < 1 || n > slideFiles.length) return null;
+    const hit = parsedSlides.get(n);
+    if (hit) {
+      // Refresh recency.
+      parsedSlides.delete(n);
+      parsedSlides.set(n, hit);
+      return hit;
+    }
+    const pending = slideInflight.get(n);
+    if (pending) return pending;
+    const run = (async () => {
+      const slide = await parseSlideAt(n - 1);
+      if (!alive) return slide;
+      if (slide) {
+        parsedSlides.set(n, slide);
+        evictColdSlides();
+      }
+      slideInflight.delete(n);
+      return slide;
+    })();
+    slideInflight.set(n, run);
+    return run;
+  };
+
+  /* ---- media loading for one slide (lazy decks) ---- */
 
   const ensureSlideMedia = (slideNumber: number): Promise<void> => {
     if (!alive || loadedMedia.has(slideNumber)) return Promise.resolve();
@@ -1488,22 +1636,34 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
     if (pending) return pending;
     const run = (async () => {
       const job = jobs.get(slideNumber);
-      const slide = slides.find((s) => s.slideNumber === slideNumber);
+      const slide = parsedSlides.get(slideNumber);
       if (!job || !slide) {
         loadedMedia.add(slideNumber);
         return;
       }
+      const note = (path?: string) => {
+        if (!path) return;
+        const list = slideLoadedPaths.get(slideNumber) ?? [];
+        if (!list.includes(path)) { list.push(path); slideLoadedPaths.set(slideNumber, list); }
+      };
       if (job.slideBgPath) {
-        slide.backgroundImageUrl = (await urlFor(job.slideBgPath)) ?? slide.backgroundImageUrl;
+        slide.backgroundImageUrl = (await urlFor(job.slideBgPath, slideNumber)) ?? slide.backgroundImageUrl;
+        note(job.slideBgPath);
       } else if (job.layoutBgPath && !slide.backgroundImageUrl) {
-        slide.backgroundImageUrl = await urlFor(job.layoutBgPath);
+        const layoutUrl = await urlFor(job.layoutBgPath, slideNumber);
+        if (layoutUrl) {
+          note(job.layoutBgPath);
+          slide.backgroundImageUrl = layoutUrl;
+        }
       }
       for (const shape of slide.shapes) {
         if (!shape.imageRid || shape.imageUrl) continue;
         const rel = job.rels.get(shape.imageRid);
         if (!rel || !rel.type.endsWith('/image')) continue;
-        const url = await urlFor(resolveZipPath('ppt/slides', rel.target));
+        const path = resolveZipPath('ppt/slides', rel.target);
+        const url = await urlFor(path, slideNumber);
         if (!url) continue;
+        note(path);
         shape.imageUrl = url;
         if (!slide.images.includes(url)) slide.images.push(url);
       }
@@ -1513,11 +1673,99 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
     return run;
   };
 
+  /* ---- eager parse (export / legacy renderPptx callers) ---- */
+
+  const parseAllSlides = async (): Promise<PptxSlide[]> => {
+    const slides: PptxSlide[] = [];
+    for (let i = 0; i < slideFiles.length; i++) {
+      if (!alive) return slides;
+      const slide = await parseSlideAt(i);
+      if (slide) slides.push(slide);
+      // Keep the UI thread free on large lazy decks. Eager parses stay synchronous
+      // so existing tests do not pick up an extra turn.
+      if (lazyMedia && (i + 1) % 4 === 0 && i < slideFiles.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+    if (alive) {
+      // Register every parsed slide. Eager decks are exempt from the LRU
+      // bound: renderPptx callers (PDF export, tests) expect every slide and
+      // its media to stay addressable until dispose, exactly as before.
+      for (const s of slides) {
+        parsedSlides.set(s.slideNumber, s);
+      }
+      if (!lazyMedia) slides.forEach((s) => loadedMedia.add(s.slideNumber));
+      allParsed = true;
+    }
+    return slides;
+  };
+
+  /* ---- text-only pass (find + extraction; no visual parse) ---- */
+
+  const textIndex = async (
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<{ slide: number; text: string }[]> => {
+    const out: { slide: number; text: string }[] = [];
+    for (let i = 0; i < slideFiles.length; i++) {
+      if (!alive) return out;
+      const slidePath = slideFiles[i];
+      const content = await zip.file(slidePath)?.async('text');
+      if (!content) continue;
+      let text = '';
+      try {
+        const doc = new DOMParser().parseFromString(content, 'text/xml');
+        text = Array.from(doc.getElementsByTagName('a:p'))
+          .map((p) =>
+            Array.from(p.getElementsByTagName('a:t'))
+              .map((t) => t.textContent || '')
+              .join(''),
+          )
+          .filter((t) => t.trim())
+          .join('\n');
+      } catch {
+        /* unreadable slide — skip */
+      }
+      // Speaker notes join the searchable text, matching the visual parse.
+      let notes = '';
+      const rels = await loadRelsCached(slidePath);
+      const notesRel = Array.from(rels.values()).find((r) => r.type.endsWith('/notesSlide'));
+      const notesPath = notesRel
+        ? resolveZipPath('ppt/slides', notesRel.target)
+        : `ppt/notesSlides/notesSlide${i + 1}.xml`;
+      const notesFile = zip.file(notesPath);
+      if (notesFile) {
+        try {
+          const notesDoc = new DOMParser().parseFromString(await notesFile.async('text'), 'text/xml');
+          const lines = Array.from(notesDoc.getElementsByTagName('a:p'))
+            .map((p) => Array.from(p.getElementsByTagName('a:t')).map((t) => t.textContent || '').join('').trim())
+            .filter(Boolean);
+          const last = lines[lines.length - 1];
+          if (last && /^\d{1,3}$/.test(last) && parseInt(last, 10) === i + 1) lines.pop();
+          notes = lines.join('\n');
+        } catch {
+          /* unreadable notes — skip */
+        }
+      }
+      const parts = [text, notes ? `Notes: ${notes}` : ''].filter((t) => t.trim());
+      out.push({ slide: i + 1, text: parts.join('\n') });
+      onProgress?.(i + 1, slideFiles.length);
+      if ((i + 1) % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return out;
+  };
+
   const dispose = () => {
     alive = false;
     jobs.clear();
+    parsedSlides.clear();
+    slideInflight.clear();
     urlByPath.clear();
+    pathRefs.clear();
+    slideLoadedPaths.clear();
+    relsCache.clear();
+    layoutCache.clear();
     inflight.clear();
+    loadedMedia.clear();
     urlRevoke.forEach((u) => {
       try {
         URL.revokeObjectURL(u);
@@ -1527,5 +1775,40 @@ export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Pr
     });
   };
 
-  return { slides, slideWidth, slideHeight, fullText, fileSize: blob.size, dates, ensureSlideMedia, dispose };
+  return {
+    slideCount: slideFiles.length,
+    slideWidth,
+    slideHeight,
+    dates,
+    fileSize: blob.size,
+    getSlide,
+    parseAllSlides,
+    textIndex,
+    ensureSlideMedia,
+    dispose,
+  };
+}
+
+/**
+ * Eager, whole-deck parse. Returns every slide materialised — the interface
+ * the PDF exporter and the unit tests are written against. The reader uses
+ * `openPptxDeck` instead (see above) so opening a file never waits for the
+ * whole deck to parse.
+ */
+export async function renderPptx(blob: Blob, opts?: { lazyMedia?: boolean }): Promise<PptxDocument> {
+  const deck = await openPptxDeck(blob, opts);
+  const slides = await deck.parseAllSlides();
+  const fullText = slides.length
+    ? slides.map((s) => `--- Slide ${s.slideNumber} ---\n${s.text}`).join('\n\n')
+    : '';
+  return {
+    slides,
+    slideWidth: deck.slideWidth,
+    slideHeight: deck.slideHeight,
+    fullText,
+    fileSize: deck.fileSize,
+    dates: deck.dates,
+    ensureSlideMedia: deck.ensureSlideMedia,
+    dispose: () => deck.dispose(),
+  };
 }
