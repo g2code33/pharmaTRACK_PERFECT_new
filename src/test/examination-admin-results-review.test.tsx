@@ -16,7 +16,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 const idbStore = new Map<string, unknown>();
@@ -194,7 +194,14 @@ beforeEach(() => {
   lanMocks.running = false;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // The admin console refreshes on a 5 s interval and its async chain can
+  // still be in flight when the test body finishes. Give pending promises a
+  // macrotask to land while the DOM environment still exists — otherwise
+  // their setState dispatches into a torn-down window (the intermittent
+  // "window is not defined" failure on CI runners, ExaminationAdmin.tsx:199).
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  cleanup();
   idbStore.clear();
   sessionStorage.clear();
   vi.restoreAllMocks();
