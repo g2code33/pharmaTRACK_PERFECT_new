@@ -47,18 +47,30 @@ fi
 sudo apt-get autoremove -y >/dev/null 2>&1 || true
 
 echo "==> Step 2/4: clearing the webview's cached and service-worker state…"
-if [ -d "${PROFILE}" ]; then
-  echo "    profile contents before cleaning:"
-  ls -la "${PROFILE}" 2>/dev/null | sed 's/^/      /' || true
-  # ONLY the webview's cache and service-worker entries go. The user's data
-  # (IndexedDB, Local Storage, databases, settings) is preserved by name.
-  for entry in "EBICache" "Service Worker" "Code Cache" "GPUCache" "Cache" "CachedLayers"; do
-    rm -rf "${PROFILE:?}/${entry}"
-  done
-  rm -rf "${PROFILE:?}"/serviceworker* 2>/dev/null || true
+# The webview's storage location varies by WebKitGTK version: search the usual
+# roots instead of assuming one path, and clean every match we find.
+PROFILE_DIRS="$(
+  find "${HOME}/.config" "${HOME}/.local/share" "${HOME}/.cache" -maxdepth 2 \
+    \( -iname "*pharmatrack*" -o -iname "*pharma-track*" -o -iname "*${IDENTIFIER}*" \) \
+    -type d 2>/dev/null || true
+)"
+if [ -n "${PROFILE_DIRS}" ]; then
+  echo "    webview storage found:"
+  echo "${PROFILE_DIRS}" | sed 's/^/      /'
+  # ONLY the cache and service-worker entries go, BY NAME. The user's data
+  # (IndexedDB, Local Storage, databases, settings) is preserved.
+  while IFS= read -r dir; do
+    for entry in "EBICache" "Service Worker" "Code Cache" "GPUCache" "Cache" "CachedLayers"; do
+      rm -rf "${dir:?}/${entry}"
+    done
+    rm -rf "${dir:?}"/serviceworker* 2>/dev/null || true
+    ls -la "${dir}" 2>/dev/null | sed 's/^/      /' || true
+  done <<EOF
+${PROFILE_DIRS}
+EOF
   echo "    cleared cache + service-worker registrations (your data is preserved)."
 else
-  echo "    (no profile directory found — clean.)"
+  echo "    (no webview storage found in ~/.config, ~/.local/share or ~/.cache — clean.)"
 fi
 
 echo "==> Step 3/4: fresh install of the latest release…"

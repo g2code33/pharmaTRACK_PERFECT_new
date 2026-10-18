@@ -39,7 +39,13 @@ for tool in curl sha256sum apt-get; do
   fi
 done
 
-WORKDIR="$(mktemp -d /tmp/pharmatrack-update.XXXXXX)"
+echo "==> Disk space (a full disk fails the download AND the unpack):"
+df -h / /tmp 2>/dev/null | sed 's/^/    /' || true
+
+# Prefer /tmp, but fall back to the user's home: on machines where /tmp is a
+# small tmpfs that filled up, curl dies with "client returned ERROR on write"
+# halfway through the download.
+WORKDIR="$(mktemp -d /tmp/pharmatrack-update.XXXXXX 2>/dev/null || mktemp -d "${HOME}/.pharmatrack-update.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 # The Debian package name is decided by the bundler from the product name
