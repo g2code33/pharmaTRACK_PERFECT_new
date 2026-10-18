@@ -725,7 +725,10 @@ fn discovery_loop(port: u16, state: Arc<Mutex<ServerState>>, stop: Arc<AtomicBoo
                     if open {
                         response["sessionToken"] = json!(locked.config.access_token);
                     }
-                    let _ = socket.send_to(response.as_bytes(), source);
+                    // serde_json::Value has no as_bytes(); serialise properly.
+                    if let Ok(bytes) = serde_json::to_vec(&response) {
+                        let _ = socket.send_to(&bytes, source);
+                    }
                 }
             }
         }
