@@ -1,6 +1,6 @@
 import React from 'react';
 import { AlertTriangle, RotateCw, Home, WifiOff } from 'lucide-react';
-import { isChunkLoadError } from '../utils/routeLoader';
+import { chunkUrlForDiagnostics, isChunkLoadError } from '../utils/routeLoader';
 import { recoverServiceWorker } from '../utils/serviceWorkerRecovery';
 
 /**
@@ -65,11 +65,25 @@ class RouteErrorBoundary extends React.Component<Props, State> {
 
   private retryChunk = async () => {
     this.setState({ reloading: true });
+    // The file that failed to load, for a targeted cache refresh. WebKit's
+    // MIME refusal names no URL, so this falls back to the most recent script
+    // fetch in the performance timeline.
+    const failingUrl = chunkUrlForDiagnostics(this.state.error);
     try {
       // On the web this pulls the newest worker; in the desktop/Android shell
       // it removes the worker and its cached app shell, which is what was
       // blocking the page from loading in the first place.
       await recoverServiceWorker();
+      // Re-fetch the failing file with cache: 'reload' so the engine's HTTP
+      // cache cannot replay whatever broken response it stored for that URL.
+      // The reload below then re-imports a healed entry.
+      if (failingUrl) {
+        try {
+          await fetch(failingUrl, { cache: 'reload' });
+        } catch {
+          /* best-effort; the reload still runs */
+        }
+      }
     } catch {
       /* best-effort */
     } finally {
@@ -99,8 +113,20 @@ class RouteErrorBoundary extends React.Component<Props, State> {
               The app may have just updated, or the connection dropped while
               loading this section. Nothing you saved has been lost.
             </p>
-            <p className="text-xs text-slate-400 dark:text-slate-500 mb-6">
+            <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">
               Retrying fetches the latest version and reopens the page.
+            </p>
+            {/* The exact error and the file that failed, on the card: a
+                screenshot of this is a usable bug report. Without the file
+                name, "could not be loaded" is undiagnosable from the field. */}
+            <p
+              data-testid="route-chunk-error-detail"
+              className="mb-6 max-h-24 overflow-y-auto text-left text-[11px] leading-relaxed font-mono break-words whitespace-pre-line bg-amber-50 dark:bg-slate-900/60 border border-amber-100 dark:border-slate-700 rounded-lg px-2.5 py-2 text-amber-800 dark:text-amber-300 select-text"
+            >
+              {error?.message || String(error)}
+              {chunkUrlForDiagnostics(error)
+                ? `\n${chunkUrlForDiagnostics(error)}`
+                : ''}
             </p>
             <div className="flex flex-wrap gap-2 justify-center">
               <button

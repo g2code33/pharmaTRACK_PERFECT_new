@@ -108,6 +108,36 @@ export function chunkUrlFromError(error: unknown): string | null {
 }
 
 /**
+ * Best-effort URL for DISPLAY and cache-refresh only — never for re-import.
+ *
+ * Some engines reject a bad module response without naming the file (WebKit's
+ * MIME-type refusal names the MIME, not the URL). The failing module fetch is
+ * almost always the most recent script resource in the timeline at the moment
+ * the rejection propagates, so we can still show the operator what failed and
+ * re-fetch exactly that URL.
+ *
+ * It must never feed retryChunkFromError: a guess that points at another
+ * route's chunk would import that chunk's exports as this page's component.
+ */
+export function chunkUrlForDiagnostics(error: unknown): string | null {
+  const fromMessage = chunkUrlFromError(error);
+  if (fromMessage) return fromMessage;
+  try {
+    if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
+      return null;
+    }
+    const entries = performance.getEntriesByType('resource') as Array<{ name?: string }>;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const name = entries[i]?.name;
+      if (name && /\.m?js(?:\?|$)/.test(name)) return name;
+    }
+  } catch {
+    /* timing API unavailable — nothing to add */
+  }
+  return null;
+}
+
+/**
  * Adds a unique query so the request is a genuinely new module specifier.
  *
  * This is the whole point of the second attempt: once an `import()` of a given

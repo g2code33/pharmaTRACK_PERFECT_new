@@ -7,7 +7,7 @@
  */
 import { isNativeShell } from './platform/runtime';
 import {
-  deleteShellCaches,
+  deleteAllCaches,
   isServiceWorkerControlled,
   unregisterAllServiceWorkers,
 } from './utils/serviceWorkerRecovery';
@@ -72,7 +72,10 @@ export async function purgeNativeShellServiceWorkers(): Promise<boolean> {
 
   const wasControlled = isServiceWorkerControlled();
   const unregistered = await unregisterAllServiceWorkers();
-  const cachesDropped = await deleteShellCaches();
+  // Every cache in a packaged-shell origin was put there by a worker that
+  // should never have existed there, so scrub them all — including any
+  // whose names predate the current prefix.
+  const cachesDropped = await deleteAllCaches();
 
   // The document in front of the user is still the one the worker served, so
   // it keeps running whatever build was in that cache until we reload.
