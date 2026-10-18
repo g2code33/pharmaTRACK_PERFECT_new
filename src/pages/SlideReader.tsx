@@ -3,13 +3,8 @@ import { nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-<<<<<<< HEAD
 import { loadFileBytes } from '../utils/storage';
 import { routeMaterial, mimeForKind, sniffMaterialKind, type MaterialKind } from '../documents/registry';
-=======
-import { loadFileBytes, saveFile } from '../utils/storage';
-import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
->>>>>>> origin/main
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 // DOCX and XLSX engines are heavy enough to earn their own chunks: they are
@@ -443,7 +438,6 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-<<<<<<< HEAD
       // Identify from the bytes, then hand the ORIGINAL file to the viewer.
       // No conversion, extraction or OCR runs before a document opens: the
       // PPTX viewer renders the real slides, the DOCX/XLSX viewers lay out
@@ -455,41 +449,6 @@ const SlideReader: React.FC = () => {
 
       const mime = mimeForKind(sniffed, fileType);
       const blob = new Blob([data as unknown as BlobPart], { type: mime });
-=======
-      let sniffed = sniffMaterialKind(data);
-      let bytesForViewer = data;
-      const updates: Partial<import('../types').Slide> = {};
-
-      if (sniffed === 'pptx') {
-        setLoadMessage('Converting PowerPoint to original-layout PDF…');
-        const { convertNativeMaterialPptxToPdf, convertPptxToPdf } = await import('../utils/pptxToPdf');
-        let converted = await convertNativeMaterialPptxToPdf(materialId);
-        if (!converted) {
-          converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
-            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-          }), (progress, message) => {
-            if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
-          });
-        }
-        if (!isMounted) return;
-        bytesForViewer = converted.pdfBytes;
-        sniffed = 'pdf';
-        const saved = await saveFile(materialId, converted.pdfBytes);
-        if (saved) {
-          updates.fileType = 'pdf';
-          updates.materialKind = 'pdf';
-          if (converted.text) updates.contentText = converted.text;
-          if (converted.pageCount) updates.pageCount = converted.pageCount;
-          updates.fileSize = converted.pdfBytes.byteLength;
-          updates.visualStatus = 'ok';
-        }
-      }
-
-      const mime = fileType === 'pdf' || sniffed === 'pdf'
-        ? 'application/pdf'
-        : 'application/octet-stream';
-      const blob = new Blob([bytesForViewer as unknown as BlobPart], { type: mime });
->>>>>>> origin/main
       const newUrl = URL.createObjectURL(blob);
       setOpenedKind(sniffed);
       setFileUrl(newUrl);
@@ -498,7 +457,7 @@ const SlideReader: React.FC = () => {
       if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
         updates.materialKind = sniffed;
       }
-      if (knownSize == null) updates.fileSize = bytesForViewer.byteLength;
+      if (knownSize == null) updates.fileSize = data.byteLength;
       if (Object.keys(updates).length) {
         dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
       }
@@ -657,29 +616,6 @@ const SlideReader: React.FC = () => {
         <div className="py-40 text-center flex flex-col items-center justify-center h-full w-full">
           <Loader2 className="w-12 h-12 text-[#FFB703] mx-auto mb-4 animate-spin" />
           <p className="text-xl font-black text-gray-400 uppercase tracking-widest">{loadMessage}</p>
-<<<<<<< HEAD
-=======
-        </div>
-      );
-    }
-
-    // Loading finished but produced no viewable file — show a clear,
-    // actionable message with a retry instead of leaving the spinner above
-    // running forever (the "it has been loading for ages" bug).
-    if (!fileUrl) {
-      return (
-        <div className="py-32 text-center flex flex-col items-center justify-center h-full w-full gap-4 px-6">
-          <AlertTriangle className="w-12 h-12 text-amber-500" />
-          <p className="text-lg font-bold text-gray-700 max-w-md">
-            {loadError || "This file couldn't be loaded."}
-          </p>
-          <button
-            onClick={() => setLoadAttempt((n) => n + 1)}
-            className="px-5 py-2.5 bg-[#2D6A4F] text-white rounded-lg font-bold hover:bg-[#1B4332]"
-          >
-            Retry
-          </button>
->>>>>>> origin/main
         </div>
       );
     }
@@ -736,11 +672,7 @@ const SlideReader: React.FC = () => {
       );
     }
 
-<<<<<<< HEAD
     if (route.viewer === 'pptx') {
-=======
-    if (currentMaterial?.fileType === 'text' && shouldOpenAsPresentation(currentMaterial, openedKind)) {
->>>>>>> origin/main
       return (
         <PptxViewer
           fileUrl={fileUrl}

@@ -7,6 +7,10 @@
  *
  *   - the console renders NOTHING but the lock screen until the correct
  *     password is presented (results, sessions, work — all hidden);
+ *   - the exam BUILDER has its own lock (seeded password admin123), renders
+ *     nothing until it is presented, and its password is rotated from the
+ *     live admin console under the same phantom-PIN rule — a wrong phantom
+ *     PIN leaves the old builder password in force;
  *   - the seeded password works on first launch, and neither the password
  *     nor the phantom PIN is ever stored in plaintext;
  *   - the password can be changed from the console, but only by presenting
@@ -65,19 +69,23 @@ const { dispatch } = vi.hoisted(() => ({ dispatch: vi.fn() }));
 
 vi.mock('../context/AppContext', () => ({
   useApp: () => ({
-    state: { quizHistory: [] },
+    state: { quizHistory: [], courses: [], topics: [], examQuestions: [], student: null },
     dispatch,
   }),
 }));
 
 import ExaminationAdmin from '../pages/ExaminationAdmin';
+import ExaminationBuilder from '../pages/ExaminationBuilder';
 import {
   changeAdminPassword,
+  changeBuilderPassword,
   verifyAdminPassword,
+  verifyBuilderPassword,
 } from '../examination/adminGate';
 
 const SEEDED_PASSWORD = 'godnogosHamEi2';
 const PHANTOM_PIN = 'iseedeAdpeople';
+const SEEDED_BUILDER_PASSWORD = 'admin123';
 
 function open() {
   render(
@@ -148,6 +156,55 @@ describe('adminGate module', () => {
     expect(refused).toEqual({ ok: false, error: 'invalid-new-password' });
     expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
   });
+
+  it('seeds the builder lock with admin123 and stores no plaintext', async () => {
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(true);
+    expect(await verifyBuilderPassword('wrong-builder-pass')).toBe(false);
+
+    // The builder password is a SEPARATE secret from the console password.
+    expect(await verifyBuilderPassword(SEEDED_PASSWORD)).toBe(false);
+    expect(await verifyAdminPassword(SEEDED_BUILDER_PASSWORD)).toBe(false);
+
+    const serialized = JSON.stringify([...idbStore.entries()]);
+    expect(serialized).not.toContain(SEEDED_BUILDER_PASSWORD);
+  });
+
+  it('changes the builder password only with the current one AND the phantom PIN', async () => {
+    // Wrong phantom PIN: refused, old builder password still in force.
+    const refused = await changeBuilderPassword(SEEDED_BUILDER_PASSWORD, 'Builder!234', 'wrong-pin');
+    expect(refused).toEqual({ ok: false, error: 'wrong-phantom-pin' });
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(true);
+
+    // Wrong current builder password: refused too.
+    const wrongCurrent = await changeBuilderPassword('nope', 'Builder!234', PHANTOM_PIN);
+    expect(wrongCurrent).toEqual({ ok: false, error: 'wrong-password' });
+
+    // Correct current password + phantom PIN: the change lands AND the
+    // console password plus the phantom PIN keep working unchanged.
+    const changed = await changeBuilderPassword(SEEDED_BUILDER_PASSWORD, 'Builder!234', PHANTOM_PIN);
+    expect(changed).toEqual({ ok: true });
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(false);
+    expect(await verifyBuilderPassword('Builder!234')).toBe(true);
+    expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
+    const again = await changeAdminPassword(SEEDED_PASSWORD, 'StillWorks!9', PHANTOM_PIN);
+    expect(again).toEqual({ ok: true });
+  });
+
+  it('migrates records written before the builder lock existed', async () => {
+    // Force the very first seed (this test clears idb in beforeEach).
+    expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
+    // Simulate a pre-builder record: strip the builder hash.
+    const record = idbStore.get('pharmatrack:admin-gate') as { builderHash?: string };
+    delete record.builderHash;
+    await idbStore.set('pharmatrack:admin-gate', record);
+
+    // The builder gate works immediately with the seeded password, without
+    // invalidating the console password or the phantom PIN.
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(true);
+    expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
+    const migrated = idbStore.get('pharmatrack:admin-gate') as { builderHash?: string };
+    expect(migrated.builderHash).toBeTruthy();
+  });
 });
 
 describe('the locked console', () => {
@@ -213,5 +270,87 @@ describe('the locked console', () => {
     await waitFor(() => {
       expect(screen.getByTestId('session-picker')).toBeTruthy();
     });
+  });
+});
+
+
+describe('the locked exam builder', () => {
+  function openBuilder() {
+    render(
+      <MemoryRouter initialEntries={['/examinations/builder']} >
+        <Routes>
+          <Route path="/examinations/builder" element={<ExaminationBuilder />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+
+  it('renders nothing but the lock screen until the builder password is given', async () => {
+    openBuilder();
+
+    // Locked: no draft state, no question pool, no signing UI.
+    expect(screen.getByTestId('builder-gate-locked')).toBeTruthy();
+    expect(screen.queryByText('Exam settings')).toBeNull();
+    expect(screen.queryByText('Publish and download .pharmaexam')).toBeNull();
+
+    // A wrong password is refused and keeps the builder hidden.
+    fireEvent.change(screen.getByTestId('builder-gate-password'), {
+      target: { value: 'student-guess' },
+    });
+    fireEvent.click(screen.getByTestId('builder-gate-unlock'));
+    expect(await screen.findByTestId('builder-gate-error')).toBeTruthy();
+    expect(screen.getByTestId('builder-gate-locked')).toBeTruthy();
+
+    // The seeded builder password unlocks this tab.
+    fireEvent.change(screen.getByTestId('builder-gate-password'), {
+      target: { value: SEEDED_BUILDER_PASSWORD },
+    });
+    fireEvent.click(screen.getByTestId('builder-gate-unlock'));
+    await waitFor(() => {
+      expect(screen.getByText('Exam settings')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('builder-gate-locked')).toBeNull();
+    expect(sessionStorage.getItem('pharmatrack:builder-gate-unlocked')).toBe('1');
+
+    // "Lock builder" re-arms the gate for this tab.
+    fireEvent.click(screen.getByTestId('builder-lock-now'));
+    expect(screen.getByTestId('builder-gate-locked')).toBeTruthy();
+    expect(sessionStorage.getItem('pharmatrack:builder-gate-unlocked')).toBeNull();
+  });
+});
+
+describe('rotating the builder password from the live admin console', () => {
+  it('changes the builder password only with the phantom PIN', async () => {
+    open();
+    await unlockWith(SEEDED_PASSWORD);
+    await waitFor(() => {
+      expect(screen.getByTestId('session-picker')).toBeTruthy();
+    });
+
+    const fill = (testId: string, value: string) =>
+      fireEvent.change(screen.getByTestId(testId), { target: { value } });
+
+    // Wrong phantom PIN: refused, the builder still unlocks with admin123.
+    fill('admin-change-builder-current', SEEDED_BUILDER_PASSWORD);
+    fill('admin-change-builder-next', 'Builder!234');
+    fill('admin-change-builder-confirm', 'Builder!234');
+    fill('admin-change-builder-phantom', 'wrong-pin');
+    fireEvent.click(screen.getByTestId('admin-change-builder-submit'));
+    expect(await screen.findByTestId('admin-change-builder-message')).toBeTruthy();
+    expect(screen.getByTestId('admin-change-builder-message').textContent).toContain(
+      'phantom PIN is incorrect',
+    );
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(true);
+
+    // Correct phantom PIN: the change lands and the console password is
+    // untouched — the two locks stay independent secrets.
+    fill('admin-change-builder-phantom', PHANTOM_PIN);
+    fireEvent.click(screen.getByTestId('admin-change-builder-submit'));
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-change-builder-message').textContent).toContain('changed');
+    });
+    expect(await verifyBuilderPassword('Builder!234')).toBe(true);
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(false);
+    expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
   });
 });

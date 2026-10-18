@@ -217,11 +217,8 @@ const ResumePaintRecovery: React.FC = () => {
   useEffect(() => {
     let settleTimer: number | undefined;
     let guardTimer: number | undefined;
-<<<<<<< HEAD
     let nudgeTimerA: number | undefined;
     let nudgeTimerB: number | undefined;
-=======
->>>>>>> origin/main
     let firstFrame: number | undefined;
     let secondFrame: number | undefined;
 
@@ -231,7 +228,6 @@ const ResumePaintRecovery: React.FC = () => {
       firstFrame = undefined;
       secondFrame = undefined;
     };
-<<<<<<< HEAD
     const cancelNudges = () => {
       window.clearTimeout(nudgeTimerA);
       window.clearTimeout(nudgeTimerB);
@@ -244,17 +240,6 @@ const ResumePaintRecovery: React.FC = () => {
       if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const root = document.getElementById('root');
       if (!root) return;
-=======
-
-    const repaint = () => {
-      if (typeof document === 'undefined' || typeof window === 'undefined') return;
-      const root = document.getElementById('root');
-      if (!root) return;
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(guardTimer);
-      cancelFrames();
-
->>>>>>> origin/main
       // Dropping the compositing layer and immediately re-creating it forces
       // the webview to rasterise this content into a NEW texture. Re-applying
       // the same translateZ(0) on its own is a no-op the compositor is free to
@@ -270,7 +255,6 @@ const ResumePaintRecovery: React.FC = () => {
       root.style.opacity = '0.999';
       root.getBoundingClientRect();
       window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
-<<<<<<< HEAD
     };
 
     const repaint = () => {
@@ -283,8 +267,6 @@ const ResumePaintRecovery: React.FC = () => {
       cancelNudges();
 
       forceSurfaceRefresh();
-=======
->>>>>>> origin/main
 
       const restore = () => {
         root.style.transform = '';
@@ -292,11 +274,8 @@ const ResumePaintRecovery: React.FC = () => {
         document.documentElement.classList.remove('pharmatrack-resume-paint');
         window.clearTimeout(settleTimer);
         cancelFrames();
-<<<<<<< HEAD
         // If the surface already drew cleanly there is nothing left to nudge.
         cancelNudges();
-=======
->>>>>>> origin/main
       };
 
       // Release on the frame after the repaint actually lands rather than after
@@ -308,7 +287,6 @@ const ResumePaintRecovery: React.FC = () => {
       // guarantees the styles never get stuck on.
       settleTimer = window.setTimeout(restore, 600);
 
-<<<<<<< HEAD
       // Some WebViews discard the very first frame after resume, so the single
       // refresh above never becomes pixels and the window stays blank until
       // something else draws. Two extra nudges inside the first quarter second
@@ -323,8 +301,6 @@ const ResumePaintRecovery: React.FC = () => {
         if (document.visibilityState === 'visible') forceSurfaceRefresh();
       }, 260);
 
-=======
->>>>>>> origin/main
       guardTimer = window.setTimeout(() => {
         const style = window.getComputedStyle(root);
         if (!root.childElementCount || style.display === 'none' || style.visibility === 'hidden') {
@@ -336,25 +312,16 @@ const ResumePaintRecovery: React.FC = () => {
     window.addEventListener('pageshow', repaint);
     window.addEventListener('focus', repaint);
     document.addEventListener('visibilitychange', onVisible);
-<<<<<<< HEAD
     // The native shell fires this from the Rust side on every platform
     // (WebKitGTK and the Android WebView alike): a webview can come back with
     // a blank surface without ever delivering a focus event to the page, which
     // is how the window ends up blank after switching away.
-=======
-    // The Linux desktop shell fires this from the native side: its webview can
-    // come back with a blank surface without ever delivering a focus event to
-    // the page, which is how the window ends up black after switching away.
->>>>>>> origin/main
     window.addEventListener('pharmatrack:native-resume', repaint);
     return () => {
       window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
       cancelFrames();
-<<<<<<< HEAD
       cancelNudges();
-=======
->>>>>>> origin/main
       window.removeEventListener('pageshow', repaint);
       window.removeEventListener('focus', repaint);
       document.removeEventListener('visibilitychange', onVisible);
@@ -405,14 +372,10 @@ const App = () => {
   if (storageBlocked) {
     return (
       <ErrorBoundary>
-<<<<<<< HEAD
         {/* future.v7_startTransition: navigation renders run as transitions,
             so React keeps whatever is on screen while the next chunk arrives
             (same rationale as the main router below). */}
         <HashRouter future={{ v7_startTransition: true }}>
-=======
-        <HashRouter>
->>>>>>> origin/main
           <ResumePaintRecovery />
           <div className="min-h-screen bg-slate-50">
             <NativeTitleBar sticky />
@@ -437,7 +400,6 @@ const App = () => {
     // and any crash in the router itself.
     <ErrorBoundary>
       <AIProvider>
-<<<<<<< HEAD
         {/* future.v7_startTransition: navigation renders run as transitions, so
             React keeps the current page on screen while the next page's chunk
             is still downloading. Without it the route update is urgent and
@@ -446,9 +408,6 @@ const App = () => {
             in-Layout boundary and the sidebar's hover prefetch, a tab switch
             normally swaps pages with no loading state at all. */}
         <HashRouter future={{ v7_startTransition: true }}>
-=======
-        <HashRouter>
->>>>>>> origin/main
           <ResumePaintRecovery />
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />

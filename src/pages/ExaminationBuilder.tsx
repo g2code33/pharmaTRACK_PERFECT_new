@@ -20,6 +20,12 @@ import {
 } from '../examination/service';
 import { parseExamQuestionJson, reorderQuestionIds } from '../examination/builder';
 import { createPharmaExamPackage, generateExamSigningKeyPair } from '../examination/package';
+import {
+  isBuilderGateUnlocked,
+  lockBuilderGate,
+  markBuilderGateUnlocked,
+  verifyBuilderPassword,
+} from '../examination/adminGate';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 const violationTypes = [
@@ -37,6 +43,12 @@ const violationTypes = [
 
 const ExaminationBuilder: React.FC = () => {
   const { state, dispatch } = useApp();
+  // Builder lock: the same device-level password gate as the live admin
+  // console, with its OWN password. Nothing of the builder — not even its
+  // section headers — renders until the password is presented in this tab.
+  const [builderUnlocked, setBuilderUnlocked] = useState(isBuilderGateUnlocked());
+  const [gatePassword, setGatePassword] = useState('');
+  const [gateError, setGateError] = useState('');
   const [draft, setDraft] = useState<ExamBuilderDraft>(defaultExamBuilderDraft());
   const [courseId, setCourseId] = useState('');
   const [topicId, setTopicId] = useState('');
@@ -166,6 +178,74 @@ const ExaminationBuilder: React.FC = () => {
     }
   };
 
+  const unlockBuilderGate = async () => {
+    setGateError('');
+    if (await verifyBuilderPassword(gatePassword)) {
+      markBuilderGateUnlocked();
+      setBuilderUnlocked(true);
+      setGatePassword('');
+    } else {
+      setGateError('That password is incorrect. The builder stays locked.');
+    }
+  };
+
+  // Not unlocked: render ONLY the lock screen. No draft state, no question
+  // pool, no signing keys — a student who navigates here sees the prompt.
+  if (!builderUnlocked) {
+    return (
+      <div className="max-w-md mx-auto mt-16 space-y-4" data-testid="builder-gate-locked">
+        <div className="rounded-2xl bg-gradient-to-r from-[#0F172A] to-[#1B4332] text-white p-6">
+          <p className="text-xs uppercase tracking-widest text-emerald-300 font-black">
+            Secure Examination Network
+          </p>
+          <h1 className="text-2xl font-black">Formal Examination Builder</h1>
+          <p className="text-white/70 mt-2 text-sm">
+            The exam builder is password-protected — it publishes signed examination packages.
+            Enter the builder password to continue.
+          </p>
+        </div>
+        <form
+          className="bg-white border rounded-2xl p-6 space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlockBuilderGate();
+          }}
+        >
+          <label className="block text-sm font-black">
+            Builder password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={gatePassword}
+              onChange={(event) => setGatePassword(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              placeholder="Builder password"
+              data-testid="builder-gate-password"
+            />
+          </label>
+          {gateError && (
+            <p className="text-sm font-bold text-red-700" data-testid="builder-gate-error">
+              {gateError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={busy || !gatePassword}
+            className="w-full rounded-lg bg-[#2D6A4F] hover:bg-[#1B4332] text-white px-4 py-2 font-black disabled:opacity-40"
+            data-testid="builder-gate-unlock"
+          >
+            Unlock builder
+          </button>
+          <p className="text-xs text-slate-500">
+            The builder password is stored only as a salted hash on this device and is separate
+            from the live admin console's password. It can be changed from the live admin console
+            with the phantom PIN. Unlocking applies to this tab only.
+          </p>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto space-y-6">
       <header className="rounded-2xl bg-gradient-to-r from-[#0F172A] to-[#1B4332] text-white p-6 shadow-lg">
@@ -181,6 +261,20 @@ const ExaminationBuilder: React.FC = () => {
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                lockBuilderGate();
+                setBuilderUnlocked(false);
+                setGatePassword('');
+                setGateError('');
+              }}
+              className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 font-bold text-sm flex items-center gap-2"
+              data-testid="builder-lock-now"
+            >
+              <LockKeyhole className="w-4 h-4" />
+              Lock builder
+            </button>
             <Link
               to="/quiz"
               className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 font-bold text-sm"

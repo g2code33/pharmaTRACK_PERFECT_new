@@ -30,7 +30,6 @@ import {
 } from '../utils/routeLoader';
 import { __testing as idleSchedulerTesting } from '../utils/idleScheduler';
 
-<<<<<<< HEAD
 // ---------------------------------------------------------------------------
 // Full-App regression: the storage-blocked boot path. App-level mocks only —
 // the tests below never run them (they render components directly), but the
@@ -84,8 +83,6 @@ vi.mock('../pages/StorageManager', async () => {
   return { default: () => <Pending /> };
 });
 
-=======
->>>>>>> origin/main
 // A minimal stand-in for the persistent shell: a sidebar/header that must stay
 // mounted, plus a Suspense boundary around the "route outlet" exactly as Layout
 // arranges it.
@@ -258,7 +255,6 @@ describe('route prefetch', () => {
     expect(await screen.findByTestId('loaded-ok')).toBeInTheDocument();
   });
 });
-<<<<<<< HEAD
 
 // ---------------------------------------------------------------------------
 // Storage-blocked boot path (full App render).
@@ -287,5 +283,3 @@ describe('storage-blocked boot path', () => {
     expect(screen.queryByText(/something went wrong/i)).not.toBeInTheDocument();
   });
 });
-=======
->>>>>>> origin/main

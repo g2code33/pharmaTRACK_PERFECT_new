@@ -1092,7 +1092,6 @@ fn set_native_titlebar(
 /// WebKitGTK can bring a window back from being hidden or unfocused with a
 /// blank surface, and it does not always deliver a focus event to the page, so
 /// the recovery that lives in the app never runs and the user is left looking
-<<<<<<< HEAD
 /// at a black window. The same happens on Android, where the WebView surface
 /// is discarded while the app is backgrounded: on return the user sees a blank
 /// frame until something forces a fresh one, which reads as "the app goes
@@ -1100,12 +1099,6 @@ fn set_native_titlebar(
 /// platform, so it dispatches a dedicated one of its own. A dedicated name is
 /// used rather than a synthetic "focus" so examination focus tracking is not
 /// affected.
-=======
-/// at a black window. The native side always gets the event, so it dispatches
-/// a dedicated one of its own. A dedicated name is used rather than a
-/// synthetic "focus" so examination focus tracking is not affected.
-#[cfg(target_os = "linux")]
->>>>>>> origin/main
 const RESUME_REPAINT_NUDGE: &str =
     "window.dispatchEvent(new Event('pharmatrack:native-resume'));";
 
@@ -1247,18 +1240,9 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-<<<<<<< HEAD
             if matches!(event, WindowEvent::Focused(true)) {
                 if let Some(webview) = window.app_handle().get_webview_window("main") {
                     let _ = webview.eval(RESUME_REPAINT_NUDGE);
-=======
-            #[cfg(target_os = "linux")]
-            {
-                if matches!(event, WindowEvent::Focused(true)) {
-                    if let Some(webview) = window.app_handle().get_webview_window("main") {
-                        let _ = webview.eval(RESUME_REPAINT_NUDGE);
-                    }
->>>>>>> origin/main
                 }
             }
             let secure_state = window.app_handle().state::<SecureExamHostState>();
@@ -1364,11 +1348,8 @@ fn main() {
             material_file_info,
             load_material_file_chunk,
             delete_material_file,
-<<<<<<< HEAD
             detect_lan_host,
             discover_lan_exam_servers,
-=======
->>>>>>> origin/main
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status

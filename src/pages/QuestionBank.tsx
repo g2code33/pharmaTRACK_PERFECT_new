@@ -1,11 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-<<<<<<< HEAD
 import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp, ListChecks } from 'lucide-react';
-=======
-import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp } from 'lucide-react';
->>>>>>> origin/main
 import type { Course, ExamQuestion, Topic } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import QuestionAnalytics from '../components/QuestionAnalytics';
@@ -64,7 +60,6 @@ const QuestionBank = () => {
     () => state.topics.filter((t) => t.courseId === selectedCourseId),
     [selectedCourseId, state.topics],
   );
-<<<<<<< HEAD
 
   const normalizedQuery = questionQuery.trim().toLowerCase();
   /** Case-insensitive match against the question text, its options and its answer. */
@@ -74,8 +69,6 @@ const QuestionBank = () => {
     if ((q.correctAnswer ?? '').toLowerCase().includes(normalizedQuery)) return true;
     return (q.options ?? []).some((opt) => opt.toLowerCase().includes(normalizedQuery));
   };
-=======
->>>>>>> origin/main
 
   useEffect(() => {
     if (!questionId || appliedQuestion.current === questionId) return;
@@ -326,10 +319,7 @@ const QuestionBank = () => {
 
     for (const question of state.examQuestions) {
       if (!question.topicId) continue;
-<<<<<<< HEAD
       if (!questionMatches(question)) continue;
-=======
->>>>>>> origin/main
       const bucket = questionsByTopic.get(question.topicId);
       if (bucket) bucket.push(question);
       else questionsByTopic.set(question.topicId, [question]);
@@ -350,7 +340,6 @@ const QuestionBank = () => {
         return { ...course, topics: courseTopics, totalQs };
       })
       .filter((course) => course.totalQs > 0);
-<<<<<<< HEAD
     // questionMatches is re-created per render but is a pure function of
     // normalizedQuery, which IS a dependency — listing the function itself
     // would defeat the memo.
@@ -388,21 +377,12 @@ const QuestionBank = () => {
       return changed ? next : prev;
     });
   }, [normalizedQuery, groupedData]);
-=======
-  }, [state.courses, state.examQuestions, state.topics]);
-
-  const uncategorizedQs = useMemo(() => {
-    const knownCourseIds = new Set(state.courses.map((course) => course.id));
-    return state.examQuestions.filter((question) => !knownCourseIds.has(question.courseId));
-  }, [state.courses, state.examQuestions]);
->>>>>>> origin/main
   const analytics = useMemo(() => bankAnalytics(state), [state]);
   const questionStats = useMemo(() => allQuestionPerformance(state), [state]);
   const selectedQuestionsForQuickQuiz = useMemo(
     () => state.examQuestions.filter((q) => selectedForAI.has(q.id)),
     [selectedForAI, state.examQuestions],
   );
-<<<<<<< HEAD
 
   /** Every question currently visible under the active filter. */
   const visibleQuestions = useMemo(
@@ -452,8 +432,6 @@ const QuestionBank = () => {
     });
   };
   const clearQuestionSelection = () => setSelectedForAI(new Set());
-=======
->>>>>>> origin/main
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6 pb-12">
@@ -479,11 +457,7 @@ const QuestionBank = () => {
         </div>
       </div>
 
-<<<<<<< HEAD
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-wrap">
-=======
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
->>>>>>> origin/main
         <div className="flex items-center gap-3 sm:px-4">
            <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-bold text-lg">{state.examQuestions.length}</div>
            <div><p className="font-bold text-slate-800">Total Questions</p><p className="text-xs text-slate-500 uppercase font-semibold">Across all courses</p></div>
@@ -577,10 +551,7 @@ const QuestionBank = () => {
                   <div className="text-left min-w-0"><h2 className="text-base sm:text-xl font-bold text-slate-800 truncate">{course.courseCode}: {course.courseName}</h2><p className="text-xs sm:text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
-<<<<<<< HEAD
                   <button onClick={(e) => { e.stopPropagation(); toggleSelectAllInCourse(course); }} data-testid={`select-all-course-${course.id}`} title={allCourseSelected(course) ? 'Deselect every question in this course' : 'Select every question in this course for AI / sharing'} className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-lg text-xs font-black uppercase transition-colors"><ListChecks size={14} /> {allCourseSelected(course) ? 'Deselect' : 'Select all'} ({course.totalQs})</button>
-=======
->>>>>>> origin/main
                   <button onClick={(e) => shareQuickCourse(course, e)} data-testid={`share-course-${course.id}`} title={`Share all ${course.topics.length} topics — whoever opens the link chooses which topic to do, and can come back for the rest`} className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-500 rounded-lg text-xs font-black uppercase transition-colors"><Layers size={14} /> Share course</button>
                   <button onClick={(e) => handleExportCourse(course.id, e)} title="Export this course's questions to share" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-[#2D6A4F] hover:bg-green-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Download size={14} /> Export</button>
                   <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><FileUp size={14} /> Import</button>
@@ -599,10 +570,7 @@ const QuestionBank = () => {
                            <span className="shrink-0 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
                          </div>
                          <div className="flex flex-wrap items-center justify-end gap-2">
-<<<<<<< HEAD
                            <button onClick={(e) => { e.stopPropagation(); toggleSelectAllInTopic(topic); }} data-testid={`select-all-topic-${topic.id}`} title={allTopicSelected(topic) ? 'Deselect the questions in this topic' : 'Select every question in this topic for AI / sharing'} className="text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><ListChecks size={14}/> <span>{allTopicSelected(topic) ? 'Deselect' : 'Select all'} ({topic.questions.length})</span></button>
-=======
->>>>>>> origin/main
                            <button onClick={(e) => void shareQuickQuiz(topic.questions, `${topic.topicName} Quick Quiz`, e)} data-testid={`share-topic-${topic.id}`} title="Share a link that opens this topic as an instant quiz" className="text-white bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span>Quick Start</span></button>
                            <button onClick={(e) => handleExportTopic(topic.id, e)} title="Export this topic's questions to share" className="text-slate-500 hover:text-[#2D6A4F] hover:bg-green-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Download size={14}/> <span className="hidden sm:inline">Export</span></button>
                            <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><FileUp size={14}/> <span className="hidden sm:inline">Import</span></button>

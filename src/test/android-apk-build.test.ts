@@ -72,7 +72,6 @@ describe('Android APK build and signing', () => {
     expect(main).toContain('setServiceWorkerClient');
   });
 
-<<<<<<< HEAD
   it('publishes a verified release-signed APK in the release pipeline', () => {
     const release = read('.github/workflows/release.yml');
     const android = read('.github/workflows/android-build.yml');
@@ -114,30 +113,6 @@ describe('Android APK build and signing', () => {
     expect(release).toMatch(
       /Verify all expected release artifacts[\s\S]*PharmaTRACK-\$VERSION-android\.aab/,
     );
-=======
-  it('publishes a verified release-signed APK in the GitHub release workflow', () => {
-    const workflow = read('.github/workflows/release.yml');
-    expect(workflow).toContain('Prepare Android release signing key');
-    expect(workflow).toContain('Build Android release APK (signed)');
-    expect(workflow).toContain('ANDROID_KEYSTORE_BASE64');
-    expect(workflow).toMatch(
-      /Build Android release APK \(signed\)[\s\S]*ANDROID_KEYSTORE_PASSWORD/,
-    );
-    expect(workflow).toMatch(/Build Android release APK \(signed\)[\s\S]*ANDROID_KEY_ALIAS/);
-    expect(workflow).toMatch(/Build Android release APK \(signed\)[\s\S]*ANDROID_KEY_PASSWORD/);
-    expect(workflow).toContain('EXPECTED_ANDROID_CERT_SHA256');
-    expect(workflow).toContain('keytool -list -v');
-    expect(workflow).toContain('Invalid ANDROID_KEYSTORE_BASE64');
-    expect(workflow).toContain('PHARMA_ANDROID_SKIP_GRADLE_SIGNING');
-    expect(workflow).toContain('apksigner sign');
-    expect(workflow).toContain('ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD');
-    expect(workflow).toContain('Android Gradle build failed');
-    expect(workflow).toContain('android-gradle-failure-log');
-    expect(workflow).toContain('apksigner verify --print-certs');
-    expect(workflow).toContain('The Android APK is debug-signed. Refusing to publish it.');
-    expect(workflow).toContain('aapt2 dump badging');
-    expect(workflow).toContain('PharmaTRACK-${{ needs.build-windows.outputs.version }}.apk');
->>>>>>> origin/main
   });
 
   it('attaches release assets with the GitHub CLI so a reused tag cannot fail the build', () => {
@@ -146,7 +121,6 @@ describe('Android APK build and signing', () => {
     // GitHub refuses with "Resource not accessible by integration" as soon as
     // the tag already has an older published release.
     expect(workflow).not.toMatch(/uses:\s*softprops\/action-gh-release/);
-<<<<<<< HEAD
     expect(workflow).toMatch(/gh release upload "\$TAG"[\s\S]*latest\.json[\s\S]*--clobber/);
     expect(workflow).toMatch(/gh release edit "\$TAG" --draft=false --latest/);
     expect(workflow).toContain('Release asset missing');
@@ -155,12 +129,5 @@ describe('Android APK build and signing', () => {
     // Final verification re-reads the release and fails when an expected
     // asset is not actually attached to it.
     expect(workflow).toMatch(/gh release view "\$TAG" --json assets/);
-=======
-    expect(workflow).toMatch(/Force Upload release assets[\s\S]*gh release upload "\$TAG" latest\.json "\$APK_NAME" --clobber/);
-    expect(workflow).toMatch(/Force Upload release assets[\s\S]*gh release edit "\$TAG" --draft=false --latest/);
-    expect(workflow).toContain('Release asset missing');
-    expect(workflow).toContain('Release asset not attached');
-    expect(workflow).toContain('GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
->>>>>>> origin/main
   });
 });

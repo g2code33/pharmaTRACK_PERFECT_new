@@ -22,6 +22,7 @@ import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
 import { LanExamClient } from '../examination/network';
 import {
   changeAdminPassword,
+  changeBuilderPassword,
   isAdminGateUnlocked,
   lockAdminGate,
   markAdminGateUnlocked,
@@ -80,6 +81,13 @@ const ExaminationAdmin: React.FC = () => {
   const [changeConfirm, setChangeConfirm] = useState('');
   const [changePhantom, setChangePhantom] = useState('');
   const [changeMessage, setChangeMessage] = useState('');
+  // The exam builder's lock has its own password; it is changed from this
+  // console, under the same two-secret rule (current password + phantom PIN).
+  const [builderCurrent, setBuilderCurrent] = useState('');
+  const [builderNext, setBuilderNext] = useState('');
+  const [builderConfirm, setBuilderConfirm] = useState('');
+  const [builderPhantom, setBuilderPhantom] = useState('');
+  const [builderChangeMessage, setBuilderChangeMessage] = useState('');
   /** Stable for the page's life: the real TCP server only exists in the app. */
   const nativeHostAvailable = isNativeLanServerAvailable();
 
@@ -495,6 +503,33 @@ const ExaminationAdmin: React.FC = () => {
       setChangeMessage('The phantom PIN is incorrect — the password was not changed.');
     } else {
       setChangeMessage('The new password must be at least 8 characters.');
+    }
+  };
+
+  /** Change the exam builder's password — same two-secret rule (current
+   *  builder password + phantom PIN), reached from THIS console so an
+   *  invigilator never has to hand a student the builder tab to rotate it. */
+  const performChangeBuilderPassword = async () => {
+    setBuilderChangeMessage('');
+    if (builderNext !== builderConfirm) {
+      setBuilderChangeMessage('The new builder password and its confirmation do not match.');
+      return;
+    }
+    const result = await changeBuilderPassword(builderCurrent, builderNext, builderPhantom);
+    if (result.ok) {
+      setBuilderChangeMessage(
+        'Builder password changed. The builder now unlocks with the new password.',
+      );
+      setBuilderCurrent('');
+      setBuilderNext('');
+      setBuilderConfirm('');
+      setBuilderPhantom('');
+    } else if (result.error === 'wrong-password') {
+      setBuilderChangeMessage('The current builder password is incorrect — nothing was changed.');
+    } else if (result.error === 'wrong-phantom-pin') {
+      setBuilderChangeMessage('The phantom PIN is incorrect — the builder password was not changed.');
+    } else {
+      setBuilderChangeMessage('The new builder password must be at least 8 characters.');
     }
   };
 
@@ -1568,6 +1603,87 @@ const ExaminationAdmin: React.FC = () => {
             {changeMessage && (
               <p className="text-sm font-bold" data-testid="admin-change-message">
                 {changeMessage}
+              </p>
+            )}
+          </div>
+        </form>
+      </section>
+
+      {/* Exam builder access: the builder's lock has its own password, and it
+          is rotated from HERE (the live admin) so the change is authorised by
+          the phantom PIN — the builder tab itself never changes secrets. */}
+      <section className="bg-white border rounded-2xl p-5 space-y-4" data-testid="admin-builder-password-change">
+        <div>
+          <h2 className="text-xl font-black">Exam builder access</h2>
+          <p className="text-sm text-slate-500">
+            The Formal Examination Builder is locked with its own password (it publishes signed
+            examination packages). Changing that password here requires the current builder
+            password and the phantom PIN; the console password is unaffected.
+          </p>
+        </div>
+        <form
+          className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void performChangeBuilderPassword();
+          }}
+        >
+          <label className="text-sm font-bold">
+            Current builder password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={builderCurrent}
+              onChange={(event) => setBuilderCurrent(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-builder-current"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            New builder password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={builderNext}
+              onChange={(event) => setBuilderNext(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-builder-next"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Confirm new builder password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={builderConfirm}
+              onChange={(event) => setBuilderConfirm(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-builder-confirm"
+            />
+          </label>
+          <label className="text-sm font-bold">
+            Phantom PIN (authorises the change)
+            <input
+              type="password"
+              autoComplete="off"
+              value={builderPhantom}
+              onChange={(event) => setBuilderPhantom(event.target.value)}
+              className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
+              data-testid="admin-change-builder-phantom"
+            />
+          </label>
+          <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              disabled={busy || !builderCurrent || !builderNext || !builderConfirm || !builderPhantom}
+              className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
+              data-testid="admin-change-builder-submit"
+            >
+              Change builder password
+            </button>
+            {builderChangeMessage && (
+              <p className="text-sm font-bold" data-testid="admin-change-builder-message">
+                {builderChangeMessage}
               </p>
             )}
           </div>
