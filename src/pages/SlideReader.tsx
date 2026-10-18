@@ -22,8 +22,9 @@ import {
 import * as pdfjs from 'pdfjs-dist';
 
 // Offline-first worker initialization
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import { ensurePdfWorker } from '../utils/pdfWorker';
+
+ensurePdfWorker();
 
 interface BrowserTab {
   id: string;

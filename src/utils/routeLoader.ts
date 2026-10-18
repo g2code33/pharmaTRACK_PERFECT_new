@@ -50,7 +50,12 @@ export function isChunkLoadError(error: unknown): boolean {
     /Unable to preload CSS/i.test(message) ||
     /dynamically imported module/i.test(message) ||
     /Loading chunk [\d]+ failed/i.test(message) ||
-    /Loading CSS chunk/i.test(message)
+    /Loading CSS chunk/i.test(message) ||
+    // WebKit refuses to execute a module whose response carries a non-script
+    // MIME type (a cached PDF served for a chunk URL, a mis-served asset).
+    // That IS a chunk-load failure — the recovery path (cache-busted re-import,
+    // service-worker cleanup, reload) is exactly what fixes it.
+    /is not a valid JavaScript MIME type/i.test(message)
   );
 }
 

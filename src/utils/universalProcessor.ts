@@ -12,8 +12,9 @@ import { readBlobArrayBuffer } from './fileGuard';
 // PDF processing failed or silently half-completed whenever the user was
 // offline - the usual case for this app, and the likely cause of documents
 // appearing to lose their last pages.
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import { ensurePdfWorker } from './pdfWorker';
+
+ensurePdfWorker();
 
 export interface FilePage {
   pageNumber: number;

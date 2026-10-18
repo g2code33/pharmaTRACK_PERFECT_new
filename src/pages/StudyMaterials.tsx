@@ -39,7 +39,10 @@ import {
 import * as pdfjs from 'pdfjs-dist';
 
 // Set worker path
-// Offline-first worker initialization\nimport pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';\npdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// Offline-first worker initialization
+import { ensurePdfWorker } from '../utils/pdfWorker';
+
+ensurePdfWorker();
 
 const StudyMaterials: React.FC = () => {
   const { state, dispatch, getTopicsForCourse, getSlidesForTopic, addActivity } = useApp();
