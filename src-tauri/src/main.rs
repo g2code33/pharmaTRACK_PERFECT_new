@@ -736,10 +736,10 @@ fn discover_lan_exam_servers(timeout_ms: Option<u64>) -> Result<Vec<LanDiscovere
             .unwrap_or(false);
         found.push(LanDiscoveredAuthority {
             endpoint,
-            session_id: value.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string(),
-            exam_version_id: value.get("examVersionId").and_then(Value::as_str).unwrap_or_default().to_string(),
-            server_id: value.get("serverId").and_then(Value::as_str).unwrap_or_default().to_string(),
-            authority_id: value.get("authorityId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            session_id: value.get("sessionId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            exam_version_id: value.get("examVersionId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            server_id: value.get("serverId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            authority_id: value.get("authorityId").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
             authority_epoch: value.get("authorityEpoch").and_then(Value::as_u64).unwrap_or(0),
             open_enrollment,
             session_token: if open_enrollment {
