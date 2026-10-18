@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { codePoint as dingbatCodePoint } from 'dingbat-to-unicode';
 
 /**
  * Native .pptx renderer — parses the OPC zip directly in the browser.
@@ -475,104 +476,84 @@ function parseSpacingPt(pPr: Element, tag: string): number | undefined {
 }
 
 /**
- * a:buChar carries its glyph in char="•" (val= is not used by PowerPoint).
+ * a:buChar carries its glyph in char="\u2022" (val= is not used by PowerPoint).
  *
- * The raw glyph is normalised first: decks authored in PowerPoint commonly use
- * Wingdings/Symbol bullet characters, which live in Unicode's private use
- * area and render as tofu or unrelated letters in every real font. The map
- * below covers the glyphs PowerPoint's bullet gallery actually produces;
- * anything else from that range falls back to a plain bullet so a slide can
- * never render with garbage in front of its text.
+ * The glyph is translated through the a:buFont's real glyph table via the
+ * dingbat-to-unicode mapping (which follows the Unicode consortium's official
+ * Symbol/Wingdings/Webdings charts), so a bullet shows exactly the glyph
+ * PowerPoint itself draws at that position. A bullet authored as "\u00A7"
+ * with buFont Wingdings is the small filled square, never a section sign.
  */
-const WINGDINGS_BULLETS: Record<number, string> = {
-  0x6c: '\u25CF', // l — filled circle
-  0x6d: '\u25A0', // m — filled square
-  0x6e: '\u25C6', // n — filled diamond
-  0x75: '\u25C6', // u — diamond
-  0x76: '\u27A2', // v — 3-D arrowhead (the classic PowerPoint sub-bullet)
-  0x77: '\u2794', // w — arrow
-  0x78: '\u27A2', // x — arrowhead
-  0x7a: '\u2726', // z — four-pointed star
-  0xa7: '\u25AA', // \u00A7 — small filled square
-  0xa8: '\u25A0', // \u00A8 — filled square
-  0xb4: '\u2022', // \u00B4
-  0xb7: '\u25CF', // \u00B7 — the classic Wingdings bullet
-  0xb8: '\u2756', // \u00B8 — diamond outline
-  0xb9: '\u25CB', // \u00B9 — circle outline
-  0xd8: '\u25BA', // \u00D8 — black right triangle
-  0xd9: '\u25C4', // \u00D9 — black left triangle
-  0xda: '\u25B2', // \u00DA — black up triangle
-  0xdb: '\u25BC', // \u00DB — black down triangle
-  0xe8: '\u25BA', // \u00E8 — right arrow
-  0xe9: '\u25C4', // \u00E9 — left arrow
-  0xea: '\u25B2', // \u00EA — up arrow
-  0xeb: '\u25BC', // \u00EB — down arrow
-  0xef: '\u2605', // \u00EF — star
-  0xf0: '\u2606', // \u00F0 — outline star
-  0xf1: '\u260E', // \u00F1 — telephone
-  0xf2: '\u270E', // \u00F2 — pencil
-  0xf3: '\u2702', // \u00F3 — scissors
-  0xf4: '\u261E', // \u00F4 — pointing hand
-  0xf5: '\u270B', // \u00F5
-  0xf6: '\u25CF', // \u00F6 — black circle
-  0xf7: '\u25AA', // \u00F7 — small square
-  0xf8: '\u2212', // \u00F8 — minus
-  0xf9: '\u25CB', // \u00F9 — white circle
-  0xfa: '\u25C4', // \u00FA
-  0xfb: '\u25CB', // \u00FB
-  0xfc: '\u2713', // \u00FC — check
-  0xfd: '\u2717', // \u00FD — cross
-  0xfe: '\u2717', // \u00FE — cross
-};
 
-/** Symbol-font bullets: mostly geometric/math shapes. */
-const SYMBOL_BULLETS: Record<number, string> = {
-  0xb7: '\u2022', // \u00B7 — bullet operator
-  0xa7: '\u25AA', // \u00A7
-  0xa8: '\u25AA', // \u00A8
-  0xd8: '\u25C6', // \u00D8 — lozenge
-  0xe5: '\u2794', // \u00E5 — right arrow
-  0xd2: '\u2194', // \u00D2 — left-right arrow
-  0xd5: '\u2195', // \u00D5 — up-down arrow
-  0xe9: '\u2713', // \u00E9 — check
-  0xf7: '\u29EB', // \u00F7 — lozenge
-  0xe6: '\u274F', // \u00E6 — white square
-  0x73: '\u25B2', // s — up triangle
-  0x74: '\u25BC', // t — down triangle
-  0x76: '\u25BA', // v — right triangle
-  0x75: '\u25C4', // u — left triangle
+/**
+ * Canonical typeface names for the symbol fonts whose full glyph tables we
+ * carry. Lower-cased typeface -> the name dingbat-to-unicode expects.
+ */
+const SYMBOL_FONT_TYPEFACES: Record<string, string> = {
+  symbol: 'Symbol',
+  wingdings: 'Wingdings',
+  'wingdings 2': 'Wingdings 2',
+  'wingdings 3': 'Wingdings 3',
+  webdings: 'Webdings',
 };
 
 /**
  * Fonts whose glyph tables are symbol/picture encodings rather than text
  * alphabets. PowerPoint uses them for BULLET characters (via a:buFont and the
- * master's level defaults) and NEVER applies them to text runs — but the
+ * master's level defaults) and NEVER applies them to text runs \u2014 but the
  * level default carries the font in its defRPr, so a naive inheritance
  * renders the first run of every paragraph through the symbol table (the
- * "S\u@@AOabsorption" garbling on real lecture decks: 'I' draws as ∫, 'n' as
- * ↑, 'v' as ∨, 'o' as ⊙ …). Exported for tests.
+ * "S\u@@AOabsorption" garbling on real lecture decks: 'I' draws as \u222B, 'n' as
+ * \u2191, 'v' as \u2228, 'o' as \u2299 \u2026). Exported for tests.
  */
 const SYMBOL_BULLET_FONTS =
-  /^(wingdings|webdings|symbol|monotype sorts|mt extra|zapfdingbats|dingbats|marlett|bookshelf symbol|ms reference specialty|ms outlook)/i;
+  /^(wingdings( [23])?|webdings|symbol|monotype sorts|mt extra|zapfdingbats|dingbats|marlett|bookshelf symbol|ms reference specialty|ms outlook)/i;
 
 export function isSymbolBulletFont(face?: string | null): boolean {
   return Boolean(face) && SYMBOL_BULLET_FONTS.test(face!.trim());
 }
 
 /**
+ * Translates one character through a symbol font's real glyph table \u2014 the
+ * exact glyph PowerPoint draws at that code point. A Wingdings bullet
+ * authored as "\u00A7" is the small filled square "\u25AA", Symbol "\u00B7" is
+ * "\u2022", and so on for every position in the font. Returns undefined when
+ * `font` is not a known symbol font or the position is unmapped, so callers
+ * keep the original character. Exported for tests.
+ */
+export function mapSymbolFontChar(ch: string, font?: string | null): string | undefined {
+  if (!ch) return undefined;
+  const typeface = SYMBOL_FONT_TYPEFACES[(font ?? '').trim().toLowerCase()];
+  if (!typeface) return undefined;
+  let code = ch.codePointAt(0) ?? 0;
+  // Symbol-font characters are often shifted into the private use area
+  // (U+F000 + font position) \u2014 the docx convention; shift back first.
+  if (code >= 0xf000 && code <= 0xf0ff) code -= 0xf000;
+  if (code < 0x20 || code > 0xff) return undefined;
+  return dingbatCodePoint(typeface, code)?.string;
+}
+
+/**
  * Normalises one bullet glyph for display. `font` is the a:buFont typeface
- * ("Wingdings", "Symbol", ...); it decides which private-use map applies.
- * Exported for tests.
+ * ("Wingdings", "Symbol", ...). PowerPoint's rule: the bullet character is
+ * the buFont's glyph at the buChar's code point, whatever that character
+ * looks like in a normal font. When the font is unknown we only rescue
+ * private-use characters (unshowable in any real font) and leave everything
+ * else untouched. Exported for tests.
  */
 export function normalizeBulletGlyph(glyph: string, font?: string | null): string {
   if (!glyph) return '\u2022';
   const code = glyph.codePointAt(0) ?? 0;
+  // A symbol bullet font maps EVERY code point through its own glyph table.
+  const mapped = mapSymbolFontChar(glyph, font);
+  if (mapped) return mapped;
   // Private use area (Wingdings/Symbol shift their charset into
   // U+F000\u2013U+F0FF): never show these raw \u2014 no real font draws them.
+  // Without a known buFont, Wingdings is the overwhelmingly common authoring
+  // font, so its table is the rescue path.
   if (code >= 0xf000 && code <= 0xf0ff) {
-    const face = (font ?? '').toLowerCase();
     const shifted = code - 0xf000;
-    return face.includes('symbol') ? SYMBOL_BULLETS[shifted] ?? '\u2022' : WINGDINGS_BULLETS[shifted] ?? '\u2022';
+    return dingbatCodePoint('Wingdings', shifted)?.string ?? '\u2022';
   }
   if (code < 0x20 || code === 0x7f) return '\u2022';
   return glyph;

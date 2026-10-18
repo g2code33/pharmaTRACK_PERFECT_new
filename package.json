@@ -1,7 +1,7 @@
 {
   "name": "pharmatrack",
   "private": true,
-  "version": "1.4.10",
+  "version": "1.4.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -42,6 +42,7 @@
     "@tauri-apps/plugin-updater": "^2.14.0",
     "clsx": "^2.1.0",
     "date-fns": "^3.0.0",
+    "dingbat-to-unicode": "^1.0.2",
     "docx-preview": "^0.4.1",
     "idb-keyval": "^6.3.0",
     "jszip": "^3.10.2",

@@ -358,14 +358,20 @@ describe('pptx renderer — geometry', () => {
 describe('pptx renderer \u2014 bullet glyphs and notes scoping', () => {
   it('translates Wingdings and Symbol bullet glyphs out of the private use area', async () => {
     const { normalizeBulletGlyph } = await import('../utils/pptxRenderer');
-    // The classic Wingdings bullet (F0B7) and arrowhead (F076).
-    expect(normalizeBulletGlyph('\uF0B7', 'Wingdings')).toBe('\u25CF');
-    expect(normalizeBulletGlyph('\uF076', 'Wingdings')).toBe('\u27A2');
+    // The real glyphs at those font positions (verified against the fonts'
+    // own tables): Wingdings 0xB7 is a clock face, 0x76 the four-diamond
+    // cluster, and the classic square bullet lives at 0xA7 ("\u00A7").
+    expect(normalizeBulletGlyph('\uF0B7', 'Wingdings')).toBe('\u{1F550}');
+    expect(normalizeBulletGlyph('\uF076', 'Wingdings')).toBe('\u2756');
+    // PowerPoint's square bullet: buChar "\u00A7" in Wingdings space.
+    expect(normalizeBulletGlyph('\u00A7', 'Wingdings')).toBe('\u25AA');
     // The same private-use code point in Symbol space maps through Symbol.
     expect(normalizeBulletGlyph('\uF0B7', 'Symbol')).toBe('\u2022');
-    // Unknown private-use characters fall back to a clean bullet, never tofu.
+    // Unknown private-use characters fall back to a clean bullet, never
+    // tofu; mapped positions (Wingdings 'a' is the Cancer zodiac) resolve to
+    // their real glyphs.
     expect(normalizeBulletGlyph('\uF0FF', 'Wingdings')).toBe('\u2022');
-    expect(normalizeBulletGlyph('\uF061', 'Wingdings')).toBe('\u2022');
+    expect(normalizeBulletGlyph('\uF061', 'Wingdings')).toBe('\u264B');
     // Normal bullets pass through untouched.
     expect(normalizeBulletGlyph('\u2022', 'Arial')).toBe('\u2022');
     expect(normalizeBulletGlyph('-', 'Arial')).toBe('-');
@@ -412,7 +418,7 @@ describe('pptx renderer \u2014 bullet glyphs and notes scoping', () => {
     const deck = await renderPptx((await zip.generateAsync({ type: 'blob' })) as Blob);
     const body = deck.slides[0].shapes.find((s) => s.type === 'text');
     const para = body?.text?.paragraphs[0];
-    expect(para?.bullet).toBe('\u25CF');
+    expect(para?.bullet).toBe('\u{1F550}');
     deck.dispose();
   });
 

@@ -491,10 +491,11 @@ describe('PptxViewer — bullet rendering regressions', () => {
     const allText = Array.from(stage.querySelectorAll('*')).map((el) => el.textContent || '');
     for (const t of allText) expect(t).not.toContain('\\u00A0');
 
-    // The bullet span holds exactly: translated Wingdings F0B7 + NBSP.
+    // The bullet span holds exactly: the REAL Wingdings glyph at 0xB7 (a
+    // clock face — verified against the font's own glyph table) + NBSP.
     const bulletSpan = stage.querySelector('span[aria-hidden="true"]') as HTMLElement;
     expect(bulletSpan).toBeTruthy();
-    expect(bulletSpan.textContent).toBe('\u25CF\u00A0');
+    expect(bulletSpan.textContent).toBe(String.fromCodePoint(0x1f550) + '\u00A0');
 
     // The level's Symbol font (the bullet's font) never reaches text runs.
     const runSpan = Array.from(stage.querySelectorAll('span')).find(
@@ -502,5 +503,83 @@ describe('PptxViewer — bullet rendering regressions', () => {
     ) as HTMLElement;
     expect(runSpan).toBeTruthy();
     expect((runSpan.style.fontFamily || '').toLowerCase()).not.toContain('symbol');
+  });
+
+  /**
+   * Round 3, the user's exact deck: PowerPoint's bullet gallery authors
+   * square bullets as buChar "§" with buFont Wingdings — the section sign is
+   * a CODE POINT into Wingdings' glyph table, not a character to draw. The
+   * renderer must show the glyph PowerPoint shows (the small filled square),
+   * never a literal "§".
+   */
+  it('renders a Wingdings "§" bullet as the small square PowerPoint draws', async () => {
+    const slide = `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}">
+  <p:cSld><p:spTree>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+      <p:txBody>
+        <a:lstStyle>
+          <a:lvl1pPr marL="285750" indent="-285750">
+            <a:buFont typeface="Wingdings"/>
+            <a:buChar char="\u00A7"/>
+          </a:lvl1pPr>
+          <a:lvl2pPr marL="571500" indent="-285750">
+            <a:buFont typeface="Symbol"/>
+            <a:buChar char="\u00B7"/>
+          </a:lvl2pPr>
+        </a:lstStyle>
+        <a:p><a:r><a:t>Level one</a:t></a:r></a:p>
+        <a:p><a:pPr lvl="1"/><a:r><a:t>Level two</a:t></a:r></a:p>
+      </p:txBody>
+    </p:sp>
+  </p:spTree></p:cSld>
+</p:sld>`;
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', slide);
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+    render(<PptxViewer fileUrl="local:square" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    const stage = screen.getByTestId('pptx-stage');
+    const bullets = Array.from(stage.querySelectorAll('span[aria-hidden="true"]'))
+      .map((el) => el.textContent || '');
+    // Wingdings 0xA7 = the small filled square; Symbol 0xB7 = the round bullet.
+    expect(bullets).toContain('\u25AA\u00A0');
+    expect(bullets).toContain('\u2022\u00A0');
+    // And never the raw code-point characters.
+    expect(bullets.join('')).not.toContain('\u00A7');
+  });
+
+  /**
+   * Round 3, the selection ask: slide text must be selectable and the cursor
+   * must signal it — an I-beam over text shapes and table cells (matching
+   * PowerPoint), the normal arrow elsewhere.
+   */
+  it('makes text shapes selectable with a text cursor', async () => {
+    const slide = `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}">
+  <p:cSld><p:spTree>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+      <p:txBody>
+        <a:p><a:r><a:t>Selectable lecture text</a:t></a:r></a:p>
+      </p:txBody>
+    </p:sp>
+  </p:spTree></p:cSld>
+</p:sld>`;
+    const zip = new JSZip();
+    zip.file('ppt/slides/slide1.xml', slide);
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+    render(<PptxViewer fileUrl="local:cursor" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    const stage = screen.getByTestId('pptx-stage');
+    const shape = stage.querySelector('[data-shape="text"]') as HTMLElement;
+    expect(shape).toBeTruthy();
+    expect(shape.style.cursor).toBe('text');
+    expect(shape.style.userSelect).toBe('text');
+    // The text itself is present as real DOM text (selectable, copyable).
+    expect(stage.textContent).toContain('Selectable lecture text');
   });
 });

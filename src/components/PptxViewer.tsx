@@ -4,7 +4,7 @@ import {
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
   PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
-import { isSymbolBulletFont, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
+import { isSymbolBulletFont, mapSymbolFontChar, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
 import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
@@ -236,8 +236,18 @@ const ParagraphView = memo(function ParagraphView({
           // characters are translated to real glyphs and the words render in
           // the normal stack, matching PowerPoint's per-glyph fallback.
           const symbolRun = isSymbolBulletFont(r.font) || (!r.font && isSymbolBulletFont(level?.font));
+          // Run text only translates PRIVATE-USE characters: a symbol font's
+          // alphabet never renders as prose, but the words around a typed
+          // bullet glyph are real text and must stay readable. (Bullet
+          // characters themselves are mapped through the full glyph table in
+          // normalizeBulletGlyph — that is PowerPoint's rule for a:buChar.)
           const text = symbolRun
-            ? Array.from(r.text).map((ch) => normalizeBulletGlyph(ch, r.font ?? level?.font)).join('')
+            ? Array.from(r.text)
+                .map((ch) => {
+                  const c = ch.codePointAt(0) ?? 0;
+                  return c >= 0xf000 && c <= 0xf0ff ? mapSymbolFontChar(ch, r.font ?? level?.font) ?? normalizeBulletGlyph(ch) : ch;
+                })
+                .join('')
             : r.text;
           const fontFamily = symbolRun ? undefined : r.font ?? (isSymbolBulletFont(level?.font) ? undefined : level?.font);
           return (
@@ -301,6 +311,7 @@ const TableView = memo(function TableView({ shape, base }: { shape: PptxShape; b
                       color: c.color,
                       verticalAlign: 'middle',
                       overflow: 'hidden',
+                      cursor: 'text',
                     }}
                   >
                     {c.text}
@@ -398,7 +409,7 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
     <div
       data-shape={shape.isTitle ? 'title' : 'text'}
       className={shape.fill ? 'absolute overflow-hidden' : 'absolute'}
-      style={{ ...base, background: shape.fill, ...borderStyle, borderRadius: radius }}
+      style={{ ...base, background: shape.fill, ...borderStyle, borderRadius: radius, cursor: 'text', userSelect: 'text', WebkitUserSelect: 'text' }}
     >
       {t ? (
         <AutoFitText anchor={t.anchor}>
@@ -1691,7 +1702,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
                   {currentSlide.notes ? (
                     <p
                       data-testid="pptx-notes-text"
-                      className="whitespace-pre-wrap text-[15px] leading-relaxed text-slate-700"
+                      className="cursor-text whitespace-pre-wrap text-[15px] leading-relaxed text-slate-700"
                     >
                       {currentSlide.notes}
                     </p>
