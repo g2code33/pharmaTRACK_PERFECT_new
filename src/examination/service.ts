@@ -36,6 +36,7 @@ import {
   type ExamVersion,
   type ExaminationResult,
   type ExaminationState,
+  type LanAuthorityStateReport,
   type RecoveryState,
   type AttemptTimerState,
   type ExamAuthorityRecord,
@@ -248,6 +249,9 @@ export function nextExamVersionNumber(exam: Exam, versions: ExamVersion[]): numb
       .reduce((max, version) => Math.max(max, version.version), 0) + 1
   );
 }
+
+/** An attempt as reported by the native LAN authority's /state endpoint. */
+export type { LanAuthorityAttemptReport, LanAuthorityStateReport } from './types';
 
 export class ExaminationRepository {
   private state: ExaminationState;
@@ -1559,6 +1563,177 @@ export class ExaminationRepository {
   async saveReplicationSnapshot(snapshot: ExamReplicationSnapshot): Promise<void> {
     this.state.replicationSnapshots.push(snapshot);
     await this.save();
+  }
+
+  /**
+   * Import the native LAN authority's authoritative view of a session into
+   * this repository, so the invigilator can grade, review, release, and later
+   * revisit every student's submitted work from the admin console.
+   *
+   * The Rust authority is the source of truth; the admin webview is a client.
+   * The import is idempotent — re-importing the same (or an evolved) snapshot
+   * never duplicates attempts or results; the authority's answers win per
+   * question. Question order is the version's canonical order (the student's
+   * per-device randomisation seed lives on their device, not the authority),
+   * and grading only ever matches answers by question id.
+   */
+  async importLanAuthorityState(
+    sessionId: string,
+    report: LanAuthorityStateReport,
+  ): Promise<{ importedAttempts: number; updatedAttempts: number; gradedResults: number }> {
+    const session = this.requireSession(sessionId);
+    const version = this.state.versions.find((item) => item.id === session.examVersionId);
+    if (!version) throw new Error('The examination version is unavailable on this device.');
+    const questionIds = new Set(version.questions.map((question) => question.id));
+    let importedAttempts = 0;
+    let updatedAttempts = 0;
+    let gradedResults = 0;
+    const nowIso = new Date().toISOString();
+
+    for (const reported of report.attempts) {
+      if (!reported.id || !reported.studentId) continue;
+      const answers: ExamAnswer[] = reported.answers
+        .filter((item) => questionIds.has(item.questionId))
+        .map((item) => ({
+          questionId: item.questionId,
+          answer:
+            typeof item.answer === 'string'
+              ? item.answer
+              : item.answer == null
+                ? ''
+                : JSON.stringify(item.answer),
+          selectedOption: typeof item.selectedOption === 'number' ? item.selectedOption : undefined,
+          answeredAt: item.serverReceiptAt || reported.startedAt || nowIso,
+          revision: item.revision || 1,
+          eventId: item.eventId,
+          deviceSessionId: item.deviceSessionId || reported.deviceSessionId,
+          isFinal: true,
+          serverReceiptAt: item.serverReceiptAt,
+          serverRevision: item.serverRevision,
+        }));
+      const submitted = reported.status === 'SUBMITTED';
+      const existing = this.state.attempts.find((attempt) => attempt.id === reported.id);
+      if (existing) {
+        const before = JSON.stringify(existing.answers);
+        const byQuestion = new Map(existing.answers.map((answer) => [answer.questionId, answer]));
+        for (const answer of answers) byQuestion.set(answer.questionId, answer);
+        existing.answers = [...byQuestion.values()];
+        existing.synchronizationState = 'SYNCHRONIZED';
+        existing.serverRevision = Math.max(existing.serverRevision, report.revision || 0);
+        if (submitted) {
+          existing.status = 'SUBMITTED';
+          existing.submissionState = 'SUBMITTED';
+          existing.submittedAt = existing.submittedAt || reported.submittedAt || nowIso;
+          // If the authority's view of the submitted work evolved, the grade
+          // follows it — the authority is the source of truth, and a stale
+          // score on the invigilator's console would be worse than a regrade.
+          if (JSON.stringify(existing.answers) !== before) {
+            const index = this.state.results.findIndex((item) => item.attemptId === existing.id);
+            const rebuilt = buildExaminationResult(this.state, existing);
+            if (index >= 0) {
+              rebuilt.quizHistoryId = this.state.results[index].quizHistoryId;
+              this.state.results[index] = rebuilt;
+            } else {
+              this.state.results.push(rebuilt);
+            }
+          }
+        }
+        updatedAttempts += 1;
+      } else {
+        const timerState = createAttemptTimer(
+          version.availability.durationMinutes,
+          reported.startedAt || nowIso,
+          session.authorityEpoch,
+        );
+        const attempt: StudentAttempt = {
+          id: reported.id,
+          sessionId,
+          examId: session.examId,
+          examVersionId: version.id,
+          studentId: reported.studentId,
+          deviceSessionId: reported.deviceSessionId,
+          status: submitted ? 'SUBMITTED' : 'ACTIVE',
+          recoveryStatus: 'ACTIVE',
+          startedAt: reported.startedAt || nowIso,
+          submittedAt: submitted ? reported.submittedAt || nowIso : undefined,
+          deadlineAt: timerState.authoritativeDeadlineAt,
+          timerState,
+          currentQuestionId: version.questions[0]?.id,
+          questionOrder: version.questions.map((question) => question.id),
+          optionOrders: Object.fromEntries(
+            version.questions.map((question) => [
+              question.id,
+              (question.options || []).map((_, index) => index),
+            ]),
+          ),
+          settingsSnapshot: {
+            scoring: JSON.parse(JSON.stringify(version.scoring)),
+            availability: JSON.parse(JSON.stringify(version.availability)),
+            security: JSON.parse(JSON.stringify(version.security)),
+            navigation: JSON.parse(JSON.stringify(version.navigation)),
+            resultVisibilityPolicy: version.resultVisibilityPolicy || 'IMMEDIATE',
+            resultDetails: JSON.parse(JSON.stringify(version.resultDetails || DEFAULT_RESULT_DETAILS)),
+          },
+          answers,
+          focusLosses: 0,
+          securityState: 'NORMAL',
+          synchronizationState: 'SYNCHRONIZED',
+          saveStatus: 'SAVED',
+          kioskLifecycle: 'NOT_ENTERED',
+          submissionState: submitted ? 'SUBMITTED' : 'NOT_SUBMITTED',
+          ownershipGeneration: 1,
+          localRevision: 0,
+          serverRevision: report.revision || 0,
+        };
+        this.state.attempts.push(attempt);
+        importedAttempts += 1;
+      }
+      if (!session.studentAttemptIds.includes(reported.id))
+        session.studentAttemptIds.push(reported.id);
+      if (submitted) {
+        const attempt = this.state.attempts.find((item) => item.id === reported.id);
+        if (attempt) {
+          const before = this.state.results.length;
+          this.ensureResult(attempt);
+          if (this.state.results.length > before) gradedResults += 1;
+        }
+      }
+    }
+
+    // Audit events, deduplicated on a deterministic composite key so repeated
+    // imports never inflate the security log. Only event types the shared
+    // SecurityEvent union actually knows are imported.
+    const knownLanEventTypes = new Set([
+      'IDENTITY_AUTHENTICATED',
+      'ANSWER_RECORDED',
+      'SYNC_RECONCILED',
+      'SYNC_REJECTED',
+      'SUBMITTED',
+    ]);
+    for (const event of report.securityEvents || []) {
+      if (!knownLanEventTypes.has(event.type)) continue;
+      const id = `lan:${event.type}:${event.at}:${event.attemptId ?? event.deviceSessionId ?? ''}:${event.eventId ?? ''}`;
+      if (this.state.securityEvents.some((item) => item.id === id)) continue;
+      this.state.securityEvents.push({
+        id,
+        sessionId,
+        attemptId: event.attemptId,
+        studentId: event.studentId,
+        deviceSessionId: event.deviceSessionId,
+        type: event.type as SecurityEvent['type'],
+        severity: event.severity === 'warning' || event.severity === 'critical' ? event.severity : 'info',
+        at: event.at,
+        metadata: event.eventId
+          ? {
+              eventId: event.eventId,
+              ...(event.serverRevision != null ? { serverRevision: event.serverRevision } : {}),
+            }
+          : undefined,
+      });
+    }
+
+    await this.save();
+    return { importedAttempts, updatedAttempts, gradedResults };
   }
 
   /**

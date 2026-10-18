@@ -365,6 +365,42 @@ export interface ExamQuestionSnapshot {
   source?: QuestionSourceRef;
 }
 
+/** An attempt as reported by the native LAN authority's /state endpoint. */
+export interface LanAuthorityAttemptReport {
+  id: string;
+  studentId: string;
+  deviceSessionId: string;
+  status: string;
+  answers: Array<{
+    questionId: string;
+    answer: unknown;
+    selectedOption?: unknown;
+    deviceSessionId?: string;
+    revision?: number;
+    eventId?: string;
+    serverRevision?: number;
+    serverReceiptAt?: string;
+  }>;
+  startedAt: string;
+  submittedAt?: string | null;
+}
+
+/** The authority's full view of a session: attempts (with work) and audit events. */
+export interface LanAuthorityStateReport {
+  attempts: LanAuthorityAttemptReport[];
+  securityEvents?: Array<{
+    type: string;
+    severity?: string;
+    at: string;
+    attemptId?: string;
+    deviceSessionId?: string;
+    studentId?: string;
+    eventId?: string;
+    serverRevision?: number;
+  }>;
+  revision?: number;
+}
+
 export interface ExamVersion {
   id: string;
   examId: string;

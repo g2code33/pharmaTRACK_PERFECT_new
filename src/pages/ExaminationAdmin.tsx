@@ -19,6 +19,7 @@ import { ExaminationRepository } from '../examination/service';
 import { examinationResultToQuizHistory } from '../examination/results';
 import { ExaminationHighAvailability, type AuthorityStatusView } from '../examination/ha';
 import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
+import { LanExamClient } from '../examination/network';
 import {
   createLanServerConfig,
   detectLanHost,
@@ -48,6 +49,7 @@ const ExaminationAdmin: React.FC = () => {
   const [results, setResults] = useState<ExaminationResult[]>([]);
   const [authority, setAuthority] = useState<AuthorityStatusView | null>(null);
   const [selectedAttemptId, setSelectedAttemptId] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState('');
   const [adminId, setAdminId] = useState('local-admin');
   const [adminDevice, setAdminDevice] = useState('admin-device');
   const [reason, setReason] = useState('Authorized examination administration');
@@ -59,6 +61,8 @@ const ExaminationAdmin: React.FC = () => {
   const [lanHost, setLanHost] = useState('');
   const [lanHostDetected, setLanHostDetected] = useState(false);
   const [openEnrollment, setOpenEnrollment] = useState(false);
+  const [lanImportMessage, setLanImportMessage] = useState('');
+  const [reviewResultId, setReviewResultId] = useState('');
   /** Stable for the page's life: the real TCP server only exists in the app. */
   const nativeHostAvailable = isNativeLanServerAvailable();
 
@@ -80,34 +84,67 @@ const ExaminationAdmin: React.FC = () => {
   const [selectedForRelease, setSelectedForRelease] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(async () => {
-    const opened = await ExaminationRepository.open();
+    let opened = await ExaminationRepository.open();
+    const allSessions = opened.snapshot.sessions;
+    // The admin chooses which examination to view; by default the live (or
+    // most recent) one is shown, and every past session stays visitable.
     const nextSession =
-      opened.snapshot.sessions.find((item) =>
+      allSessions.find((item) => item.id === selectedSessionId) ||
+      allSessions.find((item) =>
         ['ACTIVE', 'CREATED', 'READY', 'RECOVERY'].includes(item.status),
       ) ||
-      opened.snapshot.sessions[opened.snapshot.sessions.length - 1] ||
+      allSessions[allSessions.length - 1] ||
       null;
+
+    let lan: LanServerStatus | null = null;
+    try {
+      lan = await lanExamServerStatus();
+    } catch {
+      lan = null;
+    }
+    // While the native authority runs, pull its authoritative view so the
+    // invigilator sees every submitted attempt — with the work itself — even
+    // though the students answered on their own devices.
+    const authorityServesThisSession =
+      !!lan?.running &&
+      !!nextSession?.authorityAccessToken &&
+      (!nextSession.authorityEndpoint || nextSession.authorityEndpoint === lan.endpoint);
+    if (lan && authorityServesThisSession && nextSession) {
+      try {
+        const client = new LanExamClient(lan.endpoint, window.fetch.bind(window), {
+          token: nextSession.authorityAccessToken,
+        });
+        const authorityState = await client.state(nextSession.id);
+        const outcome = await opened.importLanAuthorityState(nextSession.id, authorityState);
+        if (outcome.gradedResults > 0)
+          setLanImportMessage(
+            `Imported ${outcome.gradedResults} newly submitted attempt(s) from the LAN authority.`,
+          );
+        opened = await ExaminationRepository.open();
+      } catch (error) {
+        // The authority may be mid-restart; the manual import button reports details.
+        console.warn('Automatic import from the LAN authority failed.', error);
+      }
+    }
+
     setRepository(opened);
     setSession(nextSession);
     if (nextSession?.authorityAccessToken) setLanToken(nextSession.authorityAccessToken);
-    setAttempts(
-      opened.snapshot.attempts.filter((attempt) => activeStatuses.includes(attempt.status)),
-    );
-    setResults(opened.snapshot.results);
-    if (!selectedAttemptId && opened.snapshot.attempts[0])
-      setSelectedAttemptId(opened.snapshot.attempts[0].id);
+    const sessionAttempts = nextSession
+      ? opened.snapshot.attempts.filter((attempt) => attempt.sessionId === nextSession.id)
+      : [];
+    setAttempts(sessionAttempts.filter((attempt) => activeStatuses.includes(attempt.status)));
+    const attemptIds = new Set(sessionAttempts.map((attempt) => attempt.id));
+    setResults(opened.snapshot.results.filter((result) => attemptIds.has(result.attemptId)));
+    if (!selectedAttemptId && sessionAttempts[0]) setSelectedAttemptId(sessionAttempts[0].id);
     try {
       const coordinator = new ExaminationHighAvailability(opened);
       setAuthority(await coordinator.initialize());
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Authority status unavailable.');
     }
-    try {
-      setLanStatus(await lanExamServerStatus());
-    } catch {
-      setLanStatus(null);
-    }
-  }, [selectedAttemptId]);
+    setLanStatus(lan);
+  }, [selectedAttemptId, selectedSessionId]);
 
   useEffect(() => {
     void refresh();
@@ -380,6 +417,47 @@ const ExaminationAdmin: React.FC = () => {
     }
   };
 
+  /**
+   * Pull the authority's authoritative view of this session on demand. The
+   * 5-second refresh already does this while the authority runs; the button
+   * exists so the invigilator can force a pull (and see any error verbatim)
+   * instead of wondering whether the table is current.
+   */
+  const importFromAuthority = async () => {
+    if (!session) return;
+    setBusy(true);
+    setLanImportMessage('');
+    try {
+      const status = await lanExamServerStatus();
+      if (!status.running)
+        throw new Error('The LAN authority is not running on this device.');
+      if (!session.authorityAccessToken)
+        throw new Error('This session has no authority token to authenticate with.');
+      if (session.authorityEndpoint && session.authorityEndpoint !== status.endpoint)
+        throw new Error('The running authority belongs to a different examination session.');
+      const client = new LanExamClient(status.endpoint, window.fetch.bind(window), {
+        token: session.authorityAccessToken,
+      });
+      const authorityState = await client.state(session.id);
+      const outcome = await (await ExaminationRepository.open()).importLanAuthorityState(
+        session.id,
+        authorityState,
+      );
+      setLanImportMessage(
+        `Imported from the authority: ${outcome.importedAttempts} new attempt(s), ` +
+          `${outcome.updatedAttempts} refreshed, ${outcome.gradedResults} newly graded. ` +
+          'Results and per-question work are now on this device permanently.',
+      );
+      await refresh();
+    } catch (error) {
+      setLanImportMessage(
+        error instanceof Error ? error.message : 'Import from the LAN authority failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const failover = async () => {
     if (!adminAuthenticated) {
       setMessage('Authenticate this administrator device before failover.');
@@ -474,6 +552,61 @@ const ExaminationAdmin: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Session picker: every examination ever administered on this device
+          stays visitable — live ones first, archived ones any time later. */}
+      <section className="bg-white border rounded-2xl p-4 flex flex-wrap items-center gap-3" data-testid="session-picker">
+        <label htmlFor="admin-session-picker" className="text-sm font-black whitespace-nowrap">
+          Viewing examination
+        </label>
+        <select
+          id="admin-session-picker"
+          className="flex-1 min-w-[16rem] rounded-lg border px-3 py-2 text-sm font-bold bg-white"
+          value={session?.id ?? ''}
+          onChange={(event) => {
+            setSelectedSessionId(event.target.value);
+            setSelectedAttemptId('');
+            setReviewResultId('');
+            setSelectedForRelease(new Set());
+          }}
+        >
+          {(repository?.snapshot.sessions ?? []).length === 0 && (
+            <option value="">No examination sessions yet</option>
+          )}
+          {[...(repository?.snapshot.sessions ?? [])].reverse().map((item) => {
+            const exam = repository?.snapshot.exams.find((candidate) => candidate.id === item.examId);
+            return (
+              <option key={item.id} value={item.id}>
+                {exam?.title || 'Examination'} · {new Date(item.createdAt).toLocaleDateString()} ·{' '}
+                {item.status}
+                {item.status === 'CLOSED' ? ' (archived — still viewable)' : ''}
+              </option>
+            );
+          })}
+        </select>
+        {lanStatus?.running && session?.authorityAccessToken && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void importFromAuthority()}
+            className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 text-xs font-black shadow-sm disabled:opacity-40"
+            data-testid="import-from-authority"
+          >
+            Import work from the LAN authority
+          </button>
+        )}
+        {lanImportMessage && (
+          <p className="text-xs font-bold text-emerald-800 w-full" data-testid="lan-import-message">
+            {lanImportMessage}
+          </p>
+        )}
+        <p className="text-xs text-slate-500 w-full">
+          While the LAN authority runs, every submitted attempt is pulled into this device's
+          encrypted examination store automatically — scores, each student's answers, and the
+          audit trail. Pick any past session above to revisit its results at any time.
+        </p>
+      </section>
+
       <section className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {[
           ['Connected students', stats.connectedStudents],
@@ -843,6 +976,7 @@ const ExaminationAdmin: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
+
                 {results.map((result) => {
                   const student = repository?.snapshot.students.find(
                     (s) => s.id === result.studentId,
@@ -926,7 +1060,19 @@ const ExaminationAdmin: React.FC = () => {
                         {new Date(result.submittedAt).toLocaleTimeString()}
                       </td>
                       <td className="p-2">
-                        {attemptPolicy === 'ON_RELEASE' && (
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() =>
+                              setReviewResultId(
+                                reviewResultId === result.id ? '' : result.id,
+                              )
+                            }
+                            className="px-2 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 text-white font-bold"
+                            data-testid={`review-work-${result.attemptId}`}
+                          >
+                            {reviewResultId === result.id ? 'Close work' : 'Review work'}
+                          </button>
+                          {attemptPolicy === 'ON_RELEASE' && (
                           <div className="flex gap-1">
                             {relStatus !== 'RELEASED' ? (
                               <button
@@ -965,6 +1111,7 @@ const ExaminationAdmin: React.FC = () => {
                             )}
                           </div>
                         )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -973,6 +1120,118 @@ const ExaminationAdmin: React.FC = () => {
             </table>
           </div>
         )}
+
+        {/* Per-question work review: the invigilator sees exactly what each
+            student wrote, question by question, with the marking. */}
+        {results
+          .filter((result) => result.id === reviewResultId)
+          .map((result) => {
+            const version = repository?.snapshot.versions.find(
+              (candidate) => candidate.id === result.examVersionId,
+            );
+            const student = repository?.snapshot.students.find(
+              (candidate) => candidate.id === result.studentId,
+            );
+            return (
+              <div
+                key={result.id}
+                data-testid="result-work-review"
+                className="rounded-xl border-2 border-emerald-300 bg-emerald-50/60 p-4 space-y-3"
+              >
+                <div className="flex flex-wrap justify-between items-center gap-2">
+                  <div>
+                    <h3 className="font-black text-slate-900">
+                      {student?.firstName || result.studentId} — submitted work
+                    </h3>
+                    <p className="text-xs text-slate-600">
+                      {result.score}/{result.maxMarks} ({result.percentage}%) ·{' '}
+                      {result.answerStatistics.correct} correct ·{' '}
+                      {result.answerStatistics.incorrect} incorrect ·{' '}
+                      {result.answerStatistics.unanswered} unanswered ·{' '}
+                      {Math.round(result.durationSeconds / 60)} min · submitted{' '}
+                      {new Date(result.submittedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setReviewResultId('')}
+                    className="rounded-lg border px-3 py-1 text-xs font-bold"
+                  >
+                    Close review
+                  </button>
+                </div>
+                {result.securityEventSummary &&
+                  Object.keys(result.securityEventSummary).length > 0 && (
+                    <p className="text-xs text-amber-800 font-bold">
+                      Security:{' '}
+                      {Object.entries(result.securityEventSummary)
+                        .map(([type, count]) => `${type} ×${count}`)
+                        .join(' · ')}
+                    </p>
+                  )}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm bg-white rounded-lg border">
+                    <thead className="bg-slate-100 text-left text-xs uppercase">
+                      <tr>
+                        <th className="p-2">#</th>
+                        <th className="p-2">Question</th>
+                        <th className="p-2">Student's answer</th>
+                        <th className="p-2">Correct answer</th>
+                        <th className="p-2">Marks</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.questionResults.map((questionResult, index) => {
+                        const question = version?.questions.find(
+                          (candidate) => candidate.id === questionResult.questionId,
+                        );
+                        const optionText =
+                          question?.options &&
+                          questionResult.answer !== '' &&
+                          /^\d+$/.test(questionResult.answer)
+                            ? question.options[Number(questionResult.answer)]
+                            : undefined;
+                        const correctText = question?.options
+                          ? question.correctOption != null
+                            ? question.options[question.correctOption]
+                            : question.correctAnswer
+                          : undefined;
+                        return (
+                          <tr
+                            key={questionResult.questionId}
+                            className={
+                              questionResult.isCorrect
+                                ? 'border-b bg-emerald-50'
+                                : questionResult.answer.trim()
+                                  ? 'border-b bg-red-50'
+                                  : 'border-b bg-slate-50'
+                            }
+                          >
+                            <td className="p-2 font-black">{index + 1}</td>
+                            <td className="p-2">
+                              <p className="font-bold">{question?.questionText || 'Question unavailable'}</p>
+                              {question?.explanation && (
+                                <p className="text-xs text-slate-500 mt-1">{question.explanation}</p>
+                              )}
+                            </td>
+                            <td className="p-2 font-bold">
+                              {questionResult.answer.trim()
+                                ? optionText || questionResult.answer
+                                : '— not answered —'}
+                            </td>
+                            <td className="p-2 text-xs text-slate-600">{correctText ?? '—'}</td>
+                            <td className="p-2 font-black whitespace-nowrap">
+                              {questionResult.marksAwarded}/{questionResult.maxMarks}{' '}
+                              {questionResult.isCorrect ? '✓' : '✗'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
 
         {/* Release Audit Trail */}
         {repository && repository.snapshot.resultReleaseAudits.length > 0 && (

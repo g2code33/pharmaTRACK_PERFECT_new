@@ -4,6 +4,7 @@ import type {
   ExamAnswer,
   ExamSession,
   ExamVersion,
+  LanAuthorityStateReport,
   RecoveryState,
   StudentAttempt,
   SyncEvent,
@@ -136,14 +137,13 @@ export interface LanExamTransport {
     attemptId: string,
     deviceSessionId?: string,
   ): Promise<LanAttemptResponse>;
-  state?(sessionId: string): Promise<{
-    ok: boolean;
-    server: ExamServerIdentity;
-    connections: Array<Record<string, unknown>>;
-    attempts: Array<Record<string, unknown>>;
-    securityEvents: Array<Record<string, unknown>>;
-    revision: number;
-  }>;
+  state?(sessionId: string): Promise<
+    LanAuthorityStateReport & {
+      ok: boolean;
+      server: ExamServerIdentity;
+      connections: Array<Record<string, unknown>>;
+    }
+  >;
   fetchResults?(
     sessionId: string,
   ): Promise<{ ok: boolean; revision: number; results: LanResultSummary[] }>;
@@ -293,14 +293,13 @@ export class LanExamClient implements LanExamTransport {
   }
 
   state(sessionId: string) {
-    return this.call<{
-      ok: boolean;
-      server: ExamServerIdentity;
-      connections: Array<Record<string, unknown>>;
-      attempts: Array<Record<string, unknown>>;
-      securityEvents: Array<Record<string, unknown>>;
-      revision: number;
-    }>(`/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/state`);
+    return this.call<
+      LanAuthorityStateReport & {
+        ok: boolean;
+        server: ExamServerIdentity;
+        connections: Array<Record<string, unknown>>;
+      }
+    >(`/pharmaexam/v1/sessions/${encodeURIComponent(sessionId)}/state`);
   }
 
   fetchResults(sessionId: string) {
