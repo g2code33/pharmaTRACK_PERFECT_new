@@ -35,6 +35,18 @@ on:
       VITE_SUPABASE_ANON_KEY:
         required: false
   workflow_dispatch:
+  # Same rationale as desktop-linux.yml: the working branch builds the real
+  # MSI + NSIS installers whenever either half of the Tauri stack changes, so
+  # a CLI/crate version desync surfaces on the branch, not in a release. main
+  # is already covered by Pull Request Validation's push fan-out.
+  push:
+    branches:
+      - arena/01a0e837-pharmatrack-perfect-new
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src-tauri/**'
+      - '.github/workflows/desktop-windows.yml'
 
 permissions:
   contents: read

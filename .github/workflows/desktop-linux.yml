@@ -29,6 +29,20 @@ on:
       VITE_SUPABASE_ANON_KEY:
         required: false
   workflow_dispatch:
+  # The working branch gets the same desktop packaging check without opening a
+  # PR: pushes that touch either half of the Tauri stack (the npm CLI or the
+  # Rust crates) build the real .deb here, so a CLI/crate version desync is
+  # caught on the branch instead of inside a release. main does not need this
+  # trigger — its push event already fans out to this workflow through Pull
+  # Request Validation, and adding it here would double every main push.
+  push:
+    branches:
+      - arena/01a0e837-pharmatrack-perfect-new
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'src-tauri/**'
+      - '.github/workflows/desktop-linux.yml'
 
 permissions:
   contents: read
