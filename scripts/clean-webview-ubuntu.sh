@@ -13,11 +13,17 @@
 #   This script deletes ONLY the cache and service-worker storage, BY NAME.
 #   Your data (IndexedDB, Local Storage, databases, cookies) is preserved.
 #
-# Layout written by WebKitGTK (base data dir = base cache dir, same folder):
+# Layout written by WebKitGTK (base data dir = base cache dir, same folder),
+# names confirmed against a real install (Ubuntu 24.04, WebKitGTK 2.4x):
 #   KEPT  (your data):   localstorage/        Local Storage
 #                        databases/           WebSQL + databases/indexeddb/
+#                        storage/             storage-manager state
+#                        material-files/      the app's uploaded materials
 #                        cookies*             persistent cookie store
-#   WIPED (just caches): "Version "*/         HTTP disk cache (THE culprit)
+#                        mediakeys, deviceidhashsalts, hsts-storage.sqlite
+#   WIPED (just caches): WebKitCache/         HTTP disk cache (THE culprit —
+#                        observed at 692MB on a machine whose app ships ~10MB)
+#                        "Version "*/         HTTP disk cache (older layout)
 #                        CacheStorage/        service-worker Cache API data
 #                        serviceworkers/      service-worker registrations
 #                        applications/        old appcache
@@ -57,6 +63,8 @@ while IFS= read -r d; do add "$d"; done < <(
     \( -iname '*pharmatrack*' -o -iname '*pharma-track*' \) 2>/dev/null
 )
 
+CANDIDATES="$(printf '%s' "${CANDIDATES}" | awk 'NF' | sort -u)"
+
 if [ -z "${CANDIDATES//[$' \n']/}" ]; then
   say "No PharmaTRACK webview storage found. Nothing to clean."
   say "If problems persist, send the output of:"
@@ -80,7 +88,7 @@ while IFS= read -r dir; do
       # ---- your data: untouched ----
       localstorage|databases|cookies*) kept="${kept} ${base}"; continue ;;
       # ---- caches: delete ----
-      Version\ *|CacheStorage|serviceworkers|applications|itp)
+      WebKitCache|Version\ *|CacheStorage|serviceworkers|applications|itp)
         rm -rf -- "${dir:?}/${base}"
         say "    wiped: ${base}"
         WIPED=$((WIPED + 1))
