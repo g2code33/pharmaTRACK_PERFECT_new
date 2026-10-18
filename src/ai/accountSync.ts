@@ -100,9 +100,70 @@ let initializationGeneration = 0;
 let explicitUnlockInProgress = false;
 let configurationQueue: Promise<void> = Promise.resolve();
 const secretQueues = new Map<ProviderId, Promise<void>>();
+const ACCOUNT_SYNC_UNAVAILABLE_KEY = 'pharmatrack_ai_account_sync_unavailable_v1';
+const ACCOUNT_SYNC_UNAVAILABLE_TTL_MS = 15 * 60_000;
+let accountSyncUnavailableUntil = 0;
 
 function offline(): boolean {
   return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error) || '';
+  } catch {
+    return '';
+  }
+}
+
+function missingAccountSyncRpc(error: unknown): boolean {
+  const text = errorText(error);
+  return (
+    /pharmatrack_ai_/i.test(text) &&
+    /(PGRST202|404|not found|could not find|does not exist|schema cache)/i.test(text)
+  );
+}
+
+function transientNetworkError(error: unknown): boolean {
+  if (offline()) return true;
+  return /(pharmatrack_offline|503|failed to fetch|load failed|networkerror|unreachable|network request failed)/i.test(
+    errorText(error),
+  );
+}
+
+function accountSyncUnavailable(): boolean {
+  const now = Date.now();
+  if (accountSyncUnavailableUntil > now) return true;
+  try {
+    const stored = Number(localStorage.getItem(ACCOUNT_SYNC_UNAVAILABLE_KEY) || 0);
+    if (Number.isFinite(stored) && stored > now) {
+      accountSyncUnavailableUntil = stored;
+      return true;
+    }
+  } catch {
+    /* localStorage is optional for this non-secret cooldown */
+  }
+  return false;
+}
+
+function markAccountSyncUnavailable(): void {
+  accountSyncUnavailableUntil = Date.now() + ACCOUNT_SYNC_UNAVAILABLE_TTL_MS;
+  try {
+    localStorage.setItem(ACCOUNT_SYNC_UNAVAILABLE_KEY, String(accountSyncUnavailableUntil));
+  } catch {
+    /* cooldown is only to avoid noisy retries */
+  }
+}
+
+function accountSyncUnavailableStatus(userId?: string): AccountAIStatus {
+  return {
+    state: 'error',
+    userId,
+    message:
+      'Account AI sync is not available on this Supabase project yet. Local AI settings and keys still work on this device.',
+  };
 }
 
 function setStatus(next: AccountAIStatus): void {
@@ -152,8 +213,17 @@ function saveLocalConfigMeta(
 }
 
 async function rpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
+  if (accountSyncUnavailable()) {
+    throw new Error('Account AI sync database functions are not available.');
+  }
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw error;
+  if (error) {
+    if (missingAccountSyncRpc(error)) {
+      markAccountSyncUnavailable();
+      throw new Error('Account AI sync database functions are not available.');
+    }
+    throw error;
+  }
   return data as T;
 }
 
@@ -272,10 +342,10 @@ export function queueAccountSettingsSync(settings: AISettings): void {
       const revoked = error instanceof Error && /revoked|invalid device/i.test(error.message);
       setStatus({
         ...status,
-        state: revoked ? 'revoked' : offline() ? 'pending' : 'error',
+        state: revoked ? 'revoked' : transientNetworkError(error) ? 'pending' : 'error',
         message: 'AI configuration sync failed; changes remain pending locally.',
       });
-      console.error('AI configuration sync failed.');
+      console.warn('AI configuration sync is pending; local settings were kept.');
     });
 }
 
@@ -365,10 +435,10 @@ export function queueSecretSync(
       const revoked = error instanceof Error && /revoked|invalid device/i.test(error.message);
       setStatus({
         ...status,
-        state: revoked ? 'revoked' : offline() ? 'pending' : 'error',
+        state: revoked ? 'revoked' : transientNetworkError(error) ? 'pending' : 'error',
         message: 'Provider credential sync failed; it remains pending locally.',
       });
-      console.error('AI credential sync failed.');
+      console.warn('AI credential sync is pending; local credentials were kept.');
     });
   secretQueues.set(providerId, next);
 }
@@ -410,10 +480,10 @@ export function queueSecretDeletion(providerId: ProviderId): void {
       const revoked = error instanceof Error && /revoked|invalid device/i.test(error.message);
       setStatus({
         ...status,
-        state: revoked ? 'revoked' : offline() ? 'pending' : 'error',
+        state: revoked ? 'revoked' : transientNetworkError(error) ? 'pending' : 'error',
         message: 'Provider credential deletion remains pending.',
       });
-      console.error('AI credential deletion sync failed.');
+      console.warn('AI credential deletion is pending until account sync is reachable.');
     });
   secretQueues.set(providerId, next);
 }
@@ -586,6 +656,12 @@ if (typeof window !== 'undefined') {
 
 async function initializeAccountAI(userId: string, password?: string): Promise<AccountAIStatus> {
   const generation = ++initializationGeneration;
+  if (accountSyncUnavailable()) {
+    active = null;
+    const next = accountSyncUnavailableStatus(userId);
+    setStatus(next);
+    return next;
+  }
   setStatus({ state: 'restoring', userId, message: 'Restoring your AI configuration…' });
   try {
     const session = await registerDevice(userId);
@@ -629,13 +705,22 @@ async function initializeAccountAI(userId: string, password?: string): Promise<A
   } catch (error) {
     if (generation !== initializationGeneration) return status;
     active = null;
+    if (
+      accountSyncUnavailable() ||
+      /sync database functions are not available/i.test(errorText(error))
+    ) {
+      const next = accountSyncUnavailableStatus(userId);
+      setStatus(next);
+      return next;
+    }
     const revoked = error instanceof Error && /revoked|invalid device/i.test(error.message);
+    const networkPending = transientNetworkError(error);
     const next: AccountAIStatus = {
-      state: revoked ? 'revoked' : offline() ? 'pending' : 'error',
+      state: revoked ? 'revoked' : networkPending ? 'pending' : 'error',
       userId,
-      message: offline()
-        ? 'You are offline. Local AI settings remain available and synchronization will retry when you reconnect.'
-        : 'AI configuration could not be restored.',
+      message: networkPending
+        ? 'Supabase is unreachable/offline. Local AI settings remain available and synchronization will retry when you reconnect.'
+        : 'AI configuration could not be restored. Local AI settings remain available on this device.',
     };
     setStatus(next);
     return next;
@@ -643,7 +728,7 @@ async function initializeAccountAI(userId: string, password?: string): Promise<A
 }
 
 export async function listAccountDevices(): Promise<AccountDevice[]> {
-  if (!active) return [];
+  if (!active || accountSyncUnavailable()) return [];
   return (
     (await rpc<AccountDevice[]>('pharmatrack_ai_list_devices', {
       p_device_id: active.deviceId,
@@ -653,6 +738,8 @@ export async function listAccountDevices(): Promise<AccountDevice[]> {
 }
 
 export async function revokeAccountDevice(targetDeviceId: string): Promise<void> {
+  if (accountSyncUnavailable())
+    throw new Error('Account AI sync is not available on this project.');
   if (!active) throw new Error('Sign in to manage account devices.');
   await rpc('pharmatrack_ai_revoke_device', {
     p_device_id: active.deviceId,
@@ -662,6 +749,8 @@ export async function revokeAccountDevice(targetDeviceId: string): Promise<void>
 }
 
 export async function deleteAccountAIData(): Promise<void> {
+  if (accountSyncUnavailable())
+    throw new Error('Account AI sync is not available on this project.');
   if (!active) throw new Error('Sign in to delete account AI data.');
   await rpc('pharmatrack_ai_delete_account_data', {
     p_device_id: active.deviceId,

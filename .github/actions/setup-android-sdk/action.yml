@@ -1,0 +1,44 @@
+name: Set up Android SDK
+description: >-
+  Ensures the Android SDK with platform 35 and build-tools 35.0.0 is
+  available. Prefers the SDK that ships with the GitHub runner image and
+  falls back to a fresh install of the command-line tools when it is missing,
+  so Android jobs fail loudly on real problems instead of on a missing SDK.
+
+runs:
+  using: composite
+  steps:
+    - name: Locate or install the Android SDK
+      shell: bash
+      run: |
+        set -euo pipefail
+        SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+        [ -d "$SDK" ] || SDK="/usr/local/lib/android/sdk"
+        find_sdkmanager() {
+          for p in "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+                   "$SDK/cmdline-tools/bin/sdkmanager" \
+                   "$SDK/tools/bin/sdkmanager"; do
+            if [ -x "$p" ]; then printf '%s\n' "$p"; return 0; fi
+          done
+          return 1
+        }
+        if SDKMANAGER="$(find_sdkmanager)"; then
+          echo "Using runner-provided Android SDK at $SDK"
+        else
+          echo "No cmdline-tools found — installing fresh Android SDK"
+          SDK="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$SDK/cmdline-tools"
+          curl -fsSL --retry 3 --connect-timeout 15 -o /tmp/cmdtools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
+          mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+        fi
+        echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+        echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+        echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+        echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+        echo "$SDK/build-tools/35.0.0" >> "$GITHUB_PATH"
+        yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+        "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+        "$SDKMANAGER" --version

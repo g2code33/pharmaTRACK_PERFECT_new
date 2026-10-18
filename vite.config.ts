@@ -4,6 +4,15 @@ import tailwindcss from '@tailwindcss/vite'
 import fs from 'node:fs'
 import path from 'node:path'
 
+/**
+ * The single source of truth for the app version is package.json. Anything in
+ * src/ that needs it reads __APP_VERSION__, so a release bump can never leave
+ * one component announcing a version the build is not.
+ */
+const appVersion = (
+  JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8')) as { version: string }
+).version;
+
 function versionServiceWorker(): Plugin {
   return {
     name: 'pharmatrack-version-service-worker',
@@ -29,7 +38,8 @@ export default defineConfig({
   // This explicitly forces Vite to read the GitHub Action secrets!
   define: {
     'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(process.env.VITE_SUPABASE_URL),
-    'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(process.env.VITE_SUPABASE_ANON_KEY)
+    'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(process.env.VITE_SUPABASE_ANON_KEY),
+    __APP_VERSION__: JSON.stringify(appVersion)
   },
 
   build: {

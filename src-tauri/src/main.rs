@@ -5,18 +5,31 @@
 
 mod lan_server;
 
-use std::{fs, path::Path, sync::Mutex};
+use std::{
+    fs,
+    fs::OpenOptions,
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use ring::rand::{SecureRandom, SystemRandom};
 use tauri_plugin_shell::ShellExt;
 use tauri::{
-    webview::WebviewBuilder, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
-    WebviewUrl, WindowEvent,
+    webview::{PageLoadEvent, WebviewBuilder},
+    Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl, WindowEvent,
 };
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
 use tauri::RunEvent;
 
 const NATIVE_SECURE_EVENT: &str = "pharmatrack://secure-exam-native-event";
+const APP_DEEP_LINK_EVENT: &str = "pharmatrack-deep-link-opened";
 
 #[derive(Clone, serde::Serialize)]
 struct NavUpdate {
@@ -64,6 +77,9 @@ struct SecureExamHostState {
 #[derive(Default)]
 struct PendingPharmaExamFiles(Mutex<Vec<String>>);
 
+#[derive(Default)]
+struct PendingPharmaTrackLinks(Mutex<Vec<String>>);
+
 impl SecureExamHostState {
     fn is_active(&self) -> bool {
         self.active.lock().map(|value| value.is_some()).unwrap_or(true)
@@ -107,6 +123,74 @@ fn queue_pharmaexam_paths(app: &tauri::AppHandle, paths: Vec<String>) {
         }
     }
     let _ = app.emit("pharmaexam-file-opened", paths);
+}
+
+fn is_pharmatrack_deep_link(value: &str) -> bool {
+    let candidate = value.trim();
+    if candidate.is_empty() {
+        return false;
+    }
+    candidate.starts_with("pharmatrack://")
+        || candidate.starts_with("web+pharmatrack:")
+        || ((candidate.starts_with("https://pharmatrack-web.pages.dev")
+            || candidate.starts_with("http://pharmatrack-web.pages.dev"))
+            && candidate.contains("#/"))
+}
+
+fn filter_pharmatrack_deep_links<I>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    values
+        .into_iter()
+        .filter(|value| is_pharmatrack_deep_link(value))
+        .collect()
+}
+
+fn queue_pharmatrack_deep_links(app: &tauri::AppHandle, values: Vec<String>) {
+    let links = filter_pharmatrack_deep_links(values);
+    if links.is_empty() {
+        return;
+    }
+    if let Some(pending) = app.try_state::<PendingPharmaTrackLinks>() {
+        if let Ok(mut queue) = pending.0.lock() {
+            queue.extend(links.iter().cloned());
+        }
+    }
+    let _ = app.emit(APP_DEEP_LINK_EVENT, links);
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_protocol_handler() {
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Unable to inspect executable path for pharmatrack:// registration: {error}");
+            return;
+        }
+    };
+    let exe = exe.to_string_lossy().into_owned();
+    let command_value = format!("\"{}\" \"%1\"", exe);
+    let entries = [
+        ("HKCU\\Software\\Classes\\pharmatrack", "/ve", "URL:PharmaTRACK App Link"),
+        ("HKCU\\Software\\Classes\\pharmatrack", "URL Protocol", ""),
+        ("HKCU\\Software\\Classes\\pharmatrack\\DefaultIcon", "/ve", exe.as_str()),
+        ("HKCU\\Software\\Classes\\pharmatrack\\shell\\open\\command", "/ve", command_value.as_str()),
+    ];
+    for (key, name, value) in entries {
+        let mut command = Command::new("reg");
+        command.arg("add").arg(key).arg("/f");
+        if name == "/ve" {
+            command.arg("/ve");
+        } else {
+            command.arg("/v").arg(name);
+        }
+        command.arg("/d").arg(value);
+        if let Err(error) = command.output() {
+            eprintln!("Unable to register pharmatrack:// protocol handler: {error}");
+            return;
+        }
+    }
 }
 
 fn ensure_application_controls_available(state: &SecureExamHostState) -> Result<(), String> {
@@ -246,12 +330,13 @@ fn apply_secure_window_controls(window: &tauri::WebviewWindow) -> Result<(), Str
 }
 
 fn restore_window_controls(window: &tauri::WebviewWindow) -> Result<(), String> {
-    // These values match the normal window policy in tauri.conf.json. Keeping
-    // restoration explicit means a crashed/returned exam does not leave the
-    // ordinary PharmaTRACK desktop window permanently altered.
+    // These values match the normal frameless desktop window policy in
+    // tauri.conf.json. Keeping restoration explicit means a returned exam does
+    // not leave the ordinary PharmaTRACK window fullscreen, undecorated in the
+    // wrong mode, or permanently always-on-top.
     window.set_fullscreen(false).map_err(|error| error.to_string())?;
     window.set_always_on_top(false).map_err(|error| error.to_string())?;
-    window.set_decorations(true).map_err(|error| error.to_string())?;
+    window.set_decorations(false).map_err(|error| error.to_string())?;
     window.set_resizable(true).map_err(|error| error.to_string())?;
     window.set_minimizable(true).map_err(|error| error.to_string())?;
     window.set_maximizable(true).map_err(|error| error.to_string())?;
@@ -617,6 +702,19 @@ fn get_pending_pharmaexam_files(
 }
 
 #[tauri::command]
+fn get_pending_pharmatrack_links(
+    state: State<'_, PendingPharmaTrackLinks>,
+    secure_state: State<'_, SecureExamHostState>,
+) -> Result<Vec<String>, String> {
+    ensure_application_controls_available(secure_state.inner())?;
+    let mut pending = state
+        .0
+        .lock()
+        .map_err(|_| "Pending app-link state is unavailable.".to_string())?;
+    Ok(std::mem::take(&mut *pending))
+}
+
+#[tauri::command]
 fn read_pharmaexam_file(
     path: String,
     secure_state: State<'_, SecureExamHostState>,
@@ -632,6 +730,360 @@ fn read_pharmaexam_file(
     }
     fs::read(candidate).map_err(|error| format!("Unable to read examination package: {error}"))
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeMaterialFileInfo {
+    size: u64,
+}
+
+const MATERIAL_FILE_CHUNK_LIMIT: usize = 2 * 1024 * 1024;
+
+fn validate_material_file_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err("Invalid material file id.".to_string());
+    }
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("Invalid material file id.".to_string());
+    }
+    Ok(())
+}
+
+fn material_files_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Unable to find the app data directory: {error}"))?
+        .join("material-files"))
+}
+
+fn material_file_path(app: &tauri::AppHandle, id: &str, temp: bool) -> Result<PathBuf, String> {
+    validate_material_file_id(id)?;
+    let suffix = if temp { ".part" } else { ".bin" };
+    Ok(material_files_dir(app)?.join(format!("file_{id}{suffix}")))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePptxPdfResult {
+    pdf_bytes: Vec<u8>,
+    converter: String,
+}
+
+fn find_office_converter() -> Option<String> {
+    let candidates = [
+        "soffice",
+        "libreoffice",
+        "soffice.exe",
+        "libreoffice.exe",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    ];
+    candidates.iter().find_map(|candidate| {
+        Command::new(candidate)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|_| candidate.to_string())
+    })
+}
+
+fn convert_pptx_with_office(app: tauri::AppHandle, id: String) -> Result<NativePptxPdfResult, String> {
+    let source = material_file_path(&app, &id, false)?;
+    let metadata = fs::metadata(&source).map_err(|error| format!("Unable to inspect saved PowerPoint: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 250 * 1024 * 1024 {
+        return Err("The saved PowerPoint is missing, empty, or too large to convert natively.".to_string());
+    }
+
+    let converter = find_office_converter().ok_or_else(|| "LibreOffice/soffice is not installed, so native PowerPoint conversion is unavailable.".to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let work_dir = material_files_dir(&app)?.join("pptx-conversion").join(format!("{id}-{stamp}"));
+    fs::create_dir_all(&work_dir).map_err(|error| format!("Unable to prepare native conversion workspace: {error}"))?;
+    let input = work_dir.join("input.pptx");
+    let output = work_dir.join("input.pdf");
+    fs::copy(&source, &input).map_err(|error| format!("Unable to stage PowerPoint for native conversion: {error}"))?;
+
+    let mut child = Command::new(&converter)
+        .arg("--headless")
+        .arg("--nologo")
+        .arg("--nofirststartwizard")
+        .arg("--convert-to")
+        .arg("pdf")
+        .arg("--outdir")
+        .arg(&work_dir)
+        .arg(&input)
+        .spawn()
+        .map_err(|error| format!("Unable to start LibreOffice conversion: {error}"))?;
+
+    let deadline = SystemTime::now() + Duration::from_secs(120);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if SystemTime::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&work_dir);
+                    return Err("Native PowerPoint conversion timed out.".to_string());
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = fs::remove_dir_all(&work_dir);
+                return Err(format!("Native PowerPoint conversion failed: {error}"));
+            }
+        }
+    };
+
+    if !status.success() || !output.exists() {
+        let _ = fs::remove_dir_all(&work_dir);
+        return Err("LibreOffice could not convert this PowerPoint to PDF.".to_string());
+    }
+
+    let pdf_bytes = fs::read(&output).map_err(|error| format!("Unable to read converted PDF: {error}"))?;
+    let _ = fs::remove_dir_all(&work_dir);
+    Ok(NativePptxPdfResult { pdf_bytes, converter })
+}
+
+#[tauri::command]
+async fn convert_material_pptx_to_pdf_native(
+    app: tauri::AppHandle,
+    state: State<'_, SecureExamHostState>,
+    id: String,
+) -> Result<NativePptxPdfResult, String> {
+    ensure_application_controls_available(state.inner())?;
+    tauri::async_runtime::spawn_blocking(move || convert_pptx_with_office(app, id))
+        .await
+        .map_err(|error| format!("Native conversion task failed: {error}"))?
+}
+
+#[tauri::command]
+fn save_material_file_start(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let dir = material_files_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|error| format!("Unable to prepare material storage: {error}"))?;
+    let path = material_file_path(&app, &id, true)?;
+    fs::File::create(path).map_err(|error| format!("Unable to begin saving material: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_material_file_chunk(app: tauri::AppHandle, id: String, bytes: Vec<u8>) -> Result<(), String> {
+    if bytes.len() > MATERIAL_FILE_CHUNK_LIMIT {
+        return Err("Material file chunk is too large.".to_string());
+    }
+    let path = material_file_path(&app, &id, true)?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("Unable to continue saving material: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("Unable to write material bytes: {error}"))
+}
+
+#[tauri::command]
+fn save_material_file_finish(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let temp_path = material_file_path(&app, &id, true)?;
+    let final_path = material_file_path(&app, &id, false)?;
+    if final_path.exists() {
+        fs::remove_file(&final_path)
+            .map_err(|error| format!("Unable to replace existing material: {error}"))?;
+    }
+    fs::rename(temp_path, final_path).map_err(|error| format!("Unable to finalize material: {error}"))
+}
+
+#[tauri::command]
+fn save_material_file_abort(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let temp_path = material_file_path(&app, &id, true)?;
+    match fs::remove_file(temp_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Unable to discard partial material: {error}")),
+    }
+}
+
+#[tauri::command]
+fn material_file_info(app: tauri::AppHandle, id: String) -> Result<Option<NativeMaterialFileInfo>, String> {
+    let path = material_file_path(&app, &id, false)?;
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(Some(NativeMaterialFileInfo { size: metadata.len() })),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Unable to inspect saved material: {error}")),
+    }
+}
+
+#[tauri::command]
+fn load_material_file_chunk(
+    app: tauri::AppHandle,
+    id: String,
+    offset: u64,
+    length: u64,
+) -> Result<Vec<u8>, String> {
+    let read_len = usize::try_from(length.min(MATERIAL_FILE_CHUNK_LIMIT as u64))
+        .map_err(|_| "Material file chunk length is invalid.".to_string())?;
+    let path = material_file_path(&app, &id, false)?;
+    let mut file = fs::File::open(path).map_err(|error| format!("Unable to open saved material: {error}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("Unable to seek saved material: {error}"))?;
+    let mut buffer = vec![0_u8; read_len];
+    let read = file
+        .read(&mut buffer)
+        .map_err(|error| format!("Unable to read saved material: {error}"))?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+#[tauri::command]
+fn delete_material_file(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let final_path = material_file_path(&app, &id, false)?;
+    let temp_path = material_file_path(&app, &id, true)?;
+    for path in [final_path, temp_path] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Unable to delete saved material: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// Reads the opt-in "my window will not paint at all" escape hatch.
+///
+/// Kept as a free function (not inlined into the Linux-only block) so the
+/// parsing rules stay testable on every platform.
+/// Tracks whether the app has drawn its own window strip.
+///
+/// The window is created without system decorations so Windows and Linux look
+/// the same, which makes the app's own strip the only way to minimize,
+/// maximize or close. If the front-end never reports one — an old cached
+/// bundle, a screen that forgot to render it, a JavaScript failure — the
+/// window would have no controls at all, so the system title bar is put back.
+#[derive(Default)]
+struct CustomTitlebarState {
+    reported: AtomicBool,
+}
+
+/// How long the front-end gets to draw its own strip before the system title
+/// bar is restored. Generous: a cold start on a slow machine still has to
+/// download nothing, but it does have to parse and mount the whole app.
+const TITLEBAR_FALLBACK_DELAY: Duration = Duration::from_secs(8);
+
+#[tauri::command]
+fn set_native_titlebar(
+    app: tauri::AppHandle,
+    state: State<'_, CustomTitlebarState>,
+    custom: bool,
+) -> Result<(), String> {
+    state.reported.store(true, Ordering::SeqCst);
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_string())?;
+    // Decorations are the inverse of the app's own strip: exactly one of the
+    // two is always present.
+    window.set_decorations(!custom).map_err(|e| e.to_string())
+}
+
+/// Asks the front-end to rebuild its compositing layer.
+///
+/// WebKitGTK can bring a window back from being hidden or unfocused with a
+/// blank surface, and it does not always deliver a focus event to the page, so
+/// the recovery that lives in the app never runs and the user is left looking
+/// at a black window. The native side always gets the event, so it dispatches
+/// a dedicated one of its own. A dedicated name is used rather than a
+/// synthetic "focus" so examination focus tracking is not affected.
+#[cfg(target_os = "linux")]
+const RESUME_REPAINT_NUDGE: &str =
+    "window.dispatchEvent(new Event('pharmatrack:native-resume'));";
+
+/// Injected into the window at startup to make sure no service worker is
+/// serving the desktop app.
+///
+/// The shell serves its bundle from a custom protocol that browsers treat as a
+/// secure origin, so a service worker was able to register inside the app.
+/// Requests made *by* a service worker do not go through the shell's protocol
+/// handler, so once it was in charge it answered navigations out of its own
+/// cache — pinning the window to whatever build filled that cache — and failed
+/// every route chunk the cache did not contain ("Failed to fetch dynamically
+/// imported module").
+///
+/// The frontend removes the worker too, but a stale cached bundle is exactly
+/// what might be running, so the cleanup cannot live only in the bundle. This
+/// copy is injected by the native side and therefore always runs.
+const SHELL_SERVICE_WORKER_CLEANUP: &str = r#"
+(function () {
+  try {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    var wasControlled = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.getRegistrations()
+      .then(function (registrations) {
+        return Promise.all(registrations.map(function (registration) {
+          return registration.unregister().catch(function () { return false; });
+        }));
+      })
+      .then(function () {
+        if (typeof caches === 'undefined') return [];
+        return caches.keys().then(function (keys) {
+          return Promise.all(keys
+            .filter(function (key) { return key.indexOf('pharmatrack-shell-') === 0; })
+            .map(function (key) { return caches.delete(key).catch(function () { return false; }); }));
+        });
+      })
+      .then(function () {
+        if (!wasControlled) return;
+        try {
+          if (sessionStorage.getItem('pharmatrack:native-sw-cleanup')) return;
+          sessionStorage.setItem('pharmatrack:native-sw-cleanup', String(Date.now()));
+        } catch (storageError) { return; }
+        location.reload();
+      })
+      .catch(function () {});
+  } catch (error) {}
+})();
+"#;
+
+#[allow(dead_code)]
+fn safe_graphics_requested(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|value| value.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_webkit_runtime_workarounds() {
+    // Ubuntu/Debian users can hit a blank or never-painted Tauri window when
+    // WebKitGTK's DMABUF renderer does not initialise correctly under a
+    // particular driver, VM, or Wayland session. Disabling only that path
+    // fixes the blank window while leaving accelerated compositing switched
+    // on. Respect an explicit user override if one is already present.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
+    // WEBKIT_DISABLE_COMPOSITING_MODE=1 used to be set here as well, and it was
+    // the single biggest reason the desktop build felt like it was running
+    // several frames behind the user. Accelerated compositing is what gives the
+    // webview threaded scrolling, GPU-promoted layers and cheap repaints;
+    // without it every wheel tick, slide canvas and hover state is repainted in
+    // software on the main thread, so scrolling reacts late and then crawls.
+    // It is now opt-in for the rare machine that genuinely cannot paint
+    // otherwise:  PHARMATRACK_SAFE_GRAPHICS=1 pharmatrack
+    let requested = std::env::var("PHARMATRACK_SAFE_GRAPHICS").ok();
+    let safe_graphics = safe_graphics_requested(requested.as_deref());
+    if safe_graphics && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_linux_webkit_runtime_workarounds() {}
 
 #[cfg(test)]
 mod tests {
@@ -649,6 +1101,20 @@ mod tests {
     }
 
     #[test]
+    fn safe_graphics_is_opt_in_only() {
+        // Accelerated compositing must stay on unless the user explicitly asks
+        // for the software fallback, otherwise scrolling goes back to being
+        // painted on the main thread.
+        assert!(!safe_graphics_requested(None));
+        assert!(!safe_graphics_requested(Some("")));
+        assert!(!safe_graphics_requested(Some("0")));
+        assert!(!safe_graphics_requested(Some("false")));
+        assert!(safe_graphics_requested(Some("1")));
+        assert!(safe_graphics_requested(Some(" TRUE ")));
+        assert!(safe_graphics_requested(Some("yes")));
+    }
+
+    #[test]
     fn native_capability_report_is_explicit_about_non_guarantees() {
         let capabilities = native_capabilities();
         let capture = capabilities
@@ -661,8 +1127,11 @@ mod tests {
 }
 
 fn main() {
+    apply_linux_webkit_runtime_workarounds();
+
     tauri::Builder::default()
         .manage(SecureExamHostState::default())
+        .manage(CustomTitlebarState::default())
         .manage(PendingPharmaExamFiles::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
@@ -670,6 +1139,14 @@ fn main() {
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if matches!(event, WindowEvent::Focused(true)) {
+                    if let Some(webview) = window.app_handle().get_webview_window("main") {
+                        let _ = webview.eval(RESUME_REPAINT_NUDGE);
+                    }
+                }
             }
             let secure_state = window.app_handle().state::<SecureExamHostState>();
             if !secure_state.is_active() {
@@ -702,21 +1179,56 @@ fn main() {
                 _ => {}
             }
         })
+        .on_page_load(|webview, payload| {
+            // Every document this app loads gets the cleanup, including the
+            // very first one and anything a stale cache manages to serve.
+            if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {
+                let _ = webview.eval(SHELL_SERVICE_WORKER_CLEANUP);
+            }
+        })
         .setup(|app| {
             app.manage(lan_server::LanServerHandle::default());
+            app.manage(PendingPharmaTrackLinks::default());
             let main_window = app
                 .get_webview_window("main")
                 .expect("main window must exist at startup");
+            // Runs before the user can navigate anywhere, and independently of
+            // whatever bundle the window ended up loading.
+            if let Err(error) = main_window.eval(SHELL_SERVICE_WORKER_CLEANUP) {
+                eprintln!("Service worker cleanup could not be injected: {error}");
+            }
+            // Safety net: if nothing claims the title bar, give the window its
+            // system one back so it can always be moved, minimized and closed.
+            let titlebar_window = main_window.clone();
+            let titlebar_handle = app.handle().clone();
+            thread::spawn(move || {
+                thread::sleep(TITLEBAR_FALLBACK_DELAY);
+                let state = titlebar_handle.state::<CustomTitlebarState>();
+                if !state.reported.load(Ordering::SeqCst) {
+                    eprintln!(
+                        "No in-app title bar was reported; restoring the system window controls."
+                    );
+                    let _ = titlebar_window.set_decorations(true);
+                }
+            });
             app.manage(MainWindowHandle(main_window));
-            // Windows and Linux deliver file-association launches as command
-            // line arguments. Mobile/macOS use RunEvent::Opened below.
+            #[cfg(target_os = "windows")]
+            register_windows_protocol_handler();
+            // Windows and Linux deliver file-association launches and custom
+            // URL scheme opens as command-line arguments. Mobile/macOS use
+            // RunEvent::Opened below.
             #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "android")))]
-            queue_pharmaexam_paths(app.handle(), std::env::args().skip(1).collect());
+            {
+                let launch_args: Vec<String> = std::env::args().skip(1).collect();
+                queue_pharmaexam_paths(app.handle(), launch_args.clone());
+                queue_pharmatrack_deep_links(app.handle(), launch_args);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             restart_application,
+            set_native_titlebar,
             open_external_url,
             enter_secure_exam_mode,
             exit_secure_exam_mode,
@@ -729,7 +1241,16 @@ fn main() {
             webview_reload,
             destroy_website,
             get_pending_pharmaexam_files,
+            get_pending_pharmatrack_links,
             read_pharmaexam_file,
+            save_material_file_start,
+            save_material_file_chunk,
+            save_material_file_finish,
+            save_material_file_abort,
+            convert_material_pptx_to_pdf_native,
+            material_file_info,
+            load_material_file_chunk,
+            delete_material_file,
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status
@@ -739,12 +1260,14 @@ fn main() {
         .run(|app, event| {
             #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
             if let RunEvent::Opened { urls } = event {
+                let raw_links: Vec<String> = urls.iter().map(|url| url.to_string()).collect();
                 let paths = urls
                     .into_iter()
                     .filter_map(|url| url.to_file_path().ok())
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect();
                 queue_pharmaexam_paths(app, paths);
+                queue_pharmatrack_deep_links(app, raw_links);
             }
         });
 }

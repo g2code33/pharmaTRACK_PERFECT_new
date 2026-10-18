@@ -15,6 +15,10 @@ const viewer = fs.readFileSync(
 );
 const css = fs.readFileSync(path.resolve(__dirname, '../index.css'), 'utf8');
 const reader = fs.readFileSync(path.resolve(__dirname, '../pages/SlideReader.tsx'), 'utf8');
+const pptxViewer = fs.readFileSync(path.resolve(__dirname, '../components/PptxViewer.tsx'), 'utf8');
+const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx'), 'utf8');
+const titleBar = fs.readFileSync(path.resolve(__dirname, '../components/NativeTitleBar.tsx'), 'utf8');
+const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
 const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
 const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
 const studyMaterials = fs.readFileSync(path.resolve(__dirname, '../pages/StudyMaterials.tsx'), 'utf8');
@@ -144,15 +148,22 @@ describe('instant page navigation', () => {
     expect(viewer).toMatch(/width: size\?\.w[\s\S]{0,60}height: size\?\.h/);
   });
 
-  it('pre-renders a window of pages around the viewport', () => {
-    expect(viewer).toMatch(/const RENDER_WINDOW = \d+/);
+  it('pre-renders a small sequential window around the viewport', () => {
+    expect(viewer).toContain('const RENDER_WINDOW = 2');
     expect(viewer).toMatch(/const renderWindow = useCallback/);
+    expect(viewer).toContain('await renderPage(p);');
+    expect(viewer).toContain('await yieldToMainThread();');
   });
 
   it('evicts distant canvases so long documents stay bounded', () => {
-    // A single 2x-DPR page canvas is ~20 MB; keeping 100 would exhaust memory.
-    expect(viewer).toMatch(/const KEEP_WINDOW = \d+/);
+    // A single high-DPR page canvas is many MB; keeping 100 would exhaust memory.
+    expect(viewer).toContain('const KEEP_WINDOW = 8');
     expect(viewer).toMatch(/Math\.abs\(p - centre\) > KEEP_WINDOW/);
+  });
+
+  it('does not extract every page of text until Find needs it', () => {
+    expect(viewer).toContain('if (!showSearch && !initialQuery) return;');
+    expect(viewer).toContain('const dpr = Math.min(window.devicePixelRatio || 1, 1.5);');
   });
 
   it('renders the destination before scrolling to it', () => {
@@ -214,10 +225,96 @@ describe('whole-document uploads', () => {
 });
 
 describe('stable layout', () => {
+  it('keeps the native titlebar and hamburger/sidebar shell white, not green-gradient', () => {
+    // The window strip lives in its own component so every full-height screen
+    // can render it; the Layout mounts that component.
+    expect(titleBar).toContain('native-titlebar flex h-9 flex-shrink-0 items-center border-b border-slate-200 bg-white');
+    expect(layout).toContain('<NativeTitleBar />');
+    expect(layout).toContain('mobile-sidebar fixed inset-y-0 left-0 z-[230] w-[min(84vw,20rem)] bg-white text-slate-900');
+    expect(css).toContain('background: #ffffff !important;');
+    expect(css).not.toContain('linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(6, 78, 59, 0.84))');
+  });
+
+  it('adds a universal back button to the app header on non-home routes', () => {
+    expect(layout).toContain("const showBackButton = location.pathname !== '/';");
+    expect(layout).toContain('aria-label="Go back"');
+    expect(layout).toContain("if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);");
+  });
+
+  it('does not force dark-mode native desktop backgrounds back to white', () => {
+    const darkShell = css.match(/\.dark \.app-shell \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkHeader = css.match(/\.dark \.app-shell \.app-header \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkPage = css.match(/\.dark \.app-shell \.app-page-main \{([\s\S]*?)\}/)?.[1] ?? '';
+    const darkSidebar = css.match(/\.dark \.app-shell \.mobile-sidebar \{([\s\S]*?)\}/)?.[1] ?? '';
+
+    expect(layout).toContain('app-header bg-white dark:bg-slate-900');
+    expect(layout).toContain('mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0');
+    expect(layout).toContain('dark:bg-slate-900');
+    expect(darkShell).toContain('background: #020617');
+    expect(darkHeader).toContain('background: #0f172a !important');
+    expect(darkPage).toContain('background: #0f172a !important');
+    expect(darkSidebar).toContain('background: #1e293b !important');
+    expect(darkHeader).not.toContain('background: #ffffff !important');
+    expect(darkPage).not.toContain('background: #f8fafc !important');
+  });
+
+  it('does not apply expensive native hover filters/transforms or always-on shell animations', () => {
+    expect(css).not.toContain('filter: brightness(1.03)');
+    expect(css).not.toContain('transform: translateY(1px) scale(0.99)');
+    expect(layout).not.toContain('animate-ping');
+    expect(layout).not.toContain('animate-pulse');
+  });
+
+  it('lets the reader fill the available app page without a second page scroll or bottom void', () => {
+    expect(reader).toContain("isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full flex-1'");
+    expect(reader).toContain('slide-reader-fullbleed');
+    expect(reader).toContain('flex flex-1 min-h-0 overflow-hidden relative');
+    expect(reader).toContain('flex-1 overflow-hidden flex flex-col items-stretch p-0');
+    // The reader layout is keyed off the route rather than a `:has()` rule on
+    // the main scroll container, which the style engine had to re-check on
+    // every DOM mutation inside the page.
+    expect(layout).toContain("isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'");
+    expect(css).toMatch(/app-page-main--reader[\s\S]{0,180}display:\s*flex/);
+  });
+
+  it('opens the reader at full width instead of showing a default split panel', () => {
+    expect(reader).toContain('const [showAIPanel, setShowAIPanel] = useState(false);');
+    expect(reader).toContain('Expand Reader');
+  });
+
+  it('opens documents at page-width zoom so the page fills the reader area', () => {
+    expect(viewer).toContain('initialZoom?: ZoomPreset');
+    expect(reader).toContain('initialZoom="width"');
+    expect(reader).not.toContain("initialZoom={isConvertedPresentationPdf ? 'fit' : 'width'}");
+  });
+
   it('keeps a permanent scrollbar gutter so pages cannot shift sideways', () => {
     // An appearing/disappearing scrollbar changed the track width, which moved
     // every centred page horizontally.
     expect(viewer).toContain('overflow-y-scroll');
+  });
+
+  it('renders ahead during PDF scrolling and repaints canvases after app resume', () => {
+    expect(viewer).toContain('const RENDER_WINDOW = 2;');
+    expect(viewer).toContain("rootMargin: '900px 0px'");
+    expect(viewer).toContain("addEventListener('scroll', onScroll, { passive: true })");
+    expect(viewer).toContain("window.addEventListener('pharmatrack:resume', onResume)");
+    expect(css).toContain('.pdf-viewer-scroll');
+    expect(css).toContain('.pdf-page-shell');
+  });
+
+  it('has a resume-paint watchdog so returning to the app cannot leave a black frame', () => {
+    expect(app).toContain('ResumePaintRecovery');
+    expect(app).toContain("window.dispatchEvent(new CustomEvent('pharmatrack:resume'))");
+    expect(app).toContain("window.addEventListener('pageshow', repaint)");
+    expect(css).toContain('html.pharmatrack-resume-paint #root');
+  });
+
+  it('also refreshes the slide viewer surface after resume', () => {
+    expect(pptxViewer).toContain("window.addEventListener('pharmatrack:resume', onResume)");
+    expect(pptxViewer).toContain('pptx-viewer-scroll');
+    expect(pptxViewer).toContain('pptx-slide-stage');
+    expect(css).toContain('.pptx-viewer-scroll');
   });
 
   it('centres pages with a stable margin rather than a utility class', () => {

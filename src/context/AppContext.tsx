@@ -19,7 +19,7 @@ import {
   ClinicalAttempt,
   ClinicalCase,
 } from '../types';
-import { loadState, saveState } from '../utils/storage';
+import { loadState, prewarmFileBytes, saveState } from '../utils/storage';
 import { ensureSchema } from '../utils/storageManager';
 import {
   findLegacyKey,
@@ -62,6 +62,7 @@ import {
 import { flagAttemptedQuestions } from '../utils/questionBank';
 import { caseIsStudyMaterial, isBuiltinCase } from '../utils/clinicalLearning';
 import { TimetableItem, LearningStatus } from '../types';
+import { scheduleBackgroundWork } from '../utils/idleScheduler';
 
 export type Action =
   | { type: 'SET_STUDENT'; payload: Student }
@@ -560,6 +561,23 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const scheduleNonUrgent = (
+  callback: () => void,
+  timeout = 5000,
+  fallbackDelay = 0,
+  runWhenTimedOut = true,
+  quietWindowMs = 500,
+): (() => void) => (
+  scheduleBackgroundWork(callback, {
+    delay: fallbackDelay,
+    timeout,
+    retryDelay: 650,
+    quietWindowMs,
+    minTimeRemaining: 14,
+    runWhenTimedOut,
+  })
+);
+
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [state, rawDispatch] = useReducer(appReducer, initialState);
   // A boot migration is async. If the student already added something, applying
@@ -575,6 +593,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // in-flight async getSession() must see the new value immediately, before
   // React has a chance to re-render.
   const hasSignedOutRef = useRef(false);
+  const warmedSlideFilesRef = useRef('');
+  const profileSyncWarningShownRef = useRef(false);
 
   /**
    * Ends the session for real.
@@ -617,13 +637,48 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     dispatch({ type: 'SET_LOGGED_IN', payload: false });
   }, []);
 
-  // Warm the full-text search index from IndexedDB so global search can run
-  // synchronously against it.
+  // Warm the optional search/archive/chat indexes only when the browser is
+  // genuinely idle. These IndexedDB/catalog reads are useful, but they must not
+  // compete with pointer movement, typing, page opening, or first paint.
   useEffect(() => {
-    void loadSearchIndex();
-    void ensureArchiveCatalog();
-    void ensureConversationIndex();
+    if (typeof indexedDB === 'undefined') return undefined;
+    const cleanups: Array<() => void> = [];
+    cleanups.push(scheduleNonUrgent(() => { void loadSearchIndex(); }, 4500, 2500, false, 2200));
+    cleanups.push(scheduleNonUrgent(() => { void ensureArchiveCatalog(); }, 6500, 4000, false, 2200));
+    cleanups.push(scheduleNonUrgent(() => { void ensureConversationIndex(); }, 7500, 5500, false, 2200));
+    return () => cleanups.forEach((cleanup) => cleanup());
   }, []);
+
+  // Local-first material readiness: once the semester state is available, warm
+  // uploaded file bytes in the background, newest/recently-opened first. This
+  // keeps documents ready for the reader without blocking startup or tab clicks.
+  // Very large lecture files are already local-first and will open on demand;
+  // warming many of them at startup is exactly the kind of background disk/IPC
+  // work that can make the whole app feel frozen on slower WebViews.
+  useEffect(() => {
+    if (!state.slides.length) return;
+    const maxWarmFileBytes = 48 * 1024 * 1024;
+    const maxWarmTotalBytes = 128 * 1024 * 1024;
+    const maxWarmSlides = 8;
+    let estimatedBytes = 0;
+    const ids: string[] = [];
+    for (const slide of [...state.slides].sort((a, b) => {
+      const aTime = new Date(a.lastOpenedAt || a.createdAt || 0).getTime();
+      const bTime = new Date(b.lastOpenedAt || b.createdAt || 0).getTime();
+      return bTime - aTime;
+    })) {
+      const fileSize = Math.max(0, Number(slide.fileSize) || 0);
+      if (fileSize > maxWarmFileBytes) continue;
+      if (fileSize && estimatedBytes + fileSize > maxWarmTotalBytes) continue;
+      ids.push(slide.id);
+      estimatedBytes += fileSize;
+      if (ids.length >= maxWarmSlides) break;
+    }
+    const warmKey = ids.join('|');
+    if (!warmKey || warmKey === warmedSlideFilesRef.current) return;
+    warmedSlideFilesRef.current = warmKey;
+    prewarmFileBytes(ids, maxWarmSlides);
+  }, [state.slides]);
 
   // Readable data is applied synchronously so a click in the same turn is not
   // overwritten by an empty snapshot. Migration is async and only replaces
@@ -646,65 +701,90 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const fetchProfile = async (userId: string) => {
+    const currentLocalStudent = loadState().student;
+
+    if (currentLocalStudent && currentLocalStudent.id !== userId) {
+      // Do not silently attach an existing local workspace to whichever
+      // account was just authenticated. Login shows the explicit migration
+      // confirmation and links it only after the user accepts.
+      return;
+    }
+
+    const applyLocalFallback = () => {
+      if (currentLocalStudent) return;
+      dispatch({
+        type: 'SET_STUDENT',
+        payload: {
+          id: userId,
+          name: 'Student',
+          level: '100',
+          semester: '1st',
+          program: 'Pharmacy',
+          university: 'UCC',
+          createdAt: new Date().toISOString(),
+        },
+      });
+    };
+
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('id,full_name,university,level,program,semester,avatar_url,created_at')
+        .select('*')
         .eq('id', userId)
-        .single();
-      const currentLocalStudent = loadState().student;
+        .maybeSingle();
 
-      if (currentLocalStudent && currentLocalStudent.id !== userId) {
-        // Do not silently attach an existing local workspace to whichever
-        // account was just authenticated. Login shows the explicit migration
-        // confirmation and links it only after the user accepts.
+      if (error) {
+        if (!profileSyncWarningShownRef.current) {
+          profileSyncWarningShownRef.current = true;
+          console.warn('Cloud profile is unavailable; continuing with the local profile.', error.message);
+        }
+        applyLocalFallback();
         return;
       }
 
-      if (data && !error) {
+      if (data) {
+        const profile = data as Record<string, string | null | undefined>;
         // The Supabase auth UUID is the only stable account identity. Local
         // onboarding IDs are never copied into a cloud profile.
         dispatch({
           type: 'SET_STUDENT',
           payload: {
             id: userId,
-            name: data.full_name || 'Student',
-            level: data.level || '100',
-            semester: data.semester || '1st',
-            program: data.program || 'Pharmacy',
-            university: data.university || 'UCC',
-            avatar_url: data.avatar_url || currentLocalStudent?.avatar_url,
-            createdAt: data.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
+            name: profile.full_name || profile.name || 'Student',
+            level: profile.level || '100',
+            semester: profile.semester || '1st',
+            program: profile.program || 'Pharmacy',
+            university: profile.university || 'UCC',
+            avatar_url: profile.avatar_url || currentLocalStudent?.avatar_url,
+            createdAt: profile.created_at || currentLocalStudent?.createdAt || new Date().toISOString(),
           },
         });
-      } else if (!currentLocalStudent) {
-        // The signup trigger normally creates this row. This fallback keeps
-        // older projects usable until the SQL migration has been applied.
-        const fallback = {
-          id: userId,
-          full_name: 'Student',
-          level: '100',
-          updated_at: new Date().toISOString(),
-        };
-        const { error: createError } = await supabase.from('profiles').upsert(fallback, { onConflict: 'id' });
-        if (createError) console.warn('Profile row is not available yet:', createError.message);
-        dispatch({
-          type: 'SET_STUDENT',
-          payload: {
-            id: userId,
-            name: 'Student',
-            level: '100',
-            semester: '1st',
-            program: 'Pharmacy',
-            university: 'UCC',
-            createdAt: new Date().toISOString(),
-          },
-        });
+        return;
+      }
+
+      // The signup trigger normally creates this row. This fallback keeps older
+      // projects usable until the SQL migration has been applied; only the two
+      // most stable columns are sent so schema drift/RLS problems do not break
+      // the local-first app.
+      if (!currentLocalStudent) {
+        const { error: createError } = await supabase.from('profiles').upsert(
+          { id: userId, full_name: 'Student' },
+          { onConflict: 'id' },
+        );
+        if (createError && !profileSyncWarningShownRef.current) {
+          profileSyncWarningShownRef.current = true;
+          console.warn('Cloud profile row could not be created; using the local profile.', createError.message);
+        }
+        applyLocalFallback();
       }
       // A mismatched local student is deliberately left untouched here. Login
       // performs an explicit migration prompt before linking that workspace.
     } catch (e) {
-      console.error('Profile fetch failed:', e);
+      if (!profileSyncWarningShownRef.current) {
+        profileSyncWarningShownRef.current = true;
+        console.warn('Profile sync failed; continuing with local data.', e);
+      }
+      applyLocalFallback();
     }
   };
 
@@ -812,6 +892,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [state.student?.id, state.isLoggedIn]);
 
   useEffect(() => {
+    let cancelSave: (() => void) | null = null;
     const timeoutId = setTimeout(() => {
       // Guard only against the very first render, before LOAD_STATE has run —
       // writing then would clobber saved data with an empty state.
@@ -842,9 +923,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         state.timetables.quiz.length > 0 ||
         state.timetables.exam.length > 0;
 
-      if (hasContent) saveState(state);
-    }, 1000); // Debounce saves by 1 second to prevent UI freezing
-    return () => clearTimeout(timeoutId);
+      if (hasContent) {
+        cancelSave = scheduleNonUrgent(() => saveState(state), 8000);
+      }
+    }, 1000); // Debounce saves, then write when idle so reading stays smooth.
+    return () => {
+      clearTimeout(timeoutId);
+      cancelSave?.();
+    };
   }, [state]);
 
   const getCourseProgress = (courseId: string): number => {

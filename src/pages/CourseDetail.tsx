@@ -1,6 +1,6 @@
 // PharmTrack - Course Detail Page
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
@@ -35,7 +35,19 @@ const CourseDetail: React.FC = () => {
   const { state, dispatch, getCourseProgress, getTopicsForCourse, getSlidesForTopic, addActivity } = useApp();
 
   const course = state.courses.find((c) => c.id === courseId);
-  const topics = courseId ? getTopicsForCourse(courseId) : [];
+  const topics = useMemo(
+    () => (courseId ? state.topics.filter((topic) => topic.courseId === courseId) : []),
+    [courseId, state.topics],
+  );
+  const slidesByTopic = useMemo(() => {
+    const byTopic = new Map<string, Slide[]>();
+    for (const slide of state.slides) {
+      const bucket = byTopic.get(slide.topicId);
+      if (bucket) bucket.push(slide);
+      else byTopic.set(slide.topicId, [slide]);
+    }
+    return byTopic;
+  }, [state.slides]);
   const progress = courseId ? getCourseProgress(courseId) : 0;
 
   // State
@@ -262,14 +274,18 @@ const CourseDetail: React.FC = () => {
     addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, topicId);
   };
 
-  const handleSaveSlide = () => {
+  const handleSaveSlide = async () => {
     if (!slideForm.title.trim()) return;
 
     const slides = getSlidesForTopic(selectedTopicId);
 
     if (editingSlide) {
       if (fileData) {
-        saveFile(editingSlide.id, fileData);
+        const saved = await saveFile(editingSlide.id, fileData);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
       }
       dispatch({
         type: 'UPDATE_SLIDE',
@@ -297,7 +313,11 @@ const CourseDetail: React.FC = () => {
       };
 
       if (fileData) {
-        saveFile(newSlide.id, fileData);
+        const saved = await saveFile(newSlide.id, fileData);
+        if (!saved) {
+          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
+          return;
+        }
         newSlide.fileUrl = `local:${newSlide.id}`;
       }
 
@@ -420,14 +440,14 @@ const CourseDetail: React.FC = () => {
           </div>
         ) : (
           topics.map((topic) => {
-            const slides = getSlidesForTopic(topic.id);
+            const slides = slidesByTopic.get(topic.id) || [];
             const isExpanded = expandedTopics.has(topic.id);
             const completedSlides = slides.filter((s) => s.status === 'completed').length;
             const topicProgressPct = slides.length > 0 ? Math.round((completedSlides / slides.length) * 100) : 0;
             const learning = topicProgress(state, topic.id);
 
             return (
-              <div key={topic.id} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              <div key={topic.id} className="perf-deferred-card bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
                 {/* Topic header */}
                 <div
                   className="flex items-center gap-3 p-4 cursor-pointer hover:bg-gray-50 transition-colors"
@@ -510,7 +530,7 @@ const CourseDetail: React.FC = () => {
                         {slides.map((slide, slideIdx) => (
                           <div
                             key={slide.id}
-                            className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
+                            className="perf-deferred-row flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
                           >
                             <Link
                               to={`/read/${topic.id}?slide=${slideIdx}`}
@@ -645,8 +665,8 @@ const CourseDetail: React.FC = () => {
 
       {/* Slide Modal */}
       {showSlideModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-[240] flex items-end justify-center bg-black/55 p-0 sm:items-center sm:p-4">
+          <div className="safe-area-bottom w-full max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-t-[1.75rem] bg-white shadow-2xl sm:max-w-lg sm:rounded-xl">
             <div className="flex items-center justify-between p-4 border-b sticky top-0 bg-white">
               <h2 className="text-lg font-semibold text-gray-800">
                 {editingSlide ? 'Edit Slide' : 'Add New Slide'}
@@ -678,7 +698,7 @@ const CourseDetail: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Upload documents
                 </label>
-                <FileUploader onComplete={handleUploadComplete} />
+                <FileUploader onComplete={handleUploadComplete} compact />
               </div>
 
               <details className="group">

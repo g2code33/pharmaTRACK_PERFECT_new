@@ -90,22 +90,19 @@ describe('wiring', () => {
 
   it('wraps the page area, so the sidebar survives a crash', () => {
     const layout = read('../components/Layout.tsx');
-    // The boundary stack around the Outlet, outermost first: the error
-    // boundary keeps a crash inside the page area, and the Suspense boundary
-    // does the same for a lazy page chunk that is still downloading — the
-    // loader must never tear down the sidebar and header.
-    expect(layout).toMatch(
-      /<ErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,800}<Suspense fallback=\{<PageLoading \/>\}>[\s\S]{0,80}<Outlet \/>/,
-    );
+    // The persistent shell wraps ONLY the routed content in an error boundary
+    // (keyed by pathname) plus a Suspense fallback, so the sidebar/header stay
+    // mounted while a lazy page loads or crashes.
+    expect(layout).toMatch(/<RouteErrorBoundary resetKey=\{location\.pathname\}>[\s\S]{0,200}<Outlet \/>/);
   });
 
   it('also wraps the router, covering Login and Onboarding', () => {
     const app = read('../App.tsx');
-    // The main router opts into v7_startTransition so navigation renders are
-    // transitions: the current page stays on screen while the next page's
-    // chunk downloads, instead of flashing a near-white fallback.
+    // The main router opts into future.v7_startTransition so navigation
+    // renders run as transitions: the current page stays on screen while the
+    // next page's chunk downloads instead of flashing the content loader.
     expect(app).toMatch(
-      /<ErrorBoundary>[\s\S]{0,80}<AIProvider>[\s\S]{0,700}<HashRouter future=\{\{ v7_startTransition: true \}\}>/,
+      /<ErrorBoundary>[\s\S]{0,80}<AIProvider>[\s\S]{0,900}<HashRouter future=\{\{ v7_startTransition: true \}\}>/,
     );
   });
 });

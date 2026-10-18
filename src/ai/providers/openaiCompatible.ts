@@ -49,6 +49,15 @@ function temperatureSupported(model: string): boolean {
   return !/^(o[1-9]|gpt-5)/i.test(model);
 }
 
+function modelListingBlockedInBrowser(kind: ProviderKind): boolean {
+  if (kind !== 'nvidia' || typeof window === 'undefined') return false;
+  const tauriGlobals = window as unknown as Record<string, unknown>;
+  // NVIDIA's /v1/models endpoint does not send CORS headers for Tauri WebView
+  // origins such as tauri://localhost. Normal web origins still use discovery
+  // (and tests cover that), but the native app must not issue a doomed fetch.
+  return window.location?.protocol === 'tauri:' || Boolean(tauriGlobals.__TAURI_INTERNALS__ || tauriGlobals.__TAURI__);
+}
+
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly kind: ProviderKind;
   readonly protocol = 'openai-compatible' as const;
@@ -167,6 +176,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   async listModels(ctx: CallContext): Promise<ModelInfo[]> {
+    if (modelListingBlockedInBrowser(ctx.config.kind)) return [];
     const { models } = this.urls(ctx.config);
     const res = await request(models, { method: 'GET', headers: this.headers(ctx.config), signal: ctx.signal });
     const json = await readJson(res);
@@ -216,6 +226,17 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     // unusable endpoint (or a missing key where one is required) stops here.
     if (!/^https?:\/\//i.test(base) || (!ctx.config.apiKey && needsKey)) {
       out.push(check('Model availability', false, 'Skipped — fix the API key / endpoint first'));
+      return out;
+    }
+
+    if (modelListingBlockedInBrowser(ctx.config.kind)) {
+      out.push(
+        check(
+          'Model availability',
+          true,
+          'NVIDIA model discovery is blocked by browser/WebView CORS, so the saved model id will be tried directly.',
+        ),
+      );
       return out;
     }
 

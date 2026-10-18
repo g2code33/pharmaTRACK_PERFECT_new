@@ -1,0 +1,75 @@
+name: Dependency Validation
+
+# Proves that every declared dependency actually resolves, from the lockfiles
+# and with no network surprises:
+#
+#  - npm ci            — fails when package.json and package-lock.json drift.
+#  - cargo fetch       — fails when Cargo.lock is out of sync with Cargo.toml.
+#  - gradle deps       — resolves the full Android dependency graph.
+#  - version:check     — one product version across package.json, Tauri, Cargo
+#                        and the in-app fallback (see scripts/set-version.mjs).
+#
+# The npm security audit is REPORTED but deliberately not blocking: advisories
+# in transitive dependencies must not stop development, and Dependabot
+# (.github/dependabot.yml) already opens update PRs for them. A failed audit is
+# written to the job summary so it is visible, not silently skipped.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Resolve and validate all dependency graphs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Node — install exactly from the lockfile
+        run: npm ci
+
+      - name: Node — security audit (reported, not blocking)
+        continue-on-error: true
+        run: |
+          {
+            echo '## npm security audit (advisory, non-blocking)'
+            echo
+            echo 'Blocking on transitive advisories would stop development for'
+            echo 'issues outside our control; Dependabot opens the fix PRs.'
+            echo 'Production dependencies only:'
+            echo '```'
+            npm audit --omit=dev --audit-level=moderate || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rust — fetch crates exactly from the lockfile
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Rust — cargo fetch
+        working-directory: src-tauri
+        run: cargo fetch --locked
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up the Android SDK (the Gradle wrapper needs no install)
+        uses: ./.github/actions/setup-android-sdk
+
+      - name: Android — resolve the full dependency graph
+        working-directory: android
+        run: ./gradlew --no-daemon :app:dependencies --configuration releaseRuntimeClasspath
+
+      - name: Version consistency across platforms
+        run: npm run version:check

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import NativeTitleBar from '../components/NativeTitleBar';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
@@ -179,7 +180,9 @@ const Login: React.FC = () => {
   const isSignup = mode === 'signup';
 
   return (
-    <div className="min-h-screen bg-[#1B4332] flex flex-col items-center justify-center p-4">
+    <div className="min-h-screen bg-[#1B4332] flex flex-col">
+      <NativeTitleBar sticky />
+      <div className="flex flex-1 flex-col items-center justify-center p-4">
       <div className="w-full max-w-md z-10">
         <div className="bg-white/95 rounded-[2rem] p-6 sm:p-8 shadow-2xl">
           <h1 className="text-3xl font-black text-center mb-2 text-slate-800">PharmaTRACK</h1>
@@ -249,6 +252,7 @@ const Login: React.FC = () => {
           {isReset && <button type="button" onClick={() => { setMode('login'); resetFeedback(); }} className="w-full mt-4 flex items-center justify-center gap-2 text-sm font-bold text-slate-500 hover:text-[#2D6A4F]"><ArrowLeft className="w-4 h-4" /> Back to login</button>}
           {!isReset && <button type="button" onClick={() => navigate('/', { replace: true })} className="w-full py-3 mt-3 text-sm font-bold text-slate-500 hover:text-[#2D6A4F]">Continue without signing in</button>}
         </div>
+      </div>
       </div>
     </div>
   );

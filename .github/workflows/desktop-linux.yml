@@ -1,0 +1,141 @@
+name: Linux Desktop Build
+
+# Builds the native Linux .deb package on an Ubuntu 22.04 runner. 22.04 (not
+# latest) is deliberate: building against its older glibc keeps the package
+# installable on the widest range of Debian/Ubuntu releases.
+#
+# Updater signing follows the same rules as the Windows build: signed .sig
+# when the key secret is present, explicitly disabled for secret-less
+# validation builds (fork PRs), and a hard failure in release mode.
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifacts:
+        description: Upload the package as a workflow artifact
+        type: boolean
+        default: false
+      require-signing:
+        description: Fail when the updater signing key is unavailable (release mode)
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY_B64:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      VITE_SUPABASE_URL:
+        required: false
+      VITE_SUPABASE_ANON_KEY:
+        required: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux amd64 (.deb)
+    runs-on: ubuntu-22.04
+    env:
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Cache cargo registry and target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-rust-linux-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-linux-
+
+      - name: Install Linux dependencies (WebKitGTK toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install dependencies exactly from the lockfile
+        run: npm ci
+
+      # Same decision logic as the Windows job; the secret is never printed.
+      - name: Prepare updater signing mode
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
+          UPDATER_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          REQUIRE_SIGNING: ${{ inputs.require-signing }}
+        run: |
+          set -euo pipefail
+          if [ -n "$UPDATER_KEY" ]; then
+            # Pass the secret through as content — do NOT base64-decode it
+            # here; Tauri decodes it internally.
+            {
+              printf 'TAURI_SIGNING_PRIVATE_KEY=%s\n' "$UPDATER_KEY"
+              if [ -n "$UPDATER_KEY_PASSWORD" ]; then
+                printf 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' "$UPDATER_KEY_PASSWORD"
+              fi
+            } >> "$GITHUB_ENV"
+            echo 'TAURI_BUILD_ARGS=--bundles deb' >> "$GITHUB_ENV"
+            echo "Updater artifacts: SIGNED (key available)."
+          elif [ "$REQUIRE_SIGNING" = "true" ]; then
+            echo "::error title=Missing updater signing key::TAURI_SIGNING_PRIVATE_KEY_B64 is not configured, and this build requires signed updater artifacts. Add the secret before cutting a release."
+            exit 1
+          else
+            printf '{\n  "bundle": { "createUpdaterArtifacts": false }\n}\n' > "$RUNNER_TEMP/tauri-no-updater.json"
+            echo "TAURI_BUILD_ARGS=--config $RUNNER_TEMP/tauri-no-updater.json --bundles deb" >> "$GITHUB_ENV"
+            echo "Updater artifacts: DISABLED for this validation build (no signing key)."
+          fi
+
+      # No tagName: build only. The release workflow publishes the assets.
+      - name: Build the Linux package
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Collect, verify and name the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          DEB_SRC="$(find src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)"
+          if [ -z "$DEB_SRC" ]; then
+            echo "::error title=Linux build output missing::No .deb produced under src-tauri/target/release/bundle/deb."
+            exit 1
+          fi
+          cp "$DEB_SRC" "pharmatrack_${VERSION}_amd64.deb"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            sig="$(find src-tauri/target/release/bundle/deb -name '*.sig' | head -n 1)"
+            if [ -z "$sig" ]; then
+              echo "::error title=Linux updater signature missing::No .sig produced for the deb bundle; the desktop updater would ship an unusable latest.json."
+              exit 1
+            fi
+            cp "$sig" "pharmatrack_${VERSION}_amd64.deb.sig"
+          fi
+          ls -l pharmatrack_*
+
+      - name: Upload the Linux package
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-release
+          path: |
+            pharmatrack_*_amd64.deb
+            pharmatrack_*_amd64.deb.sig
+          if-no-files-found: error

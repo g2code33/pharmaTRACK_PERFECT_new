@@ -1,0 +1,100 @@
+name: Pull Request Validation
+
+# The gate every pull request (and every push to main) must pass. It fans out
+# to the shared workflows so PRs and releases validate exactly the same way:
+#
+#   unit-tests             — web (vitest) + desktop shell (cargo) unit tests
+#   dependency-validation  — lockfiles resolve, versions consistent
+#   kotlin-compile         — Android Kotlin sources (debug + release)
+#   android-build (pr)     — debug APK + Android unit tests; no secrets, so
+#                            fork PRs are validated identically to branch PRs
+#   desktop-windows        — MSI + NSIS packaging on a Windows runner
+#   desktop-linux          — .deb packaging on Ubuntu 22.04
+#
+# Nothing here can publish: the workflow has read-only permissions, desktop
+# builds never receive release mode, and artifacts are never attached to a
+# GitHub release from a pull request. Fork pull requests do not receive repo
+# secrets at all, so their builds run with fallback credentials and updater
+# artifacts disabled — validation only.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    uses: ./.github/workflows/unit-tests.yml
+    permissions:
+      contents: read
+
+  dependency-validation:
+    uses: ./.github/workflows/dependency-validation.yml
+    permissions:
+      contents: read
+
+  kotlin-compile:
+    uses: ./.github/workflows/kotlin-compile.yml
+    permissions:
+      contents: read
+
+  android:
+    name: Android build and tests
+    uses: ./.github/workflows/android-build.yml
+    permissions:
+      contents: read
+    with:
+      build-mode: pr
+    secrets: inherit
+
+  windows:
+    name: Windows desktop build
+    uses: ./.github/workflows/desktop-windows.yml
+    permissions:
+      contents: read
+    with:
+      upload-artifacts: false
+      require-signing: false
+    secrets: inherit
+
+  linux:
+    name: Linux desktop build
+    uses: ./.github/workflows/desktop-linux.yml
+    permissions:
+      contents: read
+    with:
+      upload-artifacts: false
+      require-signing: false
+    secrets: inherit
+
+  summary:
+    name: All platform validations passed
+    needs: [unit-tests, dependency-validation, kotlin-compile, android, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Record what was validated
+        run: |
+          {
+            echo '## Platform validation summary'
+            echo
+            echo '| Validation | Runner |'
+            echo '| --- | --- |'
+            echo '| Web + Rust unit tests | ubuntu-latest |'
+            echo '| Dependency graphs + version consistency | ubuntu-latest |'
+            echo '| Kotlin debug + release compilation | ubuntu-latest |'
+            echo '| Android debug APK + unit tests | ubuntu-latest |'
+            echo '| Windows MSI + NSIS installers | windows-latest |'
+            echo '| Linux .deb package | ubuntu-22.04 |'
+            echo
+            echo 'All platform builds ran; none were skipped.'
+          } >> "$GITHUB_STEP_SUMMARY"

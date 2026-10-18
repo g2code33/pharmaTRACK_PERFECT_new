@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight,
   Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
@@ -7,6 +7,7 @@ import {
 import { renderPptx, ptToPx, type PptxDocument, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
 import type { HighlightColor } from '../types';
+import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
 
 /**
  * Native .pptx viewer — renders the *actual* slide as positioned DOM:
@@ -523,6 +524,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const [fs, setFs] = useState(false);
   /** In presentation mode the chrome fades out until the pointer moves. */
   const [fsChrome, setFsChrome] = useState(true);
+  const fsChromeVisibleRef = useRef(true);
   const [retryTick, setRetryTick] = useState(0);
   const [pageInput, setPageInput] = useState('1');
   const [selection, setSelection] = useState<{ anchor: { x: number; y: number }; text: string } | null>(null);
@@ -533,8 +535,15 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const deckRef = useRef<PptxDocument | null>(null);
   const jumpAppliedRef = useRef(false);
   const touchRef = useRef<{ x: number; y: number; t: number } | null>(null);
+  const resumeFrameRef = useRef<number | null>(null);
 
   const total = deck?.slides.length ?? 0;
+
+  const setFsChromeVisible = useCallback((visible: boolean) => {
+    if (fsChromeVisibleRef.current === visible) return;
+    fsChromeVisibleRef.current = visible;
+    setFsChrome(visible);
+  }, []);
 
   /* ---------------- parse (once per file / retry) ---------------- */
   useEffect(() => {
@@ -655,52 +664,183 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     setZoom((z) => ({ mode: 'custom', value: clampZoom((z.mode === 'custom' ? z.value : currentScaleRef.current) + delta) }));
   }, []);
 
+  /* Pinch-to-zoom. The installed app refuses browser zoom, so pinching a deck
+     has to zoom the deck rather than the whole interface. */
+  const pinchRef = useRef<{ anchor: PinchAnchor; startScale: number } | null>(null);
+  usePinchZoom(containerRef, {
+    onStart: (anchor) => { pinchRef.current = { anchor, startScale: currentScaleRef.current }; },
+    onZoom: (factor) => {
+      const base = pinchRef.current;
+      if (!base) return;
+      setZoom({ mode: 'custom', value: clampZoom(base.startScale * factor) });
+    },
+    onEnd: () => { pinchRef.current = null; },
+    // Keyed on the deck, so the gesture attaches to the scroller the moment
+    // the deck replaces the loading or error screen.
+  }, Boolean(deck));
+
+  // Runs once the rescaled stage is laid out, so the pinched point stays put.
+  useLayoutEffect(() => {
+    const base = pinchRef.current;
+    const el = containerRef.current;
+    if (!base || !el) return;
+    keepPinchAnchor(el, base.anchor, scale / base.startScale);
+  }, [scale]);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect;
-      if (r) setContainerSize({ w: r.width, h: r.height });
+      if (!r) return;
+      setContainerSize((current) => {
+        if (Math.abs(current.w - r.width) < 1 && Math.abs(current.h - r.height) < 1) return current;
+        return { w: r.width, h: r.height };
+      });
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, [deck, mode, error, fs]);
 
-  /* Ctrl/⌘ + wheel zooms (trackpad pinch on laptops), like a PDF page. */
+  useEffect(() => {
+    const onResume = () => {
+      setMediaEpoch((epoch) => epoch + 1);
+      if (resumeFrameRef.current != null) window.cancelAnimationFrame(resumeFrameRef.current);
+      resumeFrameRef.current = window.requestAnimationFrame(() => {
+        resumeFrameRef.current = null;
+        const stage = stageRef.current;
+        if (!stage) return;
+        stage.style.willChange = 'transform';
+        stage.getBoundingClientRect();
+        window.requestAnimationFrame(() => { stage.style.willChange = ''; });
+      });
+    };
+    window.addEventListener('pharmatrack:resume', onResume);
+    return () => {
+      window.removeEventListener('pharmatrack:resume', onResume);
+      if (resumeFrameRef.current != null) window.cancelAnimationFrame(resumeFrameRef.current);
+    };
+  }, []);
+
+  /* Ctrl/⌘ + wheel zooms (trackpad pinch on laptops), like a PDF page.
+     A NON-passive wheel listener turns its element into a "slow scroll
+     region": the browser must hand every wheel tick to JavaScript and wait for
+     it to decide about preventDefault() before the compositor is allowed to
+     move a single pixel. Keeping one permanently attached to the slide
+     scroller is what made deck scrolling feel heavy and delayed, so the
+     blocking listener is only attached while a zoom gesture is actually
+     plausible — a held Ctrl/Cmd key, or right after a pinch was detected by
+     the cheap passive probe below. */
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        zoomBy(e.deltaY < 0 ? 0.1 : -0.1);
-      }
+
+    let attached = false;
+    let releaseTimer: number | undefined;
+
+    const onZoomWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      zoomBy(e.deltaY < 0 ? 0.1 : -0.1);
     };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    const attach = () => {
+      if (attached) return;
+      el.addEventListener('wheel', onZoomWheel, { passive: false });
+      attached = true;
+    };
+    const detach = () => {
+      if (releaseTimer !== undefined) { window.clearTimeout(releaseTimer); releaseTimer = undefined; }
+      if (!attached) return;
+      el.removeEventListener('wheel', onZoomWheel);
+      attached = false;
+    };
+    const holdBriefly = () => {
+      if (releaseTimer !== undefined) window.clearTimeout(releaseTimer);
+      releaseTimer = window.setTimeout(detach, 1200);
+    };
+
+    // Passive: never blocks scrolling. It only notices that a pinch-zoom
+    // gesture is in progress so the real handler can take over for it.
+    const probe = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      attach();
+      holdBriefly();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') { attach(); if (releaseTimer !== undefined) { window.clearTimeout(releaseTimer); releaseTimer = undefined; } }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Meta') holdBriefly();
+    };
+
+    el.addEventListener('wheel', probe, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', detach);
+    return () => {
+      el.removeEventListener('wheel', probe);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', detach);
+      detach();
+    };
   }, [deck, mode, zoomBy]);
+
+  /* Same scroll-time damping the PDF reader uses: hit-testing slide text while
+     the deck is moving is wasted work, and the class is scoped to this
+     scroller so the invalidation never leaves the subtree. */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let idle: number | undefined;
+    const onScroll = () => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (idle !== undefined) window.clearTimeout(idle);
+      idle = window.setTimeout(() => { idle = undefined; el.classList.remove('is-scrolling'); }, 120);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (idle !== undefined) window.clearTimeout(idle);
+      el.classList.remove('is-scrolling');
+    };
+  }, [deck, mode]);
 
   /* Presentation mode: chrome fades away, any pointer movement brings it back. */
   useEffect(() => {
     if (!fs) {
-      setFsChrome(true);
+      setFsChromeVisible(true);
       return;
     }
     let timer: number | undefined;
-    const reveal = () => {
-      setFsChrome(true);
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => setFsChrome(false), 2500);
+    let frame: number | undefined;
+    const hide = () => {
+      timer = undefined;
+      setFsChromeVisible(false);
     };
-    reveal();
-    window.addEventListener('mousemove', reveal);
-    window.addEventListener('touchstart', reveal);
+    const scheduleHide = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(hide, 2500);
+    };
+    const revealNow = () => {
+      frame = undefined;
+      setFsChromeVisible(true);
+      scheduleHide();
+    };
+    const reveal = () => {
+      if (frame !== undefined) return;
+      frame = window.requestAnimationFrame(revealNow);
+    };
+    revealNow();
+    window.addEventListener('pointermove', reveal, { passive: true });
+    window.addEventListener('touchstart', reveal, { passive: true });
     return () => {
       if (timer) window.clearTimeout(timer);
-      window.removeEventListener('mousemove', reveal);
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      window.removeEventListener('pointermove', reveal);
       window.removeEventListener('touchstart', reveal);
     };
-  }, [fs]);
+  }, [fs, setFsChromeVisible]);
 
   /* Light-dismiss the toolbar dropdowns (Escape is handled separately). */
   useEffect(() => {
@@ -1297,7 +1437,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           onMouseUp={handleMouseUp}
           onTouchStart={onTouchStart}
           onTouchEnd={onTouchEnd}
-          className={`relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
+          className={`pptx-viewer-scroll relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
           data-testid="pptx-stage"
         >
           <div className="flex min-h-full min-w-full items-center justify-center p-4">
@@ -1308,7 +1448,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
               >
                 <div
                   ref={stageRef}
-                  className="absolute left-0 top-0 origin-top-left shadow-2xl ring-1 ring-black/50"
+                  className="pptx-slide-stage absolute left-0 top-0 origin-top-left shadow-2xl ring-1 ring-black/50"
                   style={{ transform: `scale(${scale})`, width: deck.slideWidth, height: deck.slideHeight }}
                 >
                   {currentSlide ? (

@@ -1,23 +1,29 @@
-import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useDeferredValue, useMemo } from 'react';
 import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import RouteErrorBoundary from './RouteErrorBoundary';
+import RouteLoading from './RouteLoading';
+import { scheduleRoutePrefetch } from '../utils/routeLoader';
+import { scheduleBackgroundWork } from '../utils/idleScheduler';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
 import type { SearchResult } from '../utils/search';
-import ErrorBoundary from './ErrorBoundary';
-import PageLoading from './PageLoading';
 import {
   checkNativeUpdate,
   detectRuntimeCapabilities,
   getApplicationVersion,
   restartNativeApplication,
+  type NativeUpdate,
 } from '../platform/runtime';
 import { activatePwaUpdate, getPwaRegistration, PWA_UPDATE_EVENT } from '../pwa';
+import { APP_STORE_URL, quickQuizRouteFromAnyText } from '../utils/appLinks';
 import { Home, BookOpen, FileQuestion, Brain, Calendar, BarChart3, Settings, Moon, Sun, Menu, X, Search, ClipboardList, StickyNote, Upload, LogOut, ChevronLeft, ChevronRight, Zap, Bookmark, WifiOff, RefreshCw, Download, CheckCircle, Loader2, Clock, UserCircle, Cloud, Archive, Sparkles, HardDrive, GraduationCap, Stethoscope } from 'lucide-react';
 import StorageNoticeBanner from './StorageNoticeBanner';
+import NativeTitleBar from './NativeTitleBar';
+import UpdateDialog, { type UpdateFlowState } from './UpdateDialog';
 
-const APP_VERSION_FALLBACK = '1.1.89';
+const APP_VERSION_FALLBACK = __APP_VERSION__;
 
 const navItems = [
   { path: '/', icon: Home, label: 'Dashboard' },
@@ -40,6 +46,14 @@ const navItems = [
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
+const mobileNavItems = [
+  { path: '/', icon: Home, label: 'Home' },
+  { path: '/materials', icon: Upload, label: 'Materials' },
+  { path: '/quiz', icon: Brain, label: 'Quiz' },
+  { path: '/questions', icon: FileQuestion, label: 'Questions' },
+  { path: '/settings', icon: Settings, label: 'Settings' },
+];
+
 const Layout: React.FC = () => {
   const { state, logout } = useApp();
   const location = useLocation();
@@ -51,6 +65,7 @@ const Layout: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -61,12 +76,35 @@ const Layout: React.FC = () => {
     typeof navigator !== 'undefined' ? navigator.onLine === false : false,
   );
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
+  // What the in-app update sheet is showing, if anything. `null` keeps it
+  // closed; the pill is what opens it.
+  const [updateFlow, setUpdateFlow] = useState<UpdateFlowState | null>(null);
+  // An update found by the quiet launch check waits here until the user taps
+  // the pill, so starting the app never throws a dialog in anyone's face.
+  const pendingUpdateRef = useRef<NativeUpdate | null>(null);
+  const [pendingUpdateVersion, setPendingUpdateVersion] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
-  const [darkMode, setDarkMode] = useState(false);
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('pharmatrack-dark-mode');
+      if (saved !== null) return saved === 'true';
+      return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
+    } catch {
+      return false;
+    }
+  });
   const runtime = detectRuntimeCapabilities();
-
-  useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
+  const isReaderRoute = location.pathname.startsWith('/read/');
+  const showBackButton = location.pathname !== '/';
+  const goBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) navigate(-1);
+    else navigate('/');
+  };
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    try { localStorage.setItem('pharmatrack-dark-mode', String(darkMode)); } catch { /* ignore */ }
+  }, [darkMode]);
   useEffect(() => {
     void getApplicationVersion(APP_VERSION_FALLBACK).then(setAppVersion);
   }, []);
@@ -79,7 +117,7 @@ const Layout: React.FC = () => {
     if (waiting && navigator.serviceWorker.controller) setPwaUpdateAvailable(true);
     return () => window.removeEventListener(PWA_UPDATE_EVENT, onPwaUpdate);
   }, []);
-  
+
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
     const handleOffline = () => setIsOffline(true);
@@ -87,14 +125,32 @@ const Layout: React.FC = () => {
     return () => { window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline); };
   }, []);
 
-  const recentSlides = [...state.slides].sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
+  const recentSlides = useMemo(
+    () => [...state.slides]
+      .sort((a, b) => new Date(b.lastOpenedAt || b.createdAt).getTime() - new Date(a.lastOpenedAt || a.createdAt).getTime())
+      .slice(0, 5),
+    [state.slides],
+  );
 
   useEffect(() => onSearchIndex(() => setIndexTick((n) => n + 1)), []);
+  const quickQuizSearchRoute = useMemo(
+    () => quickQuizRouteFromAnyText(deferredSearchQuery),
+    [deferredSearchQuery],
+  );
+  const immediateQuickQuizRoute = useMemo(
+    () => quickQuizRouteFromAnyText(searchQuery),
+    [searchQuery],
+  );
 
   useEffect(() => {
-    setSearchResults(searchAcademic(state, searchQuery, undefined, 8));
-    setActiveIndex(0);
-  }, [searchQuery, state, indexTick]);
+    if (!isSearchFocused || deferredSearchQuery.trim().length < 2 || quickQuizSearchRoute) {
+      setSearchResults((previous) => (previous.length ? [] : previous));
+      setActiveIndex((previous) => (previous === 0 ? previous : 0));
+      return;
+    }
+    setSearchResults(searchAcademic(state, deferredSearchQuery, undefined, 8));
+    setActiveIndex((previous) => (previous === 0 ? previous : 0));
+  }, [deferredSearchQuery, isSearchFocused, quickQuizSearchRoute, state, indexTick]);
 
   // Close the dropdown on outside click. Replaces the old onBlur+setTimeout,
   // which raced with the click it was trying to allow.
@@ -133,8 +189,14 @@ const Layout: React.FC = () => {
   };
 
   const onSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const quickRoute = quickQuizRouteFromAnyText(searchQuery);
     const list = searchQuery ? searchResults : recentSlides.map(s => ({ link: `/read/${s.topicId}?slide=${Math.max(0, s.slideNumber - 1)}` }));
     if (e.key === 'Escape') { closeSearch(); return; }
+    if (e.key === 'Enter' && quickRoute) {
+      e.preventDefault();
+      goToResult(quickRoute);
+      return;
+    }
     if (!list.length) return;
 
     if (e.key === 'ArrowDown') {
@@ -160,66 +222,202 @@ const Layout: React.FC = () => {
     }
   };
 
+  const refreshWebApp = async () => {
+    let activatedWaitingWorker = false;
+    try {
+      setUpdateStatus('checking');
+      window.setTimeout(() => setUpdateStatus((current) => (current === 'checking' ? 'idle' : current)), 20000);
+      const registration = getPwaRegistration();
+      if (registration) {
+        await registration.update().catch(() => undefined);
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          setPwaUpdateAvailable(false);
+          setUpdateStatus('done');
+          activatedWaitingWorker = true;
+          await activatePwaUpdate();
+        }
+      }
+    } finally {
+      if (!activatedWaitingWorker) window.location.reload();
+    }
+  };
+
+  /**
+   * The native updater talks to GitHub over the network and, on a slow or
+   * filtered connection, `check()` can sit there indefinitely. That left the
+   * version pill stuck on "Checking…" and disabled for the rest of the
+   * session — the app looked permanently behind. Every check is now bounded.
+   */
+  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 20000): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = window.setTimeout(
+        () => reject(new Error(`The update server did not answer within ${Math.round(ms / 1000)}s. Check your connection and try again.`)),
+        ms,
+      );
+      work.then(
+        (value) => { window.clearTimeout(timer); resolve(value); },
+        (error) => { window.clearTimeout(timer); reject(error); },
+      );
+    });
+
+  // Each manual check gets a ticket. Closing the sheet burns the ticket, so a
+  // check the user cancelled cannot pop its answer back up ten seconds later
+  // when the slow network finally replies.
+  const updateRunIdRef = useRef(0);
+  const closeUpdateSheet = () => {
+    updateRunIdRef.current += 1;
+    setUpdateFlow(null);
+  };
+
+  const describeUpdateError = (error: unknown): string => {
+    const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    return message || 'The update could not be completed. Check your connection and try again.';
+  };
+
+  /**
+   * Downloads and installs the update the last check found. Progress is
+   * painted into the sheet instead of being thrown away, and it is throttled:
+   * a package arrives in thousands of chunks and re-rendering the shell on
+   * every one of them is what makes an "updating" window feel frozen.
+   */
+  const installPendingUpdate = async () => {
+    const update = pendingUpdateRef.current;
+    if (!update) {
+      setUpdateFlow({ kind: 'failed', message: 'That update is no longer available. Check again.' });
+      return;
+    }
+
+    const version = update.version;
+    let received = 0;
+    let total = 0;
+    let lastPaintedAt = 0;
+
+    setUpdateStatus('downloading');
+    setUpdateFlow({ kind: 'downloading', version, received: 0, total: 0 });
+
+    try {
+      await update.downloadAndInstall((event: unknown) => {
+        const progress = event as { event?: string; data?: { contentLength?: number; chunkLength?: number } };
+        if (progress?.event === 'Started') total = progress.data?.contentLength || 0;
+        else if (progress?.event === 'Progress') received += progress.data?.chunkLength || 0;
+        else if (progress?.event === 'Finished') received = total || received;
+
+        const now = Date.now();
+        const finished = total > 0 && received >= total;
+        if (!finished && now - lastPaintedAt < 120) return;
+        lastPaintedAt = now;
+        setUpdateFlow({ kind: 'downloading', version, received, total });
+      });
+
+      pendingUpdateRef.current = null;
+      setPendingUpdateVersion(null);
+      setUpdateStatus('done');
+      setUpdateFlow({ kind: 'installed', version });
+    } catch (error) {
+      console.error('Update failed:', error);
+      setUpdateStatus('idle');
+      setUpdateFlow({ kind: 'failed', message: describeUpdateError(error) });
+    }
+  };
+
+  const restartForUpdate = async () => {
+    closeUpdateSheet();
+    if (!(await restartNativeApplication())) window.location.reload();
+  };
+
+  const openAppDownloadPage = () => {
+    closeUpdateSheet();
+    window.open(APP_STORE_URL, '_blank', 'noopener,noreferrer');
+  };
+
   // `silent` is used by the automatic check on launch: it still offers a real
   // update, but stays quiet when already up to date or when the check fails
   // (e.g. offline), so starting the app never throws up a pointless popup.
+  // A silent check also never paints the spinner, so the launch check cannot
+  // be mistaken for the app hanging.
   const checkForUpdates = async (silent = false) => {
     // A browser/PWA is updated by its service worker, not by Tauri's native
     // updater. Keeping this branch explicit prevents a missing native bridge
     // from turning a normal web boot into an exception.
     if (runtime.platform === 'web') {
-      if (!silent) {
-        alert('The web app updates automatically. Reload when a new version is available.');
-        window.location.reload();
-      }
+      if (!silent) void refreshWebApp();
       return;
     }
 
+    // The Android build is installed from a package, not patched in place, so
+    // there is nothing for an updater to download here — send the user to the
+    // download page instead of claiming they are up to date.
+    if (runtime.platform === 'android-native') {
+      if (!silent) setUpdateFlow({ kind: 'store', version: appVersion });
+      return;
+    }
+
+    // An update already found by the launch check: reopen the offer instead of
+    // paying for a second round trip.
+    if (!silent && pendingUpdateRef.current) {
+      setUpdateFlow({
+        kind: 'available',
+        version: pendingUpdateRef.current.version,
+        notes: pendingUpdateRef.current.body,
+      });
+      return;
+    }
+
+    const runId = silent ? -1 : (updateRunIdRef.current += 1);
+    const showSheet = (next: UpdateFlowState) => {
+      if (!silent && runId === updateRunIdRef.current) setUpdateFlow(next);
+    };
+
     try {
-      setUpdateStatus('checking');
-      const update = await checkNativeUpdate();
+      if (!silent) setUpdateStatus('checking');
+      showSheet({ kind: 'checking', version: appVersion });
+      const update = await withUpdateTimeout(checkNativeUpdate());
 
       if (update) {
+        pendingUpdateRef.current = update;
+        setPendingUpdateVersion(update.version);
         setUpdateStatus('available');
-        let _downloaded = 0;
-        let _contentLength = 0;
-
-        if (window.confirm(`Version ${update.version} is available! Do you want to download and install it now?`)) {
-          setUpdateStatus('downloading');
-          await update.downloadAndInstall((event: any) => {
-            if (event.event === 'Started') _contentLength = event.data.contentLength || 0;
-            if (event.event === 'Progress') _downloaded += event.data.chunkLength;
-          });
-
-          setUpdateStatus('done');
-          alert('Update installed successfully! The app will now restart.');
-          if (!await restartNativeApplication()) window.location.reload();
-        } else {
-          setUpdateStatus('idle');
-        }
+        // A quiet launch check only turns the pill into "Update <version>".
+        // Nothing covers the screen until the user asks for it.
+        showSheet({ kind: 'available', version: update.version, notes: update.body });
       } else {
-        if (!silent) alert(`You are already on the latest version (${appVersion})!`);
+        pendingUpdateRef.current = null;
+        setPendingUpdateVersion(null);
         setUpdateStatus('idle');
+        showSheet({ kind: 'current', version: appVersion });
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Update failed:', error);
-      if (!silent) alert(`Update Check Failed: ${error.message || error}`);
       setUpdateStatus('idle');
+      showSheet({ kind: 'failed', message: describeUpdateError(error) });
+    } finally {
+      // Whatever happened, the pill must never be left spinning and disabled.
+      setUpdateStatus((current) => (current === 'checking' ? 'idle' : current));
     }
   };
 
-  // Check for updates shortly after launch so users get fixes without having to
-  // know the button exists. Runs once, only when online, and stays silent
-  // unless there is genuinely an update to offer. The delay keeps the network
-  // call away from the initial render.
+  const checkForUpdatesRef = useRef(checkForUpdates);
+  useEffect(() => {
+    checkForUpdatesRef.current = checkForUpdates;
+  });
+
+  // Check for updates only during a genuinely quiet/idle window so the native
+  // updater/service-worker work never competes with scrolling, pointer movement
+  // or first navigation. The button still performs an immediate manual check.
   const hasAutoCheckedRef = useRef(false);
   useEffect(() => {
     if (hasAutoCheckedRef.current) return;
     hasAutoCheckedRef.current = true;
     if (!navigator.onLine) return;
 
-    const timer = setTimeout(() => { void checkForUpdates(true); }, 3000);
-    return () => clearTimeout(timer);
+    return scheduleBackgroundWork(() => { void checkForUpdatesRef.current(true); }, {
+      delay: 6000,
+      timeout: 20000,
+      retryDelay: 1500,
+      quietWindowMs: 3000,
+      minTimeRemaining: 18,
+      runWhenTimedOut: false,
+    });
   }, []);
 
   if (kioskState.active) {
@@ -228,8 +426,9 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <div className={`app-shell flex h-screen overflow-hidden flex-col ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
-      {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest animate-pulse z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
+    <div className={`app-shell flex h-[100dvh] overflow-hidden flex-col ${runtime.nativeWebview ? 'native-desktop-shell' : ''} ${runtime.platform === 'android-native' ? 'android-native-shell' : ''} ${darkMode ? "bg-slate-900" : "bg-slate-50"}`}>
+      <NativeTitleBar />
+      {isOffline && <div className="w-full bg-red-600 text-white text-xs font-bold text-center py-1.5 uppercase tracking-widest z-[100] relative shadow-md flex items-center justify-center gap-2"><WifiOff className="w-4 h-4" /> No Internet Connection - Operating in Offline Mode</div>}
       {pwaUpdateAvailable && (
         <div className="relative z-[130] flex flex-wrap items-center justify-center gap-3 bg-emerald-700 px-4 py-2 text-center text-xs font-bold text-white shadow-md">
           <span>A newer PharmaTRACK web app is ready.</span>
@@ -244,70 +443,131 @@ const Layout: React.FC = () => {
       )}
       <StorageNoticeBanner />
       <div className="flex flex-1 overflow-hidden">
-        <aside className={`fixed inset-y-0 left-0 z-50 bg-[#0F172A] text-white flex flex-col transition-all duration-300 ease-in-out lg:relative shadow-2xl ${mobileMenuOpen ? 'translate-x-0 w-72' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
-          <div className={`flex items-center p-6 border-b border-white/5 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
-            <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-lg shadow-green-500/20"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
-            {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-white">Pharma<span className="text-[#4ADE80]">TRACK</span></h1></div>)}
-            <button onClick={() => setMobileMenuOpen(false)} className="lg:hidden p-1 hover:bg-white/10 rounded"><X className="w-5 h-5 text-white" /></button>
+        {/* Always mounted and faded, never mounted and unmounted. Inserting a
+            full-screen layer mid-gesture forces the whole page behind it
+            through layout and paint at the exact moment the drawer is trying
+            to animate, which is what made the menu feel stuck on Android. */}
+        <button
+          type="button"
+          aria-label="Close navigation menu"
+          aria-hidden={!mobileMenuOpen}
+          tabIndex={mobileMenuOpen ? 0 : -1}
+          onClick={() => setMobileMenuOpen(false)}
+          className={`mobile-sidebar-backdrop fixed inset-0 z-[220] bg-slate-950/45 transition-opacity duration-200 ease-out lg:hidden ${
+            mobileMenuOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          }`}
+        />
+        {/* Only the transform is animated. `transition-all` also animated the
+            drawer's width and its large shadow, so every frame of the slide
+            repainted a blurred rectangle the height of the screen. */}
+        <aside className={`mobile-sidebar fixed inset-y-0 left-0 z-[230] w-[min(84vw,20rem)] bg-white text-slate-900 flex flex-col border-r border-slate-200 transition-transform duration-200 ease-out lg:relative lg:z-50 shadow-xl ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} ${sidebarCollapsed ? 'lg:w-20' : 'lg:w-72'}`}>
+          <div className={`flex items-center p-6 border-b border-slate-100 ${sidebarCollapsed ? 'justify-center' : 'gap-3'}`}>
+            <div className="w-10 h-10 flex-shrink-0 overflow-hidden rounded-lg shadow-sm ring-1 ring-slate-200"><img src="/logo.png" alt="Logo" className="w-full h-full object-cover scale-110" onError={(e) => e.currentTarget.style.display = 'none'} /></div>
+            {!sidebarCollapsed && (<div className="flex-1 overflow-hidden"><h1 className="font-black text-xl tracking-tighter uppercase italic text-slate-900">Pharma<span className="text-[#2D6A4F]">TRACK</span></h1></div>)}
+            <button onClick={() => setMobileMenuOpen(false)} className="lg:hidden p-1 hover:bg-slate-100 rounded"><X className="w-5 h-5 text-slate-700" /></button>
           </div>
           <nav className="flex-1 p-4 space-y-1 overflow-y-auto hide-scrollbar">
             {navItems.map((item: any) => {
               const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
               return (
-                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-all duration-200 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-[#2D6A4F]/20' : item.highlight ? 'bg-purple-600/10 text-purple-400 hover:bg-purple-600/20' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}>
+                <Link key={item.path} to={item.path} onClick={() => setMobileMenuOpen(false)} onMouseEnter={() => scheduleRoutePrefetch(item.path)} onFocus={() => scheduleRoutePrefetch(item.path)} onTouchStart={() => scheduleRoutePrefetch(item.path)} title={sidebarCollapsed ? item.label : ''} className={`flex items-center rounded-xl transition-colors duration-150 ${sidebarCollapsed ? 'justify-center p-3' : 'gap-3 px-4 py-3'} ${isActive ? 'bg-[#2D6A4F] text-white shadow-sm' : item.highlight ? 'bg-purple-50 text-purple-700 hover:bg-purple-100' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'}`}>
                   <item.icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-[#FFB703]' : ''}`} />
                   {!sidebarCollapsed && <span className="text-sm font-bold tracking-tight">{item.label}</span>}
                 </Link>
               );
             })}
           </nav>
-          <div className="p-4 bg-[#0F172A] border-t border-white/5">
+          <div className="p-4 bg-white border-t border-slate-100">
             <div className={`flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'}`}>
               {state.isLoggedIn ? (
-                <button onClick={handleLogout} title="End Session" className={`text-gray-400 hover:text-red-400 p-2.5 rounded-xl hover:bg-red-500/10 transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest text-white/50'}`}><LogOut className="w-5 h-5" />{!sidebarCollapsed && <span>End Session</span>}</button>
+                <button onClick={handleLogout} title="End Session" className={`text-slate-500 hover:text-red-600 p-2.5 rounded-xl hover:bg-red-50 transition-colors ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest'}`}><LogOut className="w-5 h-5" />{!sidebarCollapsed && <span>End Session</span>}</button>
               ) : (
                 // Red: signed out means the user's work exists in exactly one
                 // place, with no backup. Worth flagging, not whispering.
                 <Link to="/login" title="Not backed up — sign in to sync" className={`text-red-300 hover:text-white bg-red-600/20 hover:bg-red-600/40 border border-red-500/40 p-2.5 rounded-xl transition-all ${sidebarCollapsed ? '' : 'flex items-center gap-2 text-xs font-black uppercase tracking-widest'}`}><Cloud className="w-5 h-5" />{!sidebarCollapsed && <span>Sign in to sync</span>}</Link>
               )}
-              <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:flex p-2.5 bg-white/5 text-gray-400 hover:text-[#FFB703] hover:bg-white/10 rounded-xl transition-all">{sidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}</button>
+              <button onClick={() => setSidebarCollapsed(!sidebarCollapsed)} className="hidden lg:flex p-2.5 bg-slate-100 text-slate-500 hover:text-[#2D6A4F] hover:bg-slate-200 rounded-xl transition-colors">{sidebarCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}</button>
             </div>
           </div>
         </aside>
 
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
-              this element a stacking context, so the search dropdown inside it
-              can never escape — the header itself has to sit above them. */}
-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
-            <div className="flex items-center gap-4 lg:gap-6">
-              <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
-              
-              {/* Universal Home Button */}
-              <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
-                 <Home className="w-5 h-5" />
-              </Link>
-              <Link to="/" className="sm:hidden flex items-center justify-center p-2 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
-                 <Home className="w-5 h-5" />
-              </Link>
+          {/* z-[120] beats the reader's side panels (z-[110]); keep the header
+              a solid surface (white in light mode, slate in dark mode) so the
+              desktop shell does not repaint a costly blur. */}
+          <header className="app-header bg-white dark:bg-slate-900 border-b border-gray-200 dark:border-slate-700 px-3 pb-3 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120] shadow-sm sm:shadow-none">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 lg:gap-6">
+              <div className="flex items-center gap-2 sm:gap-4">
+                <button
+                  type="button"
+                  aria-label="Open navigation menu"
+                  className="lg:hidden touch-target flex items-center justify-center rounded-2xl bg-slate-100 text-slate-700 active:scale-95 dark:bg-slate-800 dark:text-slate-200"
+                  onClick={() => setMobileMenuOpen(true)}
+                >
+                  <Menu className="w-6 h-6" />
+                </button>
 
-              <div className="flex-1 max-w-3xl relative" ref={searchBoxRef}>
+                {showBackButton && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="hidden sm:flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm font-black text-slate-600 shadow-sm transition-all hover:bg-slate-50 hover:text-[#2D6A4F] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    title="Back"
+                    aria-label="Go back"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                    <span className="hidden xl:inline">Back</span>
+                  </button>
+                )}
+
+                {/* Universal Home Button */}
+                <Link to="/" className="hidden sm:flex items-center justify-center p-3 bg-[#2D6A4F]/10 hover:bg-[#2D6A4F]/20 text-[#2D6A4F] rounded-xl transition-all shadow-sm" title="Go Home">
+                   <Home className="w-5 h-5" />
+                </Link>
+                {showBackButton && (
+                  <button
+                    type="button"
+                    onClick={goBack}
+                    className="sm:hidden touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                    title="Back"
+                    aria-label="Go back"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                )}
+                <Link to="/" className="sm:hidden touch-target flex items-center justify-center bg-[#2D6A4F]/10 text-[#2D6A4F] rounded-2xl transition-all shadow-sm" title="Go Home">
+                   <Home className="w-5 h-5" />
+                </Link>
+                <Link to="/" className="sm:hidden min-w-0 flex-1">
+                  <p className="truncate text-base font-black uppercase italic tracking-tight text-slate-900">Pharma<span className="text-[#2D6A4F]">TRACK</span></p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">v{appVersion} · {isOffline ? 'Offline' : state.isLoggedIn ? 'Synced' : 'Local only'}</p>
+                </Link>
+                <div className="ml-auto flex items-center gap-2 sm:hidden">
+                  <button onClick={() => void refreshWebApp()} className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" aria-label="Refresh app and check for update" title="Refresh app">
+                    {updateStatus === 'checking' ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCw className="w-5 h-5" />}
+                  </button>
+                  <button onClick={() => setDarkMode(!darkMode)} className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" aria-label="Toggle dark mode">{darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
+                  <Link to="/profile" className="touch-target flex items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 shadow-sm dark:bg-slate-800 dark:text-slate-200 dark:border-slate-700" title={state.student?.name ? `Profile — ${state.student.name}` : 'Profile'}><UserCircle className="w-5 h-5" /></Link>
+                </div>
+              </div>
+
+              <div className="w-full sm:flex-1 sm:max-w-3xl relative" ref={searchBoxRef}>
                 <div className="relative group">
                   <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none"><Search className="w-4 h-4 text-gray-400" /></div>
                   <input
                     ref={searchInputRef}
                     type="text"
-                    placeholder="Search notes, slides, questions, archives…  (Ctrl+K)"
+                    placeholder="Search or paste a Quick Quiz link…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onFocus={() => setIsSearchFocused(true)}
                     onKeyDown={onSearchKeyDown}
-                    className="w-full pl-11 pr-12 py-3 bg-gray-100 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
+                    className="w-full pl-11 pr-12 py-3 bg-gray-100 text-slate-900 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-colors shadow-inner"
                   />
                   {searchQuery ? (
                     <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
                   ) : (
-                    <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500 animate-pulse" /></div>
+                    <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none"><Zap className="w-3 h-3 text-purple-500" /></div>
                   )}
                 </div>
 
@@ -336,10 +596,28 @@ const Layout: React.FC = () => {
                           ))}
                         </>
                       ) : <div className="p-4 text-sm text-gray-500 text-center font-bold">No recent materials yet.</div>
+                    ) : immediateQuickQuizRoute ? (
+                      <div
+                        role="button"
+                        tabIndex={-1}
+                        onMouseDown={(e) => { e.preventDefault(); goToResult(immediateQuickQuizRoute); }}
+                        className="m-2 cursor-pointer rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-left transition-colors hover:bg-emerald-100"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-600 text-white">
+                            <FileQuestion className="h-5 w-5" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-black text-emerald-950">Open Quick Quiz link</p>
+                            <p className="mt-1 truncate text-xs font-bold text-emerald-800">{immediateQuickQuizRoute}</p>
+                            <p className="mt-2 text-[11px] font-black uppercase tracking-wider text-emerald-700">Press Enter or tap here to start this quiz</p>
+                          </div>
+                        </div>
+                      </div>
                     ) : searchResults.length === 0 ? (
                       <div className="p-6 text-center">
                         <p className="text-sm font-bold text-gray-600">No matches for “{searchQuery}”</p>
-                        <p className="text-xs text-gray-400 mt-1">Try fewer words, or open Academic Search for filters.</p>
+                        <p className="text-xs text-gray-400 mt-1">Try fewer words, paste a Quick Quiz link, or open Academic Search for filters.</p>
                       </div>
                     ) : (
                       <>
@@ -404,21 +682,35 @@ const Layout: React.FC = () => {
                         ? 'Saved on this device only. Sign in to add a cloud backup.'
                         : 'Signed in — cloud backup available.'
                     } className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${status.bg} ${status.border}`}>
-                      <span className="relative flex w-2 h-2">
-                        {/* Silent "beep": a soft expanding ping, not a static dot. */}
-                        <span className={`absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping ${status.dot}`} />
-                        <span className={`relative inline-flex w-2 h-2 rounded-full ${status.dot}`} />
-                      </span>
+                      <span className={`inline-flex w-2 h-2 rounded-full ${status.dot}`} />
                       <span className={`text-[10px] font-black uppercase tracking-widest ${status.text}`}>{status.label}</span>
                     </div>
                   );
                 })()}
                 
-                <div className="flex items-center gap-2 bg-blue-600 text-white pl-4 pr-1 py-1 rounded-full shadow-md">
-                  <span className="text-[10px] font-black uppercase tracking-widest border-r border-blue-400 pr-3 mr-1 opacity-90">v{appVersion}</span>
-                  <button onClick={() => void checkForUpdates(false)} disabled={updateStatus === 'checking' || updateStatus === 'downloading'} title="Check for Updates" className="flex items-center gap-2 px-3 py-1.5 hover:bg-blue-700 rounded-full font-bold text-xs transition-all disabled:opacity-50">
-                    {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
-                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restarting...' : 'Update App'}</span>
+                {/* The pill is the whole update story: it says what the app
+                    is doing, it never stays stuck on "Checking…", and once a
+                    quiet launch check has found something it turns into the
+                    offer itself — tapping it reopens the sheet rather than
+                    re-running the check. */}
+                <div className={`flex items-center gap-2 text-white pl-4 pr-1 py-1 rounded-full shadow-md ${updateStatus === 'available' || updateStatus === 'done' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
+                  <span className={`text-[10px] font-black uppercase tracking-widest border-r pr-3 mr-1 opacity-90 ${updateStatus === 'available' || updateStatus === 'done' ? 'border-emerald-400' : 'border-blue-400'}`}>v{appVersion}</span>
+                  <button
+                    onClick={() => (updateStatus === 'done' ? void restartForUpdate() : void checkForUpdates(false))}
+                    disabled={updateStatus === 'checking' || updateStatus === 'downloading'}
+                    title={
+                      updateStatus === 'available'
+                        ? `Install version ${pendingUpdateVersion}`
+                        : updateStatus === 'done'
+                          ? 'Restart to finish updating'
+                          : runtime.platform === 'web'
+                            ? 'Refresh app and check for update'
+                            : 'Check for Updates'
+                    }
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full font-bold text-xs transition-all disabled:opacity-50 ${updateStatus === 'available' || updateStatus === 'done' ? 'hover:bg-emerald-700' : 'hover:bg-blue-700'}`}
+                  >
+                    {updateStatus === 'checking' ? <Loader2 className="w-4 h-4 animate-spin" /> : updateStatus === 'downloading' ? <Download className="w-4 h-4 animate-bounce" /> : updateStatus === 'done' ? <CheckCircle className="w-4 h-4" /> : updateStatus === 'available' ? <Download className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
+                    <span className="hidden lg:inline">{updateStatus === 'checking' ? 'Checking...' : updateStatus === 'downloading' ? 'Updating...' : updateStatus === 'done' ? 'Restart now' : updateStatus === 'available' ? `Update ${pendingUpdateVersion}` : runtime.platform === 'web' ? 'Refresh App' : 'Update App'}</span>
                   </button>
                 </div>
 
@@ -428,27 +720,57 @@ const Layout: React.FC = () => {
               </div>
             </div>
           </header>
-          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
-            {/* Scoped to the page area so a crashing route leaves the sidebar,
-                search and navigation usable. resetKey clears the error when the
-                user navigates away. */}
-            <ErrorBoundary resetKey={location.pathname}>
-              {/* Suspense boundary for lazy page chunks. It must sit here —
-                  around the Outlet, inside the shell — so downloading a page
-                  swaps only this content area for the loader. The app-level
-                  boundary used to catch these suspensions and tore down the
-                  whole Layout, flashing a near-white screen (sidebar, header
-                  and search all vanishing) whenever a sidebar tab was opened
-                  for the first time. The ErrorBoundary stays outermost so a
-                  chunk that fails to load surfaces the recovery UI rather
-                  than a stuck spinner. */}
-              <Suspense fallback={<PageLoading />}>
+          {/* The frame carries the desktop card styling (rounded corners,
+              border, shadow). Keeping those off <main> is what lets the
+              browser scroll it on the compositor instead of clipping a
+              rounded rect on the main thread every frame. */}
+          <div className="app-page-frame flex flex-1 min-h-0 flex-col">
+          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
+            {/* Scoped to the page area so a crashing route — or a lazy chunk
+                that fails to load — leaves the sidebar, header, search and
+                navigation fully usable. The Suspense fallback replaces ONLY
+                this content area, never the whole app shell, so switching
+                sidebar tabs never produces a full-window white flash.
+                resetKey clears the error when the user navigates away. */}
+            <RouteErrorBoundary resetKey={location.pathname}>
+              <Suspense fallback={<RouteLoading />}>
                 <Outlet />
               </Suspense>
-            </ErrorBoundary>
+            </RouteErrorBoundary>
           </main>
+          </div>
         </div>
       </div>
+
+      <nav className="mobile-bottom-nav lg:hidden fixed inset-x-0 bottom-0 z-[125] border-t border-slate-200 bg-white px-2 pt-2 shadow-[0_-8px_20px_rgba(15,23,42,0.10)] dark:border-slate-700 dark:bg-slate-900">
+        <div className="mx-auto grid max-w-md grid-cols-5 sm:grid-cols-5 gap-1">
+          {mobileNavItems.map((item) => {
+            const isActive = location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path));
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onTouchStart={() => scheduleRoutePrefetch(item.path)}
+                className={`touch-manipulation flex min-h-[3.25rem] flex-col items-center justify-center rounded-2xl px-1 text-[10px] font-black transition-all ${
+                  isActive ? 'bg-[#2D6A4F] text-white shadow-lg shadow-emerald-900/20' : 'text-slate-500 active:bg-slate-100 dark:text-slate-300 dark:active:bg-slate-800'
+                }`}
+              >
+                <item.icon className="mb-0.5 h-5 w-5" />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
+
+      <UpdateDialog
+        state={updateFlow}
+        onInstall={() => void installPendingUpdate()}
+        onRestart={() => void restartForUpdate()}
+        onRetry={() => (pendingUpdateRef.current ? void installPendingUpdate() : void checkForUpdates(false))}
+        onOpenStore={openAppDownloadPage}
+        onClose={closeUpdateSheet}
+      />
     </div>
   );
 };

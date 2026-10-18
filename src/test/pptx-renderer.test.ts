@@ -74,6 +74,14 @@ const richSlideXml = `<?xml version="1.0"?>
           <a:ln w="19050"><a:solidFill><a:srgbClr val="111111"/></a:solidFill></a:ln>
         </p:spPr>
       </p:sp>
+      <p:sp>
+        <p:nvSpPr><p:cNvPr id="9" name="Transformed Color"/><p:nvPr/></p:nvSpPr>
+        <p:spPr>
+          <a:xfrm><a:off x="609600" y="0"/><a:ext cx="457200" cy="457200"/></a:xfrm>
+          <a:solidFill><a:srgbClr val="336699"><a:lumMod val="50000"/><a:lumOff val="50000"/></a:srgbClr></a:solidFill>
+          <a:ln><a:solidFill><a:srgbClr val="FF0000"><a:alpha val="50000"/></a:srgbClr></a:solidFill></a:ln>
+        </p:spPr>
+      </p:sp>
       <p:pic>
         <p:nvPicPr><p:cNvPr id="5" name="Picture"/><p:nvPr/></p:nvPicPr>
         <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
@@ -230,6 +238,10 @@ describe('pptx renderer — geometry', () => {
     expect(box!.fill).toBe('#2d6a4f');
     expect(box!.borderColor).toBe('#111111');
     expect(box!.borderWidth).toBeCloseTo(2, 6);
+
+    const transformed = deck.slides[1].shapes.find((s) => s.fill === '#99b3cc');
+    expect(transformed).toBeDefined();
+    expect(transformed!.borderColor).toBe('rgba(255, 0, 0, 0.5)');
     deck.dispose();
   });
 

@@ -443,7 +443,18 @@ describe('restore as current workspace (protected)', () => {
     expect(threw).toBe(true);
 
     for (const [k, v] of before) expect(idbStore.get(k), `record ${k} changed`).toBe(v);
-    expect([...idbStore.keys()].filter((k) => k.startsWith('semester_archive') && !k.startsWith('semester_archive_file_') && !k.startsWith('semester_archive_text_')).length).toBe(1); // only the pre-existing archive
+    // Only the pre-existing archive's main record remains (its snapshot is
+    // stored in separate chunk keys, layout v2 — count main records only).
+    expect(
+      [...idbStore.keys()].filter(
+        (k) =>
+          k.startsWith('semester_archive') &&
+          !k.startsWith('semester_archive_file_') &&
+          !k.startsWith('semester_archive_text_') &&
+          !k.startsWith('semester_archive_record_') &&
+          !k.startsWith('semester_archive_snap_'),
+      ).length,
+    ).toBe(1);
     expect(localStorage.getItem('pharmatrack_state')).toBe(stateBefore);
   });
 });

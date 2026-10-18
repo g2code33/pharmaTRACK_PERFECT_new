@@ -1,0 +1,276 @@
+name: Android Build and Tests
+
+# Two modes, one workflow:
+#
+#  pr      — assembleDebug + JVM unit tests. Needs NO secrets, so it runs on
+#            fork pull requests too (fork PRs never receive repo secrets, and
+#            they never publish anything).
+#  release — the full signed pipeline: assembleRelease + bundleRelease with
+#            Gradle signing skipped, then apksigner for the APK and jarsigner
+#            for the AAB, using the release keystore from GitHub secrets.
+#            Fails closed when the secrets are missing or the certificate does
+#            not match the pinned fingerprint (the one published in
+#            public/.well-known/assetlinks.json).
+#
+# The Android app embeds the built web app, so dist/ is produced first.
+
+on:
+  workflow_call:
+    inputs:
+      build-mode:
+        description: pr builds unsigned debug + runs tests; release builds the signed pipeline
+        type: string
+        default: pr
+      upload-artifacts:
+        description: Upload the produced binaries as workflow artifacts
+        type: boolean
+        default: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: Android (${{ inputs.build-mode == 'release' && 'signed release' || 'debug + tests' }})
+    runs-on: ubuntu-latest
+    env:
+      BUILD_MODE: ${{ inputs.build-mode || 'pr' }}
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle (wrapper)
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Set up Android SDK (platform 35)
+        uses: ./.github/actions/setup-android-sdk
+
+      - name: Build the web app (embedded into the APK)
+        run: |
+          npm ci
+          npm run build
+
+      # ------------------------------------------------------------------
+      # PR mode: compile, unit-test and package the debug variant. No secrets.
+      # ------------------------------------------------------------------
+      - name: Build debug APK and run Android unit tests
+        if: env.BUILD_MODE == 'pr'
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleDebug :app:test
+
+      - name: Report unit-test results in the job summary
+        if: env.BUILD_MODE == 'pr'
+        run: |
+          {
+            echo '## Android unit tests'
+            echo
+            echo 'Passed: `:app:test` (debug + release variants, JVM — no emulator).'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Release mode: unsigned release build, then explicit signing.
+      # ------------------------------------------------------------------
+      - name: Prepare Android release signing key
+        if: env.BUILD_MODE == 'release'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          EXPECTED_ANDROID_CERT_SHA256: '8C:26:79:8C:42:90:06:99:12:21:46:69:C3:04:54:C8:44:71:99:96:E8:6F:EF:EE:98:49:94:6A:DB:C8:18:28'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing Android signing secret::$name is empty or not configured."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error title=Android release signing incomplete::Set ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD before running the release workflow."
+            exit 1
+          fi
+
+          mkdir -p android/app
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n\t ' | base64 --decode > android/app/release-keystore.p12; then
+            echo "::error title=Invalid ANDROID_KEYSTORE_BASE64::The keystore secret is not valid base64. Use: base64 -w 0 pharmatrack-release.p12 > pharmatrack-release.base64"
+            exit 1
+          fi
+          if [ ! -s android/app/release-keystore.p12 ]; then
+            echo "::error title=Empty Android keystore::ANDROID_KEYSTORE_BASE64 decoded to an empty file."
+            exit 1
+          fi
+
+          if ! keytool -list -v \
+            -storetype PKCS12 \
+            -keystore android/app/release-keystore.p12 \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > /tmp/pharmatrack-android-keystore.txt 2>&1; then
+            echo "::error title=Android keystore could not be opened::Check ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD. The alias should be pharmatrack unless you generated a different one."
+            sed 's/^/KEYSTORE: /' /tmp/pharmatrack-android-keystore.txt
+            exit 1
+          fi
+
+          CERT_SHA256="$(sed -n 's/^.*SHA256: //p' /tmp/pharmatrack-android-keystore.txt | head -n 1 | tr -d '\r')"
+          echo "Android release certificate SHA-256: $CERT_SHA256"
+          if [ "$CERT_SHA256" != "$EXPECTED_ANDROID_CERT_SHA256" ]; then
+            echo "::error title=Android certificate mismatch::The GitHub signing secret does not match public/.well-known/assetlinks.json. Expected $EXPECTED_ANDROID_CERT_SHA256 but got $CERT_SHA256."
+            exit 1
+          fi
+
+      - name: Build unsigned Android release (APK + AAB)
+        if: env.BUILD_MODE == 'release'
+        env:
+          PHARMA_ANDROID_SKIP_GRADLE_SIGNING: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew --version
+          set +e
+          ./gradlew assembleRelease bundleRelease --no-daemon --stacktrace 2>&1 | tee /tmp/pharmatrack-android-gradle.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "Android Gradle failure summary:"
+            tail -n 160 /tmp/pharmatrack-android-gradle.log | sed 's/^/ANDROID_GRADLE: /'
+            echo "::error title=Android Gradle build failed::assembleRelease/bundleRelease exited with status $status. See the annotated log above and the android-gradle-failure-log artifact."
+            exit "$status"
+          fi
+
+          for expected in \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            app/build/outputs/bundle/release/app-release.aab; do
+            if [ ! -s "$expected" ]; then
+              echo "::error title=Android build output missing::$expected was not produced by this build."
+              find app/build/outputs -maxdepth 5 -type f 2>/dev/null || true
+              exit 1
+            fi
+          done
+
+      - name: Sign and verify release APK and AAB
+        if: env.BUILD_MODE == 'release'
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android
+
+          unsigned_apk="app/build/outputs/apk/release/app-release-unsigned.apk"
+          signed_apk="app/build/outputs/apk/release/app-release.apk"
+          rm -f "$signed_apk"
+          sign_ok=0
+          for candidate_name in ANDROID_KEY_PASSWORD ANDROID_KEYSTORE_PASSWORD; do
+            keypass="${!candidate_name}"
+            [ -n "$keypass" ] || continue
+            echo "Signing release APK with apksigner using $candidate_name candidate."
+            if apksigner sign \
+              --ks app/release-keystore.p12 \
+              --ks-type PKCS12 \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass "pass:$ANDROID_KEYSTORE_PASSWORD" \
+              --key-pass "pass:$keypass" \
+              --out "$signed_apk" \
+              "$unsigned_apk" > /tmp/pharmatrack-apksigner.log 2>&1; then
+              sign_ok=1
+              break
+            fi
+            rm -f "$signed_apk"
+            sed 's/^/APKSIGNER: /' /tmp/pharmatrack-apksigner.log
+          done
+          if [ "$sign_ok" -ne 1 ]; then
+            echo "::error title=Android APK signing failed::apksigner could not sign with ANDROID_KEY_PASSWORD or ANDROID_KEYSTORE_PASSWORD."
+            exit 1
+          fi
+          apksigner verify --print-certs "$signed_apk" > /tmp/pharmatrack-apk-certs.txt
+          if grep -qi "CN=Android Debug" /tmp/pharmatrack-apk-certs.txt; then
+            echo "::error title=Debug-signed Android APK::The release APK is debug-signed. Refusing to package it."
+            exit 1
+          fi
+
+          # AABs are signed with jarsigner (apksigner is APK-only).
+          unsigned_aab="app/build/outputs/bundle/release/app-release.aab"
+          signed_aab="app/build/outputs/bundle/release/app-release-signed.aab"
+          rm -f "$signed_aab"
+          if ! jarsigner \
+            -keystore app/release-keystore.p12 \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -signedjar "$signed_aab" \
+            "$unsigned_aab" \
+            "$ANDROID_KEY_ALIAS" > /tmp/pharmatrack-jarsigner.log 2>&1; then
+            sed 's/^/JARSIGNER: /' /tmp/pharmatrack-jarsigner.log
+            echo "::error title=Android AAB signing failed::jarsigner could not sign the bundle. Check the keystore secrets and alias."
+            exit 1
+          fi
+          jarsigner -verify "$signed_aab" > /tmp/pharmatrack-jarsigner-verify.txt 2>&1 || {
+            sed 's/^/JARSIGNER_VERIFY: /' /tmp/pharmatrack-jarsigner-verify.txt
+            echo "::error title=Android AAB signature verification failed::jarsigner signed the bundle but could not verify it."
+            exit 1
+          }
+
+      - name: Verify versions and name the release artifacts
+        if: env.BUILD_MODE == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VER="$(node -p "require('./package.json').version")"
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          AAB="android/app/build/outputs/bundle/release/app-release-signed.aab"
+
+          BADGE_VERSION="$(aapt2 dump badging "$APK" | head -n1 | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          if [ "$BADGE_VERSION" != "$APP_VER" ]; then
+            echo "::error title=Android version mismatch::APK versionName ($BADGE_VERSION) != package version ($APP_VER). The product version must be identical across platforms."
+            exit 1
+          fi
+
+          cp "$APK" "PharmaTRACK-$APP_VER-android.apk"
+          cp "$AAB" "PharmaTRACK-$APP_VER-android.aab"
+          ls -l "PharmaTRACK-$APP_VER-android."*
+          echo "APP_VER=$APP_VER" >> "$GITHUB_ENV"
+
+      - name: Upload Android Gradle failure log
+        if: ${{ failure() && env.BUILD_MODE == 'release' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-gradle-failure-log
+          path: /tmp/pharmatrack-android-gradle.log
+          if-no-files-found: ignore
+
+      - name: Upload signed Android artifacts
+        if: ${{ env.BUILD_MODE == 'release' && inputs.upload-artifacts }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-release
+          path: |
+            PharmaTRACK-*-android.apk
+            PharmaTRACK-*-android.aab
+          if-no-files-found: error

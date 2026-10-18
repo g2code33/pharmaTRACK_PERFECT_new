@@ -22,18 +22,19 @@ class PharmaTRACKKioskBridge(private val activity: MainActivity) {
     private var externalIntentsRestricted = false
     private var screenCaptureBlocked = false
     private var pendingPharmaExamBytes: ByteArray? = null
-    private val allowedHosts = mutableSetOf("localhost", "127.0.0.1", "10.0.2.2")
+
+    // Session-specific hosts (e.g. the LAN examination authority) join the
+    // policy's defaults at decision time.
+    private val allowedHosts = mutableSetOf(
+        "pharmatrack.appassets.androidplatform.net",
+    )
 
     fun isExternalIntentsRestricted(): Boolean = externalIntentsRestricted
     fun isSecureExamActive(): Boolean = lockTaskActive
 
-    fun isHostAllowed(host: String): Boolean {
-        if (allowedHosts.contains(host)) return true
-        if (host.startsWith("192.168.") || host.startsWith("10.") || host.startsWith("172.")) {
-            return true
-        }
-        return false
-    }
+    // Pure policy lives in KioskNetworkPolicy so it is unit-testable on the
+    // JVM without an Activity (see app/src/test).
+    fun isHostAllowed(host: String): Boolean = KioskNetworkPolicy.isHostAllowed(host, allowedHosts)
 
     fun setPendingPharmaExam(bytes: ByteArray) {
         this.pendingPharmaExamBytes = bytes

@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: g2code33 <269358183+g2code33@users.noreply.github.com>
+Date: Mon, 29 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Fix uploads accepting nothing (Tauri native drag-drop
+ interception + native file-dialog empty-folder bug)
+
+Two platform-level bugs, not React bugs, explain "upload takes nothing":
+
+1. Drag-and-drop did nothing. Tauri v2 windows have `dragDropEnabled`
+   on by default, which makes the native shell intercept every OS-level
+   file drag-and-drop onto the window BEFORE it reaches the webview's
+   DOM. That means the app's own onDrop handler in FileUploader.tsx
+   never even fires — dragging a file in looks like it's simply
+   ignored, no matter how correct the React drop-handling code is.
+   Fixed by setting "dragDropEnabled": false in tauri.conf.json, which
+   restores normal HTML5 drag-and-drop to the web content.
+
+2. The file picker's folders appeared completely empty even though
+   supported files (pdf/pptx/doc) were right there. The <input
+   accept="..."> list mixed a MIME wildcard (`image/*`) together with
+   plain extensions in the same string -- a known trigger for native
+   file dialogs (WebKitGTK's GTK chooser on Linux in particular) to
+   mis-resolve the filter and hide every file in the folder instead of
+   just the non-matching ones. Fixed by listing every supported type
+   (including images) as plain extensions, with no MIME wildcard mixed
+   in, so nothing gets over- or under-filtered. The real gatekeeping
+   already happens afterward via inspectFile()'s byte-sniffing, which
+   is untouched by this change.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index 7214960..b8b9151 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -52,7 +52,8 @@
+         "width": 1400,
+         "minWidth": 1000,
+         "minHeight": 700,
+-        "useHttpsScheme": true
++        "useHttpsScheme": true,
++        "dragDropEnabled": false
+       }
+     ]
+   }
+diff --git a/src/components/FileUploader.tsx b/src/components/FileUploader.tsx
+index a3a3fcc..583ee08 100644
+--- a/src/components/FileUploader.tsx
++++ b/src/components/FileUploader.tsx
+@@ -106,7 +106,15 @@ const prettySize = (bytes: number) =>
+ 
+ const FileUploader: React.FC<FileUploaderProps> = ({
+   onComplete,
+-  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,image/*',
++  // Extensions only — no MIME wildcard (`image/*`) mixed in. Combining a
++  // MIME wildcard with a bare-extension list in the same `accept` string is
++  // a known trigger for native file dialogs (WebKitGTK's GTK file chooser on
++  // Linux especially) to mis-resolve the filter and render every folder as
++  // completely empty, even though matching files are right there. Every
++  // supported extension is still listed explicitly (so nothing gets greyed
++  // out the way `.pptm`/`.doc` used to), and `inspectFile()`'s byte-sniffing
++  // below is the real gatekeeper regardless of what the OS dialog shows.
++  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
+   maxSizeMb = MAX_DEFAULT_MB,
+   compact = false,
+ }) => {
+diff --git a/src/test/uploader.test.tsx b/src/test/uploader.test.tsx
+index 1c429d5..e37039d 100644
+--- a/src/test/uploader.test.tsx
++++ b/src/test/uploader.test.tsx
+@@ -92,7 +92,14 @@ describe('FileUploader wiring', () => {
+     for (const ext of ['.pdf', '.docx', '.doc', '.pptx', '.pptm', '.ppt', '.txt']) {
+       expect(accept).toContain(ext);
+     }
+-    expect(accept).toContain('image/*');
++    // Images are listed as explicit extensions, not a `image/*` MIME
++    // wildcard: mixing a wildcard with a bare-extension list in the same
++    // `accept` string is what made some native file dialogs (WebKitGTK on
++    // Linux) render every folder as empty instead of just filtering it.
++    for (const ext of ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']) {
++      expect(accept).toContain(ext);
++    }
++    expect(accept).not.toContain('image/*');
+   });
+ 
+   it('treats .pptm as a presentation', () => {
+ 
+2.43.0

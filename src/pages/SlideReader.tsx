@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { listenNative, nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
+import { nativeInvoke, detectRuntimeCapabilities } from '../platform/runtime';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useApp } from '../context/AppContext';
-import { loadFile } from '../utils/storage';
-import { sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
+import { loadFileBytes, saveFile } from '../utils/storage';
+import { shouldOpenAsPresentation, sniffMaterialKind, type MaterialKind } from '../utils/materialKind';
 import PdfViewer from '../components/PdfViewer';
 import PptxViewer from '../components/PptxViewer';
 import AIChatPanel from '../components/AIChatPanel';
@@ -13,7 +13,7 @@ import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Loader2,
   Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
-  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink
+  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle, Pin
 } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 
@@ -27,21 +27,66 @@ interface BrowserTab {
   title: string;
   history?: string[];
   historyIndex?: number;
+  /** User-chosen "keep this tab around" flag — see `togglePinTab` below. */
+  pinned?: boolean;
 }
 
 // Detects whether typed text is a URL or a search query, and normalizes it.
 // "paracetamol dosing" -> Search engine. "bnf.org" or "https://..." -> direct nav.
-function resolveAddressInput(raw: string, isNative: boolean): string {
+//
+// Resolves every search to Google, per the app's requirement. Plain
+// `https://www.google.com/search?q=...` cannot be framed at all — Google
+// sends an `X-Frame-Options: SAMEORIGIN` response header that every browser
+// enforces regardless of what the page's own script does. `igu=1` ("inline
+// google urlresult", originally built by Google itself for embedding a
+// search box on iOS home-screen web-clips and still commonly used for this
+// exact purpose) is the one query parameter that makes Google's own server
+// omit that header for that response, so the results page can actually
+// render inside this panel's <iframe>. It is not officially documented and
+// not contractually guaranteed forever — if Google ever changes this, the
+// panel already shows a clear "may not allow being shown inside another
+// site — try Open in external window" fallback once the iframe fails to
+// load, so a real system browser is always one click away either way.
+function resolveAddressInput(raw: string): string {
   const trimmed = raw.trim();
   const looksLikeUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(trimmed);
 
   if (looksLikeUrl) {
     return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
   }
-  if (isNative) {
-    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
+  return `https://www.google.com/search?igu=1&q=${encodeURIComponent(trimmed)}`;
+}
+
+/** Where pinned browser tabs are remembered across visits to the reader. */
+const PINNED_TABS_KEY = 'pharmatrack_pinned_browser_tabs_v1';
+
+interface PinnedTabRecord {
+  url: string;
+  title: string;
+}
+
+function loadPinnedTabs(): PinnedTabRecord[] {
+  try {
+    const raw = localStorage.getItem(PINNED_TABS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is PinnedTabRecord => !!p && typeof p.url === 'string' && typeof p.title === 'string',
+    );
+  } catch {
+    return [];
   }
-  return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
+}
+
+function savePinnedTabs(tabs: PinnedTabRecord[]): void {
+  try {
+    localStorage.setItem(PINNED_TABS_KEY, JSON.stringify(tabs));
+  } catch {
+    // Best-effort only. A device where localStorage is entirely unavailable
+    // simply won't remember pins between visits; pinning within the current
+    // session still works fine via component state either way.
+  }
 }
 
 function titleFromUrl(url: string): string {
@@ -60,7 +105,7 @@ const SlideReader: React.FC = () => {
 
   const initialSlide = parseInt(searchParams.get('slide') || '0', 10);
   const [currentSlideIndex, setCurrentSlideIndex] = useState(initialSlide);
-  const [showAIPanel, setShowAIPanel] = useState(true);
+  const [showAIPanel, setShowAIPanel] = useState(false);
   const [showBrowserPanel, setShowBrowserPanel] = useState(false);
   const [activePanel, setActivePanel] = useState<'ai' | 'browser'>('ai');
   /** Page/slide currently on screen — the *only* material sent to the AI. */
@@ -72,167 +117,76 @@ const SlideReader: React.FC = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
+  const resizeFrameRef = useRef<number | null>(null);
+  const pendingPanelWidthRef = useRef<number | null>(null);
 
-  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    const initialUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
-    return [
-      {
-        id: 'default',
-        url: initialUrl,
-        title: isNative ? 'Google' : 'Wikipedia',
-        history: [initialUrl],
-        historyIndex: 0,
-      },
-    ];
-  });
-  const [activeTabId, setActiveTabId] = useState('default');
-  const [urlInput, setUrlInput] = useState(() => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    return isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
-  });
+  // The in-panel mini-browser is a plain <iframe> on every platform (see the
+  // panel render below) — desktop no longer mounts a native child webview
+  // for it. That native path (Tauri/wry's `embed_website`) is what used to
+  // ignore the panel's bounds on Linux/GTK and stretch to fill the whole
+  // window; an iframe is a normal DOM element and is physically incapable
+  // of overflowing its container the way a separate native window could.
+  // `isDesktopApp` is now unused for picking the homepage (both platforms
+  // default to Google, see `resolveAddressInput`) but is kept for the
+  // native-webview capability check other code below still relies on.
+  const isDesktopApp = detectRuntimeCapabilities().nativeWebview;
+  const DEFAULT_DESKTOP_URL = 'https://www.google.com/search?igu=1';
+  const DEFAULT_WEB_URL = 'https://www.google.com/search?igu=1';
+
+  // Computed once (guarded by the ref) instead of inside each `useState`
+  // initializer separately, so the restored pinned tabs and the active tab
+  // id agree on the exact same generated ids — two independent
+  // initializers calling `loadPinnedTabs()`/`uuidv4()` a second time would
+  // produce a mismatched set that could never find its own "active" tab.
+  const initialBrowserStateRef = useRef<{ tabs: BrowserTab[]; activeId: string } | null>(null);
+  if (!initialBrowserStateRef.current) {
+    const homepage = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
+    const restoredPinned: BrowserTab[] = loadPinnedTabs().map((p) => ({
+      id: uuidv4(),
+      url: p.url,
+      title: p.title,
+      history: [p.url],
+      historyIndex: 0,
+      pinned: true,
+    }));
+    const homeTab: BrowserTab = {
+      id: 'default',
+      url: homepage,
+      title: titleFromUrl(homepage),
+      history: [homepage],
+      historyIndex: 0,
+    };
+    const tabs = [...restoredPinned, homeTab];
+    initialBrowserStateRef.current = { tabs, activeId: tabs[0].id };
+  }
+
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => initialBrowserStateRef.current!.tabs);
+  const [activeTabId, setActiveTabId] = useState<string>(() => initialBrowserStateRef.current!.activeId);
+  const [urlInput, setUrlInput] = useState(() => initialBrowserStateRef.current!.tabs[0].url);
   const [webviewReady, setWebviewReady] = useState(false);
 
-  const browserContainerRef = useRef<HTMLDivElement>(null);
-  const boundsUpdateRafRef = useRef<number | null>(null);
+  // Single source of truth for persisted pins: whenever any tab's pinned
+  // flag OR url changes (navigating within a pinned tab keeps its saved
+  // entry current), or a pinned tab is closed (it simply drops out of
+  // `browserTabs`, and this recomputes without it), the saved list is kept
+  // in sync automatically — no call site needs to remember to persist.
+  useEffect(() => {
+    savePinnedTabs(browserTabs.filter((t) => t.pinned).map((t) => ({ url: t.url, title: t.title })));
+  }, [browserTabs]);
 
-  const getBrowserContainerBounds = () => {
-    const el = browserContainerRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    return {
-      x: Math.round(rect.left),
-      y: Math.round(rect.top),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-    };
+  const togglePinTab = (tabId: string) => {
+    setBrowserTabs((tabs) => tabs.map((t) => (t.id === tabId ? { ...t, pinned: !t.pinned } : t)));
   };
 
-  const scheduleWebviewBoundsUpdate = () => {
-    if (boundsUpdateRafRef.current !== null) return;
-    boundsUpdateRafRef.current = requestAnimationFrame(() => {
-      boundsUpdateRafRef.current = null;
-      void updateWebview();
-    });
-  };
+  // Pinned tabs always show first, in the order they were opened; unpinned
+  // tabs keep their own relative order after that.
+  const orderedBrowserTabs = [...browserTabs].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
 
   // Keep the address bar in sync with whichever tab is active
   useEffect(() => {
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (tab) setUrlInput(tab.url);
   }, [activeTabId, browserTabs]);
-
-  // Native webview events and commands are optional. In a browser this whole
-  // block becomes a no-op; the surrounding study reader remains usable.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenNative<string>('new-browser-tab', (event) => {
-      const url = event.payload;
-      const newId = uuidv4();
-      setBrowserTabs(tabs => [...tabs, {
-        id: newId,
-        url,
-        title: titleFromUrl(url),
-        history: [url],
-        historyIndex: 0,
-      }]);
-      setActiveTabId(newId);
-      setShowBrowserPanel(true);
-      setShowAIPanel(false);
-      setActivePanel('browser');
-    }).then((remove) => { unlisten = remove; });
-    return () => { unlisten?.(); };
-  }, []);
-
-  // Listen for live navigation updates from the embedded webview (title/url
-  // changes as the user clicks around inside it).
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void listenNative<{ label: string; url: string; title?: string }>('webview-navigation-update', (event) => {
-      const { label, url, title } = event.payload;
-      const tabId = label.replace('browser_tab_', '');
-      setBrowserTabs(tabs => tabs.map(t =>
-        t.id === tabId ? { ...t, url, title: title || titleFromUrl(url) } : t
-      ));
-      if (tabId === activeTabId) setUrlInput(url);
-      setWebviewReady(true);
-    }).then((remove) => { unlisten = remove; });
-    return () => { unlisten?.(); };
-  }, [activeTabId]);
-
-  const updateWebview = async () => {
-    if (!detectRuntimeCapabilities().nativeWebview) return;
-    if (showBrowserPanel && browserContainerRef.current) {
-      const bounds = getBrowserContainerBounds();
-      const activeTab = browserTabs.find(t => t.id === activeTabId);
-      if (!activeTab || !bounds) {
-        if (!bounds) console.warn('embed_website skipped: container not laid out yet');
-        return;
-      }
-
-      for (const tab of browserTabs) {
-        if (tab.id !== activeTabId) {
-          void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
-        }
-      }
-      await nativeInvoke('embed_website', {
-        label: `browser_tab_${activeTabId}`,
-        url: activeTab.url,
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      });
-    } else {
-      for (const tab of browserTabs) {
-        void nativeInvoke('hide_website', { label: `browser_tab_${tab.id}` });
-      }
-    }
-  };
-
-  useEffect(() => {
-    scheduleWebviewBoundsUpdate();
-    let timer: NodeJS.Timeout | null = null;
-    if (showBrowserPanel) {
-      timer = setTimeout(() => {
-        scheduleWebviewBoundsUpdate();
-      }, 50);
-    }
-    const handleResize = () => scheduleWebviewBoundsUpdate();
-    window.addEventListener('resize', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      if (timer) clearTimeout(timer);
-      if (boundsUpdateRafRef.current !== null) {
-        cancelAnimationFrame(boundsUpdateRafRef.current);
-        boundsUpdateRafRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBrowserPanel, panelWidth, activeTabId, isFullscreen, browserTabs.length, showAIPanel]);
-
-  // Track the browser container's own size changes (panel drag, flex reflow, etc.)
-  useEffect(() => {
-    const el = browserContainerRef.current;
-    if (!el || !showBrowserPanel || !detectRuntimeCapabilities().nativeWebview) return;
-
-    const observer = new ResizeObserver(() => scheduleWebviewBoundsUpdate());
-    observer.observe(el);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBrowserPanel, activeTabId, panelWidth]);
-
-  // Destroy every tab's native webview on unmount so nothing leaks across a long session.
-  useEffect(() => {
-    return () => {
-      if (!detectRuntimeCapabilities().nativeWebview) return;
-      for (const tab of browserTabs) {
-        void nativeInvoke('destroy_website', { label: `browser_tab_${tab.id}` });
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const navigateActiveTab = (finalUrl: string) => {
     setBrowserTabs(tabs => tabs.map(t => {
@@ -250,22 +204,14 @@ const SlideReader: React.FC = () => {
     }));
     setUrlInput(finalUrl);
     setWebviewReady(false);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('navigate_website', { label: `browser_tab_${activeTabId}`, url: finalUrl });
-    }
   };
 
   const handleAddressBarSubmit = () => {
     if (!urlInput.trim()) return;
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    navigateActiveTab(resolveAddressInput(urlInput, isNative));
+    navigateActiveTab(resolveAddressInput(urlInput));
   };
 
   const handleBack = () => {
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_back', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (!tab || !tab.history || (tab.historyIndex ?? 0) <= 0) return;
     const newIndex = (tab.historyIndex ?? 0) - 1;
@@ -278,10 +224,6 @@ const SlideReader: React.FC = () => {
   };
 
   const handleForward = () => {
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_forward', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (!tab || !tab.history || (tab.historyIndex ?? 0) >= tab.history.length - 1) return;
     const newIndex = (tab.historyIndex ?? 0) + 1;
@@ -295,10 +237,6 @@ const SlideReader: React.FC = () => {
 
   const handleReload = () => {
     setWebviewReady(false);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('webview_reload', { label: `browser_tab_${activeTabId}` });
-      return;
-    }
     const tab = browserTabs.find(t => t.id === activeTabId);
     if (tab) {
       const currentUrl = tab.url;
@@ -310,8 +248,7 @@ const SlideReader: React.FC = () => {
   };
 
   const openNewTab = () => {
-    const isNative = detectRuntimeCapabilities().nativeWebview;
-    const defaultUrl = isNative ? 'https://www.google.com' : 'https://en.m.wikipedia.org/wiki/Pharmacology';
+    const defaultUrl = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
     const newId = uuidv4();
     setBrowserTabs(tabs => [...tabs, {
       id: newId,
@@ -329,11 +266,9 @@ const SlideReader: React.FC = () => {
     if (browserTabs.length === 1) return;
     const remaining = browserTabs.filter(t => t.id !== tabId);
     setBrowserTabs(remaining);
-    if (detectRuntimeCapabilities().nativeWebview) {
-      void nativeInvoke('destroy_website', { label: `browser_tab_${tabId}` });
-    }
     if (activeTabId === tabId) {
       setActiveTabId(remaining[0].id);
+
       setUrlInput(remaining[0].url);
     }
   };
@@ -457,6 +392,13 @@ const SlideReader: React.FC = () => {
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [openedKind, setOpenedKind] = useState<MaterialKind | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(true);
+  const [loadMessage, setLoadMessage] = useState('Loading Material...');
+  // Distinct from isLoadingContent: set when loading genuinely finished
+  // without producing a fileUrl, so the reader can show a clear message
+  // and a retry button instead of leaving "Loading Material..." on screen
+  // forever (the exact bug this replaces).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   useEffect(() => {
     if (!currentMaterial?.id) return;
@@ -465,20 +407,21 @@ const SlideReader: React.FC = () => {
     const knownKind = currentMaterial.materialKind;
     const knownSize = currentMaterial.fileSize;
     setIsLoadingContent(true);
+    setLoadMessage('Loading Material...');
+    setLoadError(null);
     setOpenedKind(null);
     let isMounted = true;
 
-    loadFile(materialId).then(async (fileData: any) => {
+    loadFileBytes(materialId).then(async (fileData) => {
       if (!isMounted) return;
       if (!fileData) {
         setIsLoadingContent(false);
+        setLoadError('No file is stored for this material. It may not have finished uploading.');
         return;
       }
 
       let data: Uint8Array;
-      if (fileData instanceof Blob) {
-        data = new Uint8Array(await fileData.arrayBuffer());
-      } else if (fileData instanceof Uint8Array) {
+      if (fileData instanceof Uint8Array) {
         data = fileData;
       } else if (typeof fileData === 'string') {
         const base64Data = fileData.split(',')[1] || fileData;
@@ -490,29 +433,60 @@ const SlideReader: React.FC = () => {
         data = new Uint8Array(fileData);
       }
 
-      const sniffed = sniffMaterialKind(data);
+      let sniffed = sniffMaterialKind(data);
+      let bytesForViewer = data;
+      const updates: Partial<import('../types').Slide> = {};
+
+      if (sniffed === 'pptx') {
+        setLoadMessage('Converting PowerPoint to original-layout PDF…');
+        const { convertNativeMaterialPptxToPdf, convertPptxToPdf } = await import('../utils/pptxToPdf');
+        let converted = await convertNativeMaterialPptxToPdf(materialId);
+        if (!converted) {
+          converted = await convertPptxToPdf(new Blob([data as unknown as BlobPart], {
+            type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          }), (progress, message) => {
+            if (isMounted) setLoadMessage(`${message} ${Math.round(progress * 100)}%`);
+          });
+        }
+        if (!isMounted) return;
+        bytesForViewer = converted.pdfBytes;
+        sniffed = 'pdf';
+        const saved = await saveFile(materialId, converted.pdfBytes);
+        if (saved) {
+          updates.fileType = 'pdf';
+          updates.materialKind = 'pdf';
+          if (converted.text) updates.contentText = converted.text;
+          if (converted.pageCount) updates.pageCount = converted.pageCount;
+          updates.fileSize = converted.pdfBytes.byteLength;
+          updates.visualStatus = 'ok';
+        }
+      }
+
       const mime = fileType === 'pdf' || sniffed === 'pdf'
         ? 'application/pdf'
-        : sniffed === 'pptx'
-          ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-          : 'application/octet-stream';
-      const blob = new Blob([data as unknown as BlobPart], { type: mime });
+        : 'application/octet-stream';
+      const blob = new Blob([bytesForViewer as unknown as BlobPart], { type: mime });
       const newUrl = URL.createObjectURL(blob);
       setOpenedKind(sniffed);
       setFileUrl(newUrl);
       setIsLoadingContent(false);
 
-      const updates: Partial<import('../types').Slide> = {};
       if ((!knownKind || knownKind === 'unknown') && sniffed !== 'unknown' && sniffed !== 'text') {
         updates.materialKind = sniffed;
       }
-      if (knownSize == null) updates.fileSize = data.byteLength;
+      if (knownSize == null) updates.fileSize = bytesForViewer.byteLength;
       if (Object.keys(updates).length) {
         dispatch({ type: 'UPDATE_SLIDE', payload: { id: materialId, updates } });
       }
     }).catch(err => {
       console.error(err);
-      if (isMounted) setIsLoadingContent(false);
+      if (!isMounted) return;
+      setIsLoadingContent(false);
+      setLoadError(
+        err instanceof Error && /did not finish within/i.test(err.message)
+          ? "This file is taking far longer than it should to load — the local storage on this device may be stuck. Try Retry below; if it keeps happening, re-upload this file."
+          : 'This file could not be loaded. It may be corrupted — try re-uploading it.',
+      );
     });
 
     return () => {
@@ -524,7 +498,7 @@ const SlideReader: React.FC = () => {
     };
     // Metadata updates must not reload the file, or the viewer jumps back to slide 1.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentMaterial?.id, currentMaterial?.fileType]);
+  }, [currentMaterial?.id, currentMaterial?.fileType, loadAttempt]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -654,11 +628,31 @@ const SlideReader: React.FC = () => {
   };
 
   const renderUniversalContent = () => {
-    if (isLoadingContent || !fileUrl) {
+    if (isLoadingContent) {
       return (
         <div className="py-40 text-center flex flex-col items-center justify-center h-full w-full">
           <Loader2 className="w-12 h-12 text-[#FFB703] mx-auto mb-4 animate-spin" />
-          <p className="text-xl font-black text-gray-400 uppercase tracking-widest">Loading Material...</p>
+          <p className="text-xl font-black text-gray-400 uppercase tracking-widest">{loadMessage}</p>
+        </div>
+      );
+    }
+
+    // Loading finished but produced no viewable file — show a clear,
+    // actionable message with a retry instead of leaving the spinner above
+    // running forever (the "it has been loading for ages" bug).
+    if (!fileUrl) {
+      return (
+        <div className="py-32 text-center flex flex-col items-center justify-center h-full w-full gap-4 px-6">
+          <AlertTriangle className="w-12 h-12 text-amber-500" />
+          <p className="text-lg font-bold text-gray-700 max-w-md">
+            {loadError || "This file couldn't be loaded."}
+          </p>
+          <button
+            onClick={() => setLoadAttempt((n) => n + 1)}
+            className="px-5 py-2.5 bg-[#2D6A4F] text-white rounded-lg font-bold hover:bg-[#1B4332]"
+          >
+            Retry
+          </button>
         </div>
       );
     }
@@ -677,6 +671,7 @@ const SlideReader: React.FC = () => {
           onAskAi={handleAskAiAboutSelection}
           jumpToPage={deepLinkPage}
           initialQuery={deepLinkQuery}
+          initialZoom="width"
           focusHighlightId={focusHighlightId}
           onPageChange={(current, total, text) => {
             setPage(current);
@@ -687,8 +682,7 @@ const SlideReader: React.FC = () => {
       );
     }
 
-    const nameHint = (currentMaterial?.title || '').toLowerCase();
-    if (currentMaterial?.fileType === 'text' && /\.pptx?$/.test(nameHint)) {
+    if (currentMaterial?.fileType === 'text' && shouldOpenAsPresentation(currentMaterial, openedKind)) {
       return (
         <PptxViewer
           fileUrl={fileUrl}
@@ -730,35 +724,61 @@ const SlideReader: React.FC = () => {
   };
 
   useEffect(() => {
+    const applyPendingWidth = () => {
+      resizeFrameRef.current = null;
+      const nextWidth = pendingPanelWidthRef.current;
+      pendingPanelWidthRef.current = null;
+      if (nextWidth == null) return;
+      setPanelWidth((current) => (Math.abs(current - nextWidth) < 1 ? current : nextWidth));
+    };
+
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
       e.preventDefault();
-      const newWidth = window.innerWidth - e.clientX;
+      const newWidth = Math.round(window.innerWidth - e.clientX);
       if (newWidth > 200 && newWidth < window.innerWidth * 0.7) {
-        setPanelWidth(newWidth);
-        scheduleWebviewBoundsUpdate();
+        pendingPanelWidthRef.current = newWidth;
+        if (resizeFrameRef.current == null) {
+          resizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
+        }
       }
     };
     const handleMouseUp = () => {
+      if (resizeFrameRef.current != null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      applyPendingWidth();
       setIsResizing(false);
-      document.body.style.cursor = 'default';
+      document.documentElement.classList.remove('pharmatrack-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
     if (isResizing) {
-      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mousemove', handleMouseMove, { passive: false });
       window.addEventListener('mouseup', handleMouseUp);
+      document.documentElement.classList.add('pharmatrack-resizing');
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
     }
     return () => {
+      if (resizeFrameRef.current != null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      pendingPanelWidthRef.current = null;
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      document.documentElement.classList.remove('pharmatrack-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
     };
   }, [isResizing]);
 
   if (!currentMaterial || !course) return <div>Loading...</div>;
 
   return (
-    <div className={`flex flex-col h-full bg-[#F1F5F9] ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
+    <div className={`slide-reader-fullbleed flex min-h-0 flex-col overflow-hidden bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[250] h-[100dvh] w-screen' : 'h-full flex-1'}`}>
       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-3 min-w-0">
           <button onClick={() => navigate('/materials')} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 transition-all flex-shrink-0"><ArrowLeft className="w-4 h-4" /></button>
@@ -809,9 +829,9 @@ const SlideReader: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden relative">
-        <div className="flex flex-col bg-[#F8FAFC] min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col items-center p-0 scrollbar-thin">
+      <div className="flex flex-1 min-h-0 overflow-hidden relative">
+        <div className="flex flex-col bg-[#F8FAFC] dark:bg-slate-900 min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
+          <div ref={scrollContainerRef} className="flex-1 overflow-hidden flex flex-col items-stretch p-0">
             {renderUniversalContent()}
           </div>
 
@@ -846,7 +866,7 @@ const SlideReader: React.FC = () => {
 
         {showAIPanel && (
           <div
-            className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
+            className="h-full min-h-0 bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden"
             style={{ width: `${panelWidth}px` }}
           >
             <button
@@ -877,19 +897,27 @@ const SlideReader: React.FC = () => {
         )}
 
         {showBrowserPanel && (
-          <div className="bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
+          <div className="h-full min-h-0 bg-white border-l flex flex-col shadow-2xl z-[110] flex-shrink-0 relative overflow-hidden" style={{ width: `${panelWidth}px` }}>
 
             {/* Tab bar */}
             <div className="flex bg-gray-200 overflow-x-auto border-b border-gray-300 scrollbar-none h-9 flex-shrink-0">
-              {browserTabs.map(tab => (
+              {orderedBrowserTabs.map(tab => (
                 <div
                   key={tab.id}
-                  className={`flex items-center gap-2 px-3 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'}`}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'} ${tab.pinned ? 'bg-amber-50/60' : ''}`}
                   onClick={() => {
                     setActiveTabId(tab.id);
                     setUrlInput(tab.url);
                   }}
+                  title={tab.pinned ? `${tab.title} (pinned)` : tab.title}
                 >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); togglePinTab(tab.id); }}
+                    className={`p-0.5 rounded-sm shrink-0 transition-colors ${tab.pinned ? 'text-amber-600 hover:text-amber-700' : 'text-gray-400 hover:text-gray-600'}`}
+                    title={tab.pinned ? 'Unpin tab' : 'Pin this tab so it stays here'}
+                  >
+                    <Pin className={`w-3 h-3 ${tab.pinned ? 'fill-current' : ''}`} />
+                  </button>
                   <span className="text-xs truncate flex-1">{tab.title}</span>
                   {browserTabs.length > 1 && (
                     <button
@@ -960,6 +988,7 @@ const SlideReader: React.FC = () => {
             {/* Quick study references bar */}
             <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 border-b overflow-x-auto text-[10px] scrollbar-none flex-shrink-0">
               <span className="text-gray-400 font-bold uppercase text-[9px] shrink-0">Study:</span>
+              <button onClick={() => navigateActiveTab('https://www.google.com/search?igu=1')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔎 Google</button>
               <button onClick={() => navigateActiveTab('https://en.m.wikipedia.org/wiki/Pharmacology')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">📚 Wikipedia</button>
               <button onClick={() => navigateActiveTab('https://pubmed.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔬 PubMed</button>
               <button onClick={() => navigateActiveTab('https://pubchem.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">💊 PubChem</button>
@@ -967,32 +996,46 @@ const SlideReader: React.FC = () => {
               <button onClick={() => navigateActiveTab('https://duckduckgo.com')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔍 DuckDuckGo</button>
             </div>
 
-            {/* Native webview mounts here in desktop mode, or iframe in web mode */}
-            <div ref={browserContainerRef} className="flex-1 overflow-hidden bg-white relative flex flex-col items-center justify-center">
-              {detectRuntimeCapabilities().nativeWebview ? (
-                !webviewReady && <Loader2 className="w-8 h-8 text-gray-300 animate-spin mb-4" />
-              ) : (
-                <div className="w-full h-full relative flex flex-col">
-                  {(() => {
-                    const currentTab = browserTabs.find(t => t.id === activeTabId) || browserTabs[0];
-                    return currentTab && currentTab.url ? (
-                      <iframe
-                        key={`${currentTab.id}-${currentTab.url}`}
-                        src={currentTab.url}
-                        title={currentTab.title}
-                        className="w-full flex-1 border-0 bg-white"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                        allow="fullscreen"
-                        onLoad={() => setWebviewReady(true)}
-                      />
-                    ) : (
-                      <div className="flex-1 flex items-center justify-center text-gray-400 text-xs">
-                        No URL loaded
+            {/* The in-panel mini-browser: a plain <iframe>, on every platform.
+                Desktop used to mount a native child webview here via Tauri's
+                `embed_website` command, but on Linux that native webview is
+                packed into a GTK container that ignores the bounds it's
+                given, so it stretched to fill the whole window instead of
+                staying in this panel. An <iframe> is a normal DOM element —
+                it sizes with ordinary CSS and cannot escape its container. */}
+            <div className="flex-1 overflow-hidden bg-white relative flex flex-col items-center justify-center">
+              {(() => {
+                const currentTab = browserTabs.find(t => t.id === activeTabId) || browserTabs[0];
+                if (!currentTab || !currentTab.url) {
+                  return (
+                    <div className="flex-1 flex items-center justify-center text-gray-400 text-xs">
+                      No URL loaded
+                    </div>
+                  );
+                }
+                return (
+                  <div className="w-full h-full relative flex flex-col">
+                    {!webviewReady && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white z-10 px-6 text-center">
+                        <Loader2 className="w-8 h-8 text-gray-300 animate-spin" />
+                        <p className="text-[11px] text-gray-400 max-w-[220px]">
+                          If this page never appears, it may not allow being shown inside another site — try
+                          "Open current page in external window" above instead.
+                        </p>
                       </div>
-                    );
-                  })()}
-                </div>
-              )}
+                    )}
+                    <iframe
+                      key={`${currentTab.id}-${currentTab.url}`}
+                      src={currentTab.url}
+                      title={currentTab.title}
+                      className="w-full flex-1 border-0 bg-white"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                      allow="fullscreen"
+                      onLoad={() => setWebviewReady(true)}
+                    />
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}

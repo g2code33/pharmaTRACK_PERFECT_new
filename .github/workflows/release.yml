@@ -1,150 +1,433 @@
-name: "Build & Release PharmaTRACK"
+name: Release Packaging
+
+# Cross-platform release pipeline.
+#
+# A release starts by pushing a tag that matches the product version exactly
+# (v1.2.2 for version 1.2.2 in package.json). The process, in order:
+#
+#   1. validate   — the tag matches package.json, and npm run version:check
+#                   confirms one consistent product version across package.json,
+#                   tauri.conf.json, Cargo and the in-app fallback.
+#   2. tests      — web + Rust unit tests, dependency validation.
+#   3. builds     — Android (signed APK + AAB), Windows (MSI + NSIS), Linux
+#                   (.deb), each on its native runner, in parallel. A failed
+#                   platform build fails the release; nothing is skipped.
+#   4. package    — every expected artifact is verified present and non-trivial,
+#                   checksums (SHA256SUMS.txt) are generated, release notes are
+#                   written, and the updater manifest (latest.json) is built
+#                   from the real .sig signatures.
+#   5. publish    — only after all of the above: the GitHub release is created
+#                   and published from a protected environment. A manual
+#                   workflow_dispatch run performs every step except publish.
+#
+# Runners: Ubuntu builds the Linux package and all Android artifacts; Windows
+# builds its own installers; no macOS target exists, so none is claimed.
+
 on:
   push:
-    branches: [ main ]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
-  # Job 1: Build the Windows Version First
-  build-windows:
-    permissions:
-      contents: write
-    runs-on: windows-latest
+  # ------------------------------------------------------------------ 1. validate
+  validate:
+    name: Validate version consistency
+    runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      win_sig: ${{ steps.win_sig.outputs.sig }}
-    env:
-      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+      version: ${{ steps.version.outputs.version }}
+      is-tag-release: ${{ steps.version.outputs.is-tag-release }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - uses: dtolnay/rust-toolchain@stable
-        with: { targets: x86_64-pc-windows-msvc }
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Extract Version
-        id: get_version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - run: npm install --legacy-peer-deps
-      - run: npm run build
-
-      # TAURI_SIGNING_PRIVATE_KEY_B64 already holds the exact clean, single-line,
-      # base64-wrapped key content (the untouched output of `cat updater_keys`).
-      # Pass it straight through as content — do NOT base64-decode it here.
-      # Tauri does that decoding internally; doing it twice corrupts the key.
-      - name: Build Windows App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseDraft: true
-          prerelease: false
+          node-version: 22
+          cache: npm
 
-      # Read the real Windows signature generated during the build (MSI or NSIS)
-      - name: Read Windows Signature
-        id: win_sig
+      - name: Read the product version and check the tag
+        id: version
         shell: bash
         run: |
-          # Pick exactly ONE .sig file (prefer MSI, fall back to NSIS).
-          SIG_FILE=$(find src-tauri/target/release/bundle/msi -name "*.sig" 2>/dev/null | head -n 1)
-          if [ -z "$SIG_FILE" ]; then
-            SIG_FILE=$(find src-tauri/target/release/bundle/nsis -name "*.sig" 2>/dev/null | head -n 1)
-          fi
-          SIG=$(cat "$SIG_FILE" 2>/dev/null || echo "")
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$SIG" ]; then
-            echo "ERROR: No Windows .sig file found — updater signature would be empty." >&2
-            exit 1
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [ "$TAG" != "v$VERSION" ]; then
+              echo "::error title=Tag does not match the product version::Pushed tag '$TAG' but package.json says '$VERSION'. Tag releases as v$VERSION (after 'npm run version:set $VERSION' if you are bumping)."
+              exit 1
+            fi
+            echo "is-tag-release=true" >> "$GITHUB_OUTPUT"
+          else
+            # Manual run: full validation and packaging, but no publishing.
+            echo "is-tag-release=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "sig=$SIG" >> $GITHUB_OUTPUT
 
-  # Job 2: Build Ubuntu App and Force Upload latest.json Manifest
-  build-linux-and-release:
-    needs: build-windows
+      # One product version across every platform manifest. The Android
+      # versionCode is platform-specific and derived in android/app/build.gradle.kts.
+      - name: Version consistency across platforms
+        run: npm run version:check
+
+  # ------------------------------------------------------------------ 2. tests
+  unit-tests:
+    name: Unit tests
+    needs: validate
+    uses: ./.github/workflows/unit-tests.yml
     permissions:
-      contents: write
-    runs-on: ubuntu-22.04
-    env:
-      VITE_SUPABASE_URL: "${{ secrets.VITE_SUPABASE_URL }}"
-      VITE_SUPABASE_ANON_KEY: "${{ secrets.VITE_SUPABASE_ANON_KEY }}"
+      contents: read
+
+  dependency-validation:
+    name: Dependency validation
+    needs: validate
+    uses: ./.github/workflows/dependency-validation.yml
+    permissions:
+      contents: read
+
+  # ------------------------------------------------------------------ 3. builds
+  android:
+    name: Android build (signed APK + AAB)
+    needs: validate
+    uses: ./.github/workflows/android-build.yml
+    permissions:
+      contents: read
+    with:
+      build-mode: release
+      upload-artifacts: true
+    secrets: inherit
+
+  windows:
+    name: Windows build (MSI + NSIS)
+    needs: validate
+    uses: ./.github/workflows/desktop-windows.yml
+    permissions:
+      contents: read
+    with:
+      upload-artifacts: true
+      require-signing: true
+    secrets: inherit
+
+  linux:
+    name: Linux build (.deb)
+    needs: validate
+    uses: ./.github/workflows/desktop-linux.yml
+    permissions:
+      contents: read
+    with:
+      upload-artifacts: true
+      require-signing: true
+    secrets: inherit
+
+  # ------------------------------------------------------------------ 4. package
+  package:
+    name: Verify artifacts, checksums and release notes
+    needs: [validate, unit-tests, dependency-validation, android, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - run: npm install --legacy-peer-deps
-      - run: npm run build
-
-      - name: Build Linux App
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-          TAURI_SIGNING_PRIVATE_KEY: "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}"
+      - name: Check out source (full history for release notes)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tagName: v__VERSION__
-          releaseName: "PharmaTRACK v__VERSION__"
-          releaseDraft: true
-          prerelease: false
+          fetch-depth: 0
 
-      # Reads the real compiled Linux signature and injects it, along with the
-      # Windows signature passed from job 1, into a valid updater manifest.
-      - name: Generate Manual Manifest File
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Download every platform artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          merge-multiple: true
+
+      # A missing platform output is named explicitly and fails the release —
+      # it is never treated as "that platform was skipped".
+      - name: Verify all expected release artifacts
+        shell: bash
         env:
-          APP_VER: ${{ needs.build-windows.outputs.version }}
-          WIN_SIG: ${{ needs.build-windows.outputs.win_sig }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected=(
+            "PharmaTRACK-$VERSION-android.apk"
+            "PharmaTRACK-$VERSION-android.aab"
+            "PharmaTRACK-$VERSION-windows-x64.msi"
+            "PharmaTRACK-$VERSION-windows-x64.msi.sig"
+            "PharmaTRACK-$VERSION-windows-x64.exe"
+            "PharmaTRACK-$VERSION-windows-x64.exe.sig"
+            "pharmatrack_${VERSION}_amd64.deb"
+            "pharmatrack_${VERSION}_amd64.deb.sig"
+          )
+          missing=0
+          for artifact in "${expected[@]}"; do
+            if [ ! -s "release/$artifact" ]; then
+              echo "::error title=Release artifact missing::$artifact was not produced by this run. The platform build that should have created it has failed or misnamed its output."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # Guard against empty/corrupt uploads: every binary must be a real
+          # payload (> 1 MB) and every signature non-empty.
+          for binary in \
+            "PharmaTRACK-$VERSION-android.apk" \
+            "PharmaTRACK-$VERSION-android.aab" \
+            "PharmaTRACK-$VERSION-windows-x64.msi" \
+            "PharmaTRACK-$VERSION-windows-x64.exe" \
+            "pharmatrack_${VERSION}_amd64.deb"; do
+            size="$(stat -c%s "release/$binary")"
+            if [ "$size" -lt 1000000 ]; then
+              echo "::error title=Release artifact too small::$binary is only $size bytes — that is not a real build output."
+              exit 1
+            fi
+          done
+          echo "All expected artifacts present and plausibly sized."
+
+      - name: Generate SHA256 checksums
+        shell: bash
+        working-directory: release
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          sha256sum \
+            "PharmaTRACK-$VERSION-android.apk" \
+            "PharmaTRACK-$VERSION-android.aab" \
+            "PharmaTRACK-$VERSION-windows-x64.msi" \
+            "PharmaTRACK-$VERSION-windows-x64.exe" \
+            "pharmatrack_${VERSION}_amd64.deb" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # The desktop updater manifest, built from the real signatures emitted
+      # by the signing builds. Never cat multiple .sig files together — the
+      # platforms each get exactly one signature.
+      - name: Generate the updater manifest (latest.json)
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          # Pick exactly ONE .sig file (prefer .deb, fall back to AppImage).
-          # Never cat multiple .sig files together — if both exist, concatenating
-          # them merges their contents into one corrupted, invalid-base64 blob.
-          LINUX_SIG_FILE=$(find src-tauri/target/release/bundle/deb -name "*.sig" 2>/dev/null | head -n 1)
-          if [ -z "$LINUX_SIG_FILE" ]; then
-            LINUX_SIG_FILE=$(find src-tauri/target/release/bundle/appimage -name "*.sig" 2>/dev/null | head -n 1)
-          fi
-          LINUX_SIG=$(cat "$LINUX_SIG_FILE" 2>/dev/null || echo "")
-
-          if [ -z "$LINUX_SIG" ]; then
-            echo "ERROR: No Linux .sig file found — updater signature would be empty." >&2
+          set -euo pipefail
+          WIN_SIG="$(cat "release/PharmaTRACK-$VERSION-windows-x64.msi.sig")"
+          LINUX_SIG="$(cat "release/pharmatrack_${VERSION}_amd64.deb.sig")"
+          if [ -z "$WIN_SIG" ] || [ -z "$LINUX_SIG" ]; then
+            echo "::error title=Updater signature missing::The windows or linux .sig is empty; the updater would refuse every install."
             exit 1
           fi
-
-          cat << EOF > latest.json
+          cat << EOF > release/latest.json
           {
-            "version": "$APP_VER",
-            "notes": "PharmaTRACK update release v$APP_VER",
+            "version": "$VERSION",
+            "notes": "PharmaTRACK update release v$VERSION",
             "pub_date": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
             "platforms": {
               "windows-x86_64": {
                 "signature": "$WIN_SIG",
-                "url": "https://github.com/$REPO/releases/download/v$APP_VER/PharmaTRACK_${APP_VER}_x64_en-US.msi"
+                "url": "https://github.com/$REPO/releases/download/v$VERSION/PharmaTRACK-$VERSION-windows-x64.msi"
               },
               "linux-x86_64": {
                 "signature": "$LINUX_SIG",
-                "url": "https://github.com/$REPO/releases/download/v$APP_VER/PharmaTRACK_${APP_VER}_amd64.deb"
+                "url": "https://github.com/$REPO/releases/download/v$VERSION/pharmatrack_${VERSION}_amd64.deb"
               }
             }
           }
           EOF
+          node -e "JSON.parse(require('fs').readFileSync('release/latest.json','utf8'))" \
+            || { echo '::error title=latest.json is not valid JSON::The updater manifest failed to parse.'; exit 1; }
 
-      # Explicitly force GitHub to attach latest.json to your release assets and publish the release
-      - name: Force Upload latest.json Asset
-        uses: softprops/action-gh-release@v2
+      - name: Generate release notes
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          IS_TAG_RELEASE: ${{ needs.validate.outputs.is-tag-release }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_TAG_RELEASE" = "true" ]; then
+            RANGE_END="v$VERSION"
+          else
+            RANGE_END="HEAD"
+          fi
+          PREV_TAG="$(git describe --tags --abbrev=0 "$RANGE_END^" 2>/dev/null || true)"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="$PREV_TAG..$RANGE_END"
+          else
+            RANGE=""
+          fi
+
+          {
+            echo "# PharmaTRACK v$VERSION"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "Changes since ${PREV_TAG#v}:"; echo
+            else
+              echo "Recent changes:"; echo
+            fi
+            if [ -n "$RANGE" ]; then LOG_ARGS="$RANGE"; else LOG_ARGS="-n 200"; fi
+            git log --no-merges --pretty=format:'%s' $LOG_ARGS | awk '
+              /^(feat|add)(\(|:)/ { print "- " $0; next }
+              /^(fix|bugfix)(\(|:)/ { print "- " $0; next }
+              /^(perf|refactor|chore|deps|ci|docs|test)(\(|:)/ { print "- " $0; next }
+              { other = other "\n- " $0; next }
+              END { if (other) { print ""; print "### Other"; print other } }
+            '
+            echo
+            echo '### Install'
+            echo
+            echo '- **Windows**: `PharmaTRACK-'"$VERSION"'-windows-x64.msi` or `PharmaTRACK-'"$VERSION"'-windows-x64.exe`'
+            echo '- **Linux (amd64)**: `pharmatrack_'"$VERSION"'_amd64.deb`'
+            echo '- **Android**: `PharmaTRACK-'"$VERSION"'-android.apk` (sideload) or `-android.aab`'
+            echo
+            echo 'Verify downloads against `SHA256SUMS.txt`.'
+            echo
+            echo 'Desktop installs update in-app from this release automatically.'
+          } > release/RELEASE_NOTES.md
+          head -n 40 release/RELEASE_NOTES.md
+
+      - name: Upload the verified release package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          tag_name: v${{ needs.build-windows.outputs.version }}
-          files: latest.json
-          draft: false
-          make_latest: true
+          name: release-package
+          path: release/
+          if-no-files-found: error
+
+      - name: Write the packaging summary
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release package v$VERSION — verified"
+            echo
+            echo '| Artifact | Size | SHA-256 |'
+            echo '| --- | --- | --- |'
+            while read -r sha path; do
+              size="$(numfmt --to=iec "release/$path" 2>/dev/null || stat -c%s "release/$path")"
+              echo "| \`$path\` | $size | \`${sha:0:12}…\` |"
+            done < release/SHA256SUMS.txt
+            echo
+            echo 'Updater manifest `latest.json` validated as JSON and built from the'
+            echo 'signatures emitted by the signing builds.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------ 5. publish
+  publish:
+    name: Publish the GitHub release
+    needs: [validate, package]
+    if: needs.validate.outputs.is-tag-release == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Protection: add required reviewers to this environment in repository
+    # settings to require an approval before any release goes public.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified release package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-package
+          path: release
+
+      # The GitHub CLI (not a third-party action) touches the release: it only
+      # uses the asset endpoint plus a minimal release PATCH, so republishing
+      # an existing tag keeps working where release-editing actions fail with
+      # "Resource not accessible by integration".
+      - name: Create or update the release and upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          cd release
+
+          for asset in \
+            "PharmaTRACK-$VERSION-android.apk" \
+            "PharmaTRACK-$VERSION-android.aab" \
+            "PharmaTRACK-$VERSION-windows-x64.msi" \
+            "PharmaTRACK-$VERSION-windows-x64.exe" \
+            "pharmatrack_${VERSION}_amd64.deb" \
+            "SHA256SUMS.txt" \
+            "latest.json" \
+            "PharmaTRACK-$VERSION-windows-x64.msi.sig" \
+            "PharmaTRACK-$VERSION-windows-x64.exe.sig" \
+            "pharmatrack_${VERSION}_amd64.deb.sig"; do
+            if [ ! -s "$asset" ]; then
+              echo "::error title=Release asset missing::$asset was not in the verified package."
+              exit 1
+            fi
+          done
+
+          if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "Reusing existing release $TAG."
+          else
+            echo "No release found for $TAG — creating it."
+            gh release create "$TAG" \
+              --title "PharmaTRACK v$VERSION" \
+              --notes-file RELEASE_NOTES.md \
+              --target "$COMMIT_SHA" \
+              --draft
+          fi
+
+          # Asset uploads only need contents: write, so they succeed on brand
+          # new drafts and on releases that already carry an older copy.
+          gh release upload "$TAG" \
+            "PharmaTRACK-$VERSION-android.apk" \
+            "PharmaTRACK-$VERSION-android.aab" \
+            "PharmaTRACK-$VERSION-windows-x64.msi" \
+            "PharmaTRACK-$VERSION-windows-x64.exe" \
+            "pharmatrack_${VERSION}_amd64.deb" \
+            "PharmaTRACK-$VERSION-windows-x64.msi.sig" \
+            "PharmaTRACK-$VERSION-windows-x64.exe.sig" \
+            "pharmatrack_${VERSION}_amd64.deb.sig" \
+            "SHA256SUMS.txt" \
+            "latest.json" \
+            --clobber
+
+          # The updater reads releases/latest/download/latest.json — the
+          # release must be published AND flagged latest.
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          if [ "$IS_DRAFT" = "true" ]; then
+            if ! gh release edit "$TAG" --draft=false --latest; then
+              echo "Publishing with --latest failed; retrying without the latest flag."
+              if ! gh release edit "$TAG" --draft=false; then
+                echo "::error title=Release still a draft::$TAG kept its draft state, so the downloads stay hidden. Check that the workflow token may update releases for this tag."
+                exit 1
+              fi
+              echo "::warning title=Release not marked latest::$TAG was published but could not be flagged as the latest release. The desktop updater reads releases/latest/download/latest.json."
+            fi
+          elif ! gh release edit "$TAG" --latest; then
+            echo "::warning title=Release not marked latest::$TAG already exists and could not be flagged as the latest release. The desktop updater reads releases/latest/download/latest.json."
+          fi
+
+          # Final verification: every asset really is attached to the release.
+          gh release view "$TAG" --json assets --jq '.assets[].name' > /tmp/pharmatrack-release-assets.txt
+          sed 's/^/RELEASE ASSET: /' /tmp/pharmatrack-release-assets.txt
+          for asset in \
+            "PharmaTRACK-$VERSION-android.apk" \
+            "PharmaTRACK-$VERSION-android.aab" \
+            "PharmaTRACK-$VERSION-windows-x64.msi" \
+            "PharmaTRACK-$VERSION-windows-x64.exe" \
+            "pharmatrack_${VERSION}_amd64.deb" \
+            "SHA256SUMS.txt" \
+            "latest.json"; do
+            if ! grep -Fxq "$asset" /tmp/pharmatrack-release-assets.txt; then
+              echo "::error title=Release asset not attached::$asset is missing from release $TAG."
+              exit 1
+            fi
+          done
+          echo "Release $TAG published with all verified assets."

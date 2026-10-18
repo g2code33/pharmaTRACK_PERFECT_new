@@ -1,0 +1,159 @@
+name: Windows Desktop Build
+
+# Builds the native Windows installers (MSI + NSIS .exe) with the Tauri
+# toolchain on a Windows runner — a Windows artifact is only trustworthy when
+# it was produced by Windows itself.
+#
+# Updater signing: with bundle.createUpdaterArtifacts enabled and an updater
+# public key configured, `tauri build` REFUSES to run without the private key
+# ("A public key has been found, but no private key"). So:
+#   - when the signing secret is available, it is exported (never printed) and
+#     the build emits signed updater artifacts (.sig files);
+#   - when it is not (fork PRs, Dependabot), updater artifacts are explicitly
+#     disabled via a merged config so the packaging validation still runs;
+#   - in release mode (require-signing) a missing key is a hard, clearly
+#     reported failure instead of a silently unsigned release.
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifacts:
+        description: Upload the installers as workflow artifacts
+        type: boolean
+        default: false
+      require-signing:
+        description: Fail when the updater signing key is unavailable (release mode)
+        type: boolean
+        default: false
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY_B64:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+      VITE_SUPABASE_URL:
+        required: false
+      VITE_SUPABASE_ANON_KEY:
+        required: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 (MSI + NSIS)
+    runs-on: windows-latest
+    env:
+      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+      VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry and target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-rust-windows-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-windows-
+
+      - name: Install dependencies exactly from the lockfile
+        run: npm ci
+
+      # Decide the updater-artifact mode WITHOUT printing the secret. The env
+      # file carries either the key (release path) or a marker for the
+      # unsigned fallback; the key itself is never echoed.
+      - name: Prepare updater signing mode
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_B64 }}
+          UPDATER_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          REQUIRE_SIGNING: ${{ inputs.require-signing }}
+        run: |
+          set -euo pipefail
+          if [ -n "$UPDATER_KEY" ]; then
+            # The secret already holds the exact clean, single-line,
+            # base64-wrapped key content. Pass it straight through as content
+            # — do NOT base64-decode it here; Tauri does that internally and
+            # doing it twice corrupts the key.
+            {
+              printf 'TAURI_SIGNING_PRIVATE_KEY=%s\n' "$UPDATER_KEY"
+              if [ -n "$UPDATER_KEY_PASSWORD" ]; then
+                printf 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD=%s\n' "$UPDATER_KEY_PASSWORD"
+              fi
+            } >> "$GITHUB_ENV"
+            echo 'TAURI_BUILD_ARGS=--bundles msi,nsis' >> "$GITHUB_ENV"
+            echo "Updater artifacts: SIGNED (key available)."
+          elif [ "$REQUIRE_SIGNING" = "true" ]; then
+            echo "::error title=Missing updater signing key::TAURI_SIGNING_PRIVATE_KEY_B64 is not configured, and this build requires signed updater artifacts. Add the secret before cutting a release."
+            exit 1
+          else
+            # No key available (fork PR / Dependabot): packaging validation
+            # only, updater payload explicitly off so tauri does not refuse.
+            printf '{\n  "bundle": { "createUpdaterArtifacts": false }\n}\n' > "$RUNNER_TEMP/tauri-no-updater.json"
+            echo "TAURI_BUILD_ARGS=--config $(cygpath -m "$RUNNER_TEMP/tauri-no-updater.json") --bundles msi,nsis" >> "$GITHUB_ENV"
+            echo "Updater artifacts: DISABLED for this validation build (no signing key)."
+          fi
+
+      # No tagName: this job only builds. The release workflow uploads and
+      # publishes assets itself, after every platform has succeeded.
+      - name: Build Windows installers
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: ${{ env.TAURI_BUILD_ARGS }}
+
+      - name: Collect, verify and name the installers
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          MSI_SRC="$(find src-tauri/target/release/bundle/msi -name '*.msi' | head -n 1)"
+          EXE_SRC="$(find src-tauri/target/release/bundle/nsis -name '*-setup.exe' | head -n 1)"
+          if [ -z "$MSI_SRC" ] || [ -z "$EXE_SRC" ]; then
+            echo "::error title=Windows build output missing::Expected one MSI and one NSIS installer under src-tauri/target/release/bundle. Got MSI='${MSI_SRC:-none}' NSIS='${EXE_SRC:-none}'."
+            exit 1
+          fi
+          cp "$MSI_SRC" "PharmaTRACK-$VERSION-windows-x64.msi"
+          cp "$EXE_SRC" "PharmaTRACK-$VERSION-windows-x64.exe"
+          # Detached updater signatures, when this was a signed build.
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            for pair in "msi:PharmaTRACK-$VERSION-windows-x64.msi" "nsis:PharmaTRACK-$VERSION-windows-x64.exe"; do
+              dir="${pair%%:*}"; out="${pair#*:}"
+              sig="$(find "src-tauri/target/release/bundle/$dir" -name '*.sig' | head -n 1)"
+              if [ -z "$sig" ]; then
+                echo "::error title=Windows updater signature missing::No .sig produced for the $dir bundle; the desktop updater would ship an unusable latest.json."
+                exit 1
+              fi
+              cp "$sig" "$out.sig"
+            done
+          fi
+          ls -l PharmaTRACK-*
+
+      - name: Upload Windows installers
+        if: ${{ inputs.upload-artifacts }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-release
+          path: |
+            PharmaTRACK-*-windows-x64.msi
+            PharmaTRACK-*-windows-x64.exe
+            PharmaTRACK-*-windows-x64.msi.sig
+            PharmaTRACK-*-windows-x64.exe.sig
+          if-no-files-found: error

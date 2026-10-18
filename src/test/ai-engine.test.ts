@@ -746,6 +746,22 @@ describe('model discovery', () => {
     expect(models[0].source).toBe('provider');
   });
 
+  it('skips NVIDIA model discovery in Tauri so WebView CORS does not fire', async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    try {
+      handler = () => json({ data: [{ id: 'meta/llama-3.3-70b-instruct' }] });
+      const manager = makeManager(makeSettings([{ id: 'nvidia', model: 'meta/llama-3.3-70b-instruct' }]), {
+        nvidia: { apiKey: NVIDIA_KEY },
+      });
+
+      const models = await manager.listModels('nvidia');
+      expect(models).toEqual([]);
+      expect(calls).toHaveLength(0);
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    }
+  });
+
   it('reads the Gemini model list and strips the models/ prefix', async () => {
     handler = () => json({ models: [{ name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', inputTokenLimit: 1048576, supportedGenerationMethods: ['generateContent', 'streamGenerateContent'] }] });
     const manager = makeManager(makeSettings([{ id: 'gemini', model: 'gemini-2.5-flash' }]), {

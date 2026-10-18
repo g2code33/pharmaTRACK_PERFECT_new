@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Tailwind v4 requires this to be declared explicitly for the `dark:`
+   variant to respond to an ancestor `.dark` class (e.g. the one toggled
+   on <html> by the app's dark-mode switch in Layout.tsx). Without this,
+   Tailwind v4 falls back to `prefers-color-scheme`, which is completely
+   decoupled from the in-app toggle. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Custom styles for PharmaTRACK */
 :root {
   --color-primary: #10B981;
@@ -19,6 +26,253 @@
 
 body { background-color: #F8FAFC; color: #0F172A; }
 
+.app-page-main {
+  overscroll-behavior: contain;
+  scroll-behavior: auto;
+  scrollbar-gutter: stable;
+}
+
+/* `transition-all` is "transition every animatable property", width, height
+   and the inset properties included, so a card that only changes colour on
+   hover still arms a layout-animating transition. That matters on the scroll
+   path, not just on hover: while a list scrolls under a stationary cursor the
+   browser fires mouseover/mouseout down the entire column, starting one of
+   these on every row it passes. Narrowing the property list leaves every
+   hover state looking exactly the same and takes layout out of the gesture.
+   (The desktop shell narrowed this for itself already; the web app, which is
+   where most of this app is used, was still paying for it.) */
+.transition-all {
+  transition-property: color, background-color, border-color, text-decoration-color,
+    fill, stroke, opacity, box-shadow, transform, filter, backdrop-filter;
+}
+
+/* Interaction performance guard -------------------------------------------------
+   Dragging a reader split pane must never compete with decorative animations,
+   so `pharmatrack-resizing` is added to <html> for the duration of the drag.
+
+   There used to be a second, always-on variant of this (`pharmatrack-input-active`,
+   toggled by the idle scheduler on every wheel/scroll/pointermove burst). It
+   was a net loss: adding or removing a class on <html> that is matched by
+   document-wide selectors — especially the universal `html.x *` one — forces a
+   full-document style recalculation, and it fired at the start of every single
+   scroll gesture and again 220 ms after it ended. That is exactly the "scroll
+   reacts slowly, then crawls" symptom it was meant to prevent, so scroll-time
+   damping is now scoped to the element being scrolled (see `.is-scrolling`). */
+html.pharmatrack-resizing .transition-all,
+html.pharmatrack-resizing .transition,
+html.pharmatrack-resizing .transition-colors,
+html.pharmatrack-resizing .transition-opacity,
+html.pharmatrack-resizing .transition-shadow,
+html.pharmatrack-resizing .transition-transform {
+  transition-duration: 0ms !important;
+}
+html.pharmatrack-resizing * {
+  scroll-behavior: auto !important;
+}
+html.pharmatrack-resizing * {
+  cursor: col-resize !important;
+}
+html.pharmatrack-resume-paint #root,
+html.pharmatrack-resume-paint .app-shell {
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+
+.perf-deferred-card,
+.perf-deferred-row {
+  content-visibility: auto;
+}
+.perf-deferred-card {
+  contain-intrinsic-size: auto 16rem;
+}
+.perf-deferred-row {
+  contain-intrinsic-size: auto 3.75rem;
+}
+@supports not (content-visibility: auto) {
+  .perf-deferred-card,
+  .perf-deferred-row {
+    contain: layout paint style;
+  }
+}
+
+/* The navigation drawer --------------------------------------------------------
+   Opening the drawer puts a full-screen translucent layer over the page. On
+   Android that was enough to make the menu itself feel stuck: the page behind
+   stayed live underneath, so every frame of the slide re-blended it, and the
+   drawer's own `transition-all` was animating its width and its screen-high
+   shadow at the same time.
+
+   Containment is what fixes it. The drawer and the backdrop each become their
+   own paint and layout boundary, so sliding the drawer cannot invalidate the
+   page behind it, and the page behind cannot invalidate them. */
+.mobile-sidebar-backdrop {
+  contain: layout paint style;
+  /* The page behind must not scroll when a finger drags across the backdrop;
+     without this a swipe to dismiss scrolled the page underneath instead. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (max-width: 1023px) {
+  .mobile-sidebar {
+    contain: layout paint style;
+    /* The drawer slides on the compositor rather than being repainted into
+       the page on every frame. */
+    will-change: transform;
+  }
+}
+
+/* Installed-app zoom behaviour ---------------------------------------------------
+   Set on <html> by src/platform/zoomGuard.ts, and only when the app is really
+   installed — a standalone PWA, the Android APK, the desktop window. A browser
+   tab never gets this class and keeps pinch-zoom.
+
+   `pan-x pan-y` is the whole trick: any value other than `auto` also disables
+   double-tap-to-zoom, and a descendant cannot widen what an ancestor has
+   narrowed, so one declaration on the root covers every element in the app
+   without a universal selector. One-finger gestures are untouched, which is
+   why scrolling, swiping, dragging and text selection all still work. */
+html.pharmatrack-zoom-locked,
+html.pharmatrack-zoom-locked body {
+  touch-action: pan-x pan-y;
+}
+/* A surface running its own pinch takes over completely for the duration, so
+   the document does not scroll out from under the gesture. */
+html.pharmatrack-zoom-locked .is-pinching,
+.is-pinching {
+  touch-action: none;
+}
+
+.android-native-shell {
+  height: 100vh;
+  height: 100dvh;
+  touch-action: pan-x pan-y;
+}
+.android-native-shell .app-page-main {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+.android-native-shell input,
+.android-native-shell select,
+.android-native-shell textarea,
+.android-native-shell button {
+  touch-action: manipulation;
+}
+.android-native-shell .backdrop-blur-sm,
+.android-native-shell .backdrop-blur-md,
+.android-native-shell .backdrop-blur-lg,
+.android-native-shell .backdrop-blur-xl,
+.android-native-shell [class*="backdrop-blur"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.android-native-shell a,
+.android-native-shell button:not(.native-window-control),
+.android-native-shell [role="button"] {
+  transition-duration: 90ms;
+}
+@media (pointer: coarse) {
+  [class*="backdrop-blur"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
+html.dark body { background-color: #0f172a; color: #f1f5f9; }
+html.dark ::-webkit-scrollbar-track { background: #1e293b; }
+html.dark ::-webkit-scrollbar-thumb { background: #475569; }
+html.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ==========================================================================
+   Global dark-mode retrofit
+   --------------------------------------------------------------------------
+   The vast majority of pages in this app were authored with hardcoded
+   light-theme Tailwind utility classes (bg-white, text-gray-800, etc.) and
+   never given `dark:` variants. Rather than hand-edit every one of the ~70
+   page/component files, this block re-targets the small, closed set of
+   light-theme utility classes that are actually used across the app so
+   that EVERY page automatically gets proper dark backgrounds and light,
+   readable text as soon as `.dark` is present on <html> — with no risk of
+   missing a file. Intentionally-dark utilities (bg-slate-900, bg-[#0F172A]
+   sidebar, text-white badges, etc.) are left untouched since they already
+   render correctly in both themes.
+   ========================================================================== */
+
+/* Card / panel / page backgrounds that were authored as "light" */
+html.dark .bg-white { background-color: #1e293b !important; }
+html.dark .bg-gray-50,
+html.dark .bg-slate-50 { background-color: #0f172a !important; }
+html.dark .bg-gray-100,
+html.dark .bg-slate-100 { background-color: #273549 !important; }
+html.dark .bg-gray-200,
+html.dark .bg-slate-200 { background-color: #334155 !important; }
+html.dark .bg-gray-300,
+html.dark .bg-slate-300 { background-color: #475569 !important; }
+
+/* Hover states for the backgrounds above */
+html.dark .hover\:bg-gray-50:hover,
+html.dark .hover\:bg-slate-50:hover { background-color: #1e293b !important; }
+html.dark .hover\:bg-gray-100:hover,
+html.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
+html.dark .hover\:bg-gray-200:hover,
+html.dark .hover\:bg-slate-200:hover { background-color: #3f4b5e !important; }
+html.dark .hover\:bg-gray-300:hover { background-color: #475569 !important; }
+html.dark .hover\:bg-slate-600:hover { background-color: #475569 !important; }
+html.dark .hover\:bg-slate-900:hover { background-color: #0f172a !important; }
+
+/* Headings / primary text authored assuming a white background */
+html.dark .text-gray-900,
+html.dark .text-slate-900,
+html.dark .text-slate-950 { color: #f8fafc !important; }
+html.dark .text-gray-800,
+html.dark .text-slate-800 { color: #f1f5f9 !important; }
+
+/* Body copy / secondary text */
+html.dark .text-gray-700,
+html.dark .text-slate-700 { color: #e2e8f0 !important; }
+html.dark .text-gray-600,
+html.dark .text-slate-600 { color: #cbd5e1 !important; }
+
+/* Muted / helper text */
+html.dark .text-gray-500,
+html.dark .text-slate-500 { color: #94a3b8 !important; }
+html.dark .text-gray-400,
+html.dark .text-slate-400 { color: #7c8ba1 !important; }
+
+html.dark .hover\:text-gray-800:hover { color: #f1f5f9 !important; }
+html.dark .hover\:text-gray-700:hover,
+html.dark .hover\:text-slate-700:hover { color: #e2e8f0 !important; }
+html.dark .hover\:text-gray-600:hover,
+html.dark .hover\:text-slate-600:hover { color: #cbd5e1 !important; }
+
+/* Borders / dividers */
+html.dark .border-gray-50,
+html.dark .border-gray-100,
+html.dark .border-slate-50,
+html.dark .border-slate-100 { border-color: #334155 !important; }
+html.dark .border-gray-200,
+html.dark .border-gray-300,
+html.dark .border-slate-200,
+html.dark .border-slate-300,
+html.dark .border-gray-800 { border-color: #475569 !important; }
+html.dark .hover\:border-gray-300:hover,
+html.dark .hover\:border-slate-300:hover,
+html.dark .hover\:border-slate-400:hover { border-color: #64748b !important; }
+html.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: #334155 !important; }
+
+/* Safety net for plain form controls that never declared an explicit
+   background/text color and would otherwise stay browser-default white */
+html.dark input:not([type="checkbox"]):not([type="radio"]),
+html.dark select,
+html.dark textarea {
+  background-color: #1e293b;
+  color: #f1f5f9;
+  border-color: #334155;
+}
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: #64748b; }
+
 /* Mobile browser chrome and installed iPhone PWAs expose a dynamic viewport.
    Keep the shell from growing behind the home indicator or forcing a page-level
    horizontal scroll; individual viewers retain their own horizontal scrollers. */
@@ -33,6 +287,24 @@ body { overflow-x: hidden; }
   .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
 }
 
+@media (max-width: 1023px) {
+  .app-header {
+    padding-top: max(calc(env(safe-area-inset-top, 0px) + 0.5rem), 0.85rem);
+    padding-left: max(env(safe-area-inset-left, 0px), 0.75rem);
+    padding-right: max(env(safe-area-inset-right, 0px), 0.75rem);
+  }
+  .mobile-sidebar {
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+  }
+  .app-page-main {
+    padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) + 5.75rem), 6rem) !important;
+  }
+  .mobile-bottom-nav {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.5rem);
+  }
+}
+
 /* Safe area insets for iOS devices (notch, dynamic island, home indicator) */
 .pt-safe { padding-top: max(env(safe-area-inset-top, 0px), 0.75rem); }
 .pb-safe { padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.75rem); }
@@ -41,6 +313,22 @@ body { overflow-x: hidden; }
 .safe-area-x {
   padding-left: max(env(safe-area-inset-left, 0px), 0.75rem);
   padding-right: max(env(safe-area-inset-right, 0px), 0.75rem);
+}
+
+/* Reader pages own their scrollable areas. Do not add shell/mobile padding or
+   page-level scrolling around them, otherwise the slide/AI row ends early and
+   leaves a large empty block below the viewer. */
+/* `.app-page-main--reader` is set by Layout from the route, replacing a
+   `:has(.slide-reader-fullbleed)` selector. `:has()` whose subject is the main
+   scroll container means the style engine has to re-evaluate the rule on every
+   DOM mutation anywhere inside the page — on WebKitGTK (the Linux desktop
+   build) that showed up as scroll and typing lag on content-heavy pages. */
+.app-page-main--reader {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 !important;
 }
 
 /* Touch manipulation avoids the 300ms double-tap delay on iOS Safari */
@@ -113,34 +401,112 @@ body { overflow-x: hidden; }
 /* Global Dark Mode */
 html.dark body { background-color: #0F172A !important; color: #f8fafc !important; }
 html.dark .bg-white { background-color: #1E293B !important; border-color: #334155 !important; color: #f8fafc !important; }
+
 /* Every light surface, not just the neutral ones. Tinted panels (amber-50,
    green-100, red-50 …) used to keep their light background in dark mode while
    inheriting near-white text from a `.bg-white` ancestor — white writing on a
-   white panel. Remapping all of them keeps text readable at any nesting. */
-html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200, html.dark .bg-gray-50, html.dark .bg-gray-100
-html.dark .bg-gray-200, html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200, html.dark .bg-neutral-50
-html.dark .bg-neutral-100, html.dark .bg-neutral-200, html.dark .bg-stone-50, html.dark .bg-stone-100
-html.dark .bg-stone-200, html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200, html.dark .bg-orange-50
-html.dark .bg-orange-100, html.dark .bg-orange-200, html.dark .bg-amber-50, html.dark .bg-amber-100
-html.dark .bg-amber-200, html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200
-html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200, html.dark .bg-green-50, html.dark .bg-green-100
-html.dark .bg-green-200, html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200
-html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200, html.dark .bg-cyan-50, html.dark .bg-cyan-100
-html.dark .bg-cyan-200, html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200, html.dark .bg-blue-50
-html.dark .bg-blue-100, html.dark .bg-blue-200, html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200
-html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200, html.dark .bg-purple-50
-html.dark .bg-purple-100, html.dark .bg-purple-200, html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100
-html.dark .bg-fuchsia-200, html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200, html.dark .bg-rose-50
-html.dark .bg-rose-100, html.dark .bg-rose-200 {
+   white panel. Remapping all of them keeps text readable at any nesting.
+   ---------------------------------------------------------------------------
+   NOTE: this selector list previously spanned multiple lines WITHOUT a
+   trailing comma between lines. CSS treats adjacent selectors separated only
+   by whitespace as a *descendant combinator*, not a list — so the entire
+   rule silently compiled into one impossible "ancestor .dark inside another
+   .dark" selector that could never match anything, and none of these tinted
+   backgrounds were ever actually remapped. Every line below now ends with a
+   comma so this is a genuine selector list again. */
+html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200,
+html.dark .bg-gray-50, html.dark .bg-gray-100, html.dark .bg-gray-200,
+html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200,
+html.dark .bg-neutral-50, html.dark .bg-neutral-100, html.dark .bg-neutral-200,
+html.dark .bg-stone-50, html.dark .bg-stone-100, html.dark .bg-stone-200,
+html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200,
+html.dark .bg-orange-50, html.dark .bg-orange-100, html.dark .bg-orange-200,
+html.dark .bg-amber-50, html.dark .bg-amber-100, html.dark .bg-amber-200,
+html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200,
+html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200,
+html.dark .bg-green-50, html.dark .bg-green-100, html.dark .bg-green-200,
+html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200,
+html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200,
+html.dark .bg-cyan-50, html.dark .bg-cyan-100, html.dark .bg-cyan-200,
+html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200,
+html.dark .bg-blue-50, html.dark .bg-blue-100, html.dark .bg-blue-200,
+html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200,
+html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200,
+html.dark .bg-purple-50, html.dark .bg-purple-100, html.dark .bg-purple-200,
+html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100, html.dark .bg-fuchsia-200,
+html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200,
+html.dark .bg-rose-50, html.dark .bg-rose-100, html.dark .bg-rose-200 {
   background-color: #0F172A !important;
   border-color: #1E293B !important;
   color: #cbd5e1 !important;
 }
+
+/* The rule above only recolors text on the SAME element as the tinted
+   background (e.g. `<span class="bg-red-50 text-red-800">`). When the dark,
+   light-background-oriented text class sits on a different element than the
+   background — a common pattern for badges/alerts, e.g.
+   `<div class="bg-red-50"><span class="text-red-800">...</span></div>` — the
+   child's own `text-red-800` declaration still wins over inherited color, so
+   it must be remapped in its own right too. These are the "-700/-800/-900"
+   tiers of every color family: shades chosen for good contrast on a WHITE
+   background, which is exactly backwards on a dark navy one. Remapped to
+   each family's light "-300" tone so the semantic color (red = danger,
+   green = success, amber = warning, …) is preserved while staying readable. */
+html.dark .text-red-700, html.dark .text-red-800, html.dark .text-red-900 { color: #fca5a5 !important; }
+html.dark .text-orange-700, html.dark .text-orange-800, html.dark .text-orange-900 { color: #fdba74 !important; }
+html.dark .text-amber-700, html.dark .text-amber-800, html.dark .text-amber-900 { color: #fcd34d !important; }
+html.dark .text-yellow-700, html.dark .text-yellow-800, html.dark .text-yellow-900 { color: #fde047 !important; }
+html.dark .text-lime-700, html.dark .text-lime-800, html.dark .text-lime-900 { color: #bef264 !important; }
+html.dark .text-green-700, html.dark .text-green-800, html.dark .text-green-900 { color: #86efac !important; }
+html.dark .text-emerald-700, html.dark .text-emerald-800, html.dark .text-emerald-900 { color: #6ee7b7 !important; }
+html.dark .text-teal-700, html.dark .text-teal-800, html.dark .text-teal-900 { color: #5eead4 !important; }
+html.dark .text-cyan-700, html.dark .text-cyan-800, html.dark .text-cyan-900 { color: #67e8f9 !important; }
+html.dark .text-sky-700, html.dark .text-sky-800, html.dark .text-sky-900 { color: #7dd3fc !important; }
+html.dark .text-blue-700, html.dark .text-blue-800, html.dark .text-blue-900 { color: #93c5fd !important; }
+html.dark .text-indigo-700, html.dark .text-indigo-800, html.dark .text-indigo-900 { color: #a5b4fc !important; }
+html.dark .text-violet-700, html.dark .text-violet-800, html.dark .text-violet-900 { color: #c4b5fd !important; }
+html.dark .text-purple-700, html.dark .text-purple-800, html.dark .text-purple-900 { color: #d8b4fe !important; }
+html.dark .text-fuchsia-700, html.dark .text-fuchsia-800, html.dark .text-fuchsia-900 { color: #f0abfc !important; }
+html.dark .text-pink-700, html.dark .text-pink-800, html.dark .text-pink-900 { color: #f9a8d4 !important; }
+html.dark .text-rose-700, html.dark .text-rose-800, html.dark .text-rose-900 { color: #fda4af !important; }
+
+/* -900/-950 "near-black" neutral text, another light-background-only tier
+   not covered by the -700/-800 remap above. */
+html.dark .text-black, html.dark .text-gray-900, html.dark .text-gray-950,
+html.dark .text-slate-900, html.dark .text-slate-950,
+html.dark .text-zinc-900, html.dark .text-zinc-950,
+html.dark .text-neutral-900, html.dark .text-neutral-950,
+html.dark .text-stone-900, html.dark .text-stone-950 { color: #f8fafc !important; }
+
 html.dark .text-gray-800, html.dark .text-gray-700, html.dark .text-slate-800 { color: #f1f5f9 !important; }
 html.dark .text-gray-500, html.dark .text-gray-600 { color: #94a3b8 !important; }
 html.dark .border-gray-100, html.dark .border-gray-200, html.dark .border-slate-100, html.dark .border-slate-200 { border-color: #334155 !important; }
 html.dark header, html.dark aside { background-color: #0B1120 !important; border-color: #1E293B !important; }
-html.dark input, html.dark select, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
+
+/* Plain <input>/<textarea> boxes respect background-color/color just fine.
+   <select> is the outlier: several platforms this app ships on (WebKitGTK on
+   Linux in particular) render the closed combobox's box chrome — its
+   background fill and border — with the OS/GTK theme's native widget
+   painter, ignoring `background-color` entirely, while still honoring the
+   CSS `color` for the text inside. That mismatch is exactly the bug this
+   fixes: a native (often light/white) box behind text forced light by the
+   rule below, i.e. barely-visible light-on-light writing. Turning off native
+   appearance makes the browser draw the control from our CSS like any other
+   box, on every platform; the custom chevron replaces the native dropdown
+   arrow that `appearance: none` also removes. */
+html.dark input, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
+html.dark select {
+  background-color: #1E293B !important;
+  color: white !important;
+  border-color: #334155 !important;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='2'><path d='M6 8l4 4 4-4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 1rem;
+}
 
 /* ---------------------------------------------------------------------------
    pdf.js text layer
@@ -148,6 +514,61 @@ html.dark input, html.dark select, html.dark textarea { background-color: #1E293
    canvas. This is what makes a canvas-rendered PDF selectable, copyable and
    highlightable; without it the page is just pixels.
    --------------------------------------------------------------------------- */
+.pdf-viewer-scroll {
+  -webkit-overflow-scrolling: touch;
+  overflow-anchor: none;
+  scroll-behavior: auto;
+  contain: layout paint;
+}
+/* No `content-visibility: auto` here, deliberately.
+   Every page shell is given its exact pixel width and height inline before a
+   single pixel is drawn, and the viewer already rasterises only the pages
+   around the current one. `content-visibility` therefore added no
+   virtualisation the viewer did not already have, but it did add a cost on the
+   worst possible code path: the browser has to lay out and paint a skipped
+   subtree *synchronously, inside the scroll frame* at the moment it crosses
+   into the viewport. With a canvas plus a few hundred absolutely-positioned
+   text spans per page, that is a long frame on every page boundary — the
+   reader answered late and then crawled. Plain containment keeps the cheap
+   part (a page can never invalidate its neighbours) with none of that. */
+.pdf-page-shell {
+  contain: layout paint style;
+}
+.pdf-page-shell canvas {
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+/* The standing preview for a page, under its live canvas. When the canvas is
+   released its backing store collapses to 0x0, so this is what the reader
+   sees the instant they jump somewhere far away. */
+.pdf-page-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  user-select: none;
+  pointer-events: none;
+}
+.pptx-viewer-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  overflow-anchor: none;
+}
+.pptx-slide-stage {
+  backface-visibility: hidden;
+  contain: layout paint style;
+}
+/* Hit-testing the transparent text spans on every mouse move is pure overhead
+   while the page is moving, so the viewer flags its own scroller instead of
+   flipping a class on <html> (which invalidated the whole document). */
+.pdf-viewer-scroll.is-scrolling .pdf-text-layer,
+.pptx-viewer-scroll.is-scrolling .pdf-text-layer,
+html.pharmatrack-resizing .pdf-text-layer {
+  pointer-events: none !important;
+}
+
 .pdf-text-layer {
   overflow: hidden;
   opacity: 1;
@@ -215,4 +636,163 @@ html.dark input, html.dark select, html.dark textarea { background-color: #1E293
 .highlight-flash {
   animation: highlight-flash 2.2s ease-in-out;
   border-radius: 3px;
+}
+
+/* Native Windows/Tauri shell polish -------------------------------------------------
+   The web/PWA layout is already mobile-friendly. Installed Windows builds benefit
+   from a custom frame so the app feels like PharmaTRACK instead of a generic
+   browser window, while all buttons remain real clickable controls. */
+.native-titlebar {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.native-titlebar-drag {
+  cursor: grab;
+}
+.native-titlebar-drag:active {
+  cursor: grabbing;
+}
+.native-window-control {
+  display: inline-flex;
+  border: 0;
+  background: transparent;
+  height: 2.25rem;
+  width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.native-window-control:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+.native-window-control:active {
+  transform: scale(0.94);
+}
+.native-window-control-close:hover {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+/* Wide-screen shell chrome ------------------------------------------------------
+   PharmaTRACK's "floating panel" look: the sidebar, the header and the page
+   area read as three cards resting on a slightly darker desk.
+
+   This used to be gated on `.native-desktop-shell`, i.e. the installed
+   desktop builds only, which meant the browser and the Android tablet build
+   showed a flat, plainer app than the EXE and the DEB. There is no reason for
+   the same product to look like two different products depending on how it
+   was installed, so the chrome is now keyed off the layout shell itself and
+   every wide-screen surface gets it: browser, PWA, Windows EXE, Linux DEB and
+   Android tablets alike. Only the things that genuinely belong to a packaged
+   window — the native title bar, the full-bleed reader, pointer affordances —
+   remain gated on the desktop shell further down.
+
+   Phones keep the edge-to-edge layout on purpose: a 24px inset on each side
+   of a 360px screen is a real loss of reading width, and the bottom
+   navigation bar already overlaps the bottom of the page. */
+@media (min-width: 1024px) {
+  .app-shell {
+    background: #f8fafc;
+  }
+  .dark .app-shell {
+    background: #020617;
+  }
+  .app-shell .mobile-sidebar {
+    margin: 0.75rem 0 0.75rem 0.75rem;
+    border: 1px solid rgba(203, 213, 225, 0.95);
+    border-radius: 1.65rem;
+    background: #ffffff !important;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.10);
+    overflow: hidden;
+  }
+  .dark .app-shell .mobile-sidebar {
+    background: #1e293b !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
+  }
+  .app-shell .app-header {
+    margin: 0.75rem 1rem 0;
+    border: 1px solid rgba(203, 213, 225, 0.95);
+    border-radius: 1.5rem;
+    background: #ffffff !important;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  }
+  .dark .app-shell .app-header {
+    background: #0f172a !important;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  }
+  /* The card styling is painted on the frame, never on the element that
+     scrolls: a scroller that carries its own border-radius is dropped out of
+     accelerated overflow scrolling outright. The frame does not scroll, so
+     its rounded clip is rasterised once. */
+  .app-shell .app-page-frame {
+    margin: 0.75rem 1rem 1rem;
+    border: 1px solid rgba(203, 213, 225, 0.95);
+    border-radius: 1.75rem;
+    background: #f8fafc;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
+    overflow: hidden;
+  }
+  .dark .app-shell .app-page-frame {
+    background: #0f172a;
+    border-color: rgba(51, 65, 85, 0.95);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.30);
+  }
+  .app-shell .app-page-main {
+    background: #f8fafc !important;
+  }
+  .dark .app-shell .app-page-main {
+    background: #0f172a !important;
+  }
+
+  /* Packaged-window behaviour. Unlike the chrome above, these describe what it
+     means to be an app window rather than a tab, so they stay desktop-only. */
+  .native-desktop-shell .app-page-main--reader {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 !important;
+  }
+  .native-desktop-shell .slide-reader-fullbleed {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .native-desktop-shell .slide-reader-fullbleed,
+  .native-desktop-shell .slide-reader-fullbleed * {
+    scroll-behavior: auto !important;
+  }
+  .native-desktop-shell a,
+  .native-desktop-shell button,
+  .native-desktop-shell [role="button"] {
+    cursor: pointer;
+  }
+  .native-desktop-shell a,
+  .native-desktop-shell button:not(.native-window-control),
+  .native-desktop-shell [role="button"] {
+    transition-property: background-color, border-color, color, opacity, box-shadow;
+    transition-duration: 90ms;
+    transition-timing-function: ease-out;
+  }
+  .native-desktop-shell .backdrop-blur-sm,
+  .native-desktop-shell .backdrop-blur-md,
+  .native-desktop-shell .backdrop-blur-lg,
+  .native-desktop-shell .backdrop-blur-xl,
+  .native-desktop-shell [class*="backdrop-blur"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .native-desktop-shell a:focus-visible,
+  .native-desktop-shell button:focus-visible,
+  .native-desktop-shell input:focus-visible,
+  .native-desktop-shell select:focus-visible,
+  .native-desktop-shell textarea:focus-visible,
+  .native-desktop-shell [role="button"]:focus-visible {
+    outline: 3px solid rgba(74, 222, 128, 0.58);
+    outline-offset: 3px;
+  }
 }

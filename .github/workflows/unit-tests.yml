@@ -1,0 +1,95 @@
+name: Automated Unit Tests
+
+# The web suite (vitest, ~780 tests) plus the desktop Rust unit tests.
+#
+# Called by pull-request validation and by the release workflow, so a red test
+# run blocks both merging and shipping. The Rust job compiles the whole Tauri
+# shell — tauri-build embeds the frontend, so the web bundle is built first
+# (this also proves the production build itself).
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web unit tests (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci fails when package.json and package-lock.json disagree — that
+      # is the dependency-validation workflow's job to flag, so it fails here
+      # too rather than silently resolving something new.
+      - name: Install dependencies exactly from the lockfile
+        run: npm ci
+
+      - name: Lint (errors only; existing warnings are tracked separately)
+        run: npm run lint
+
+      # tsc + vite build: typecheck and proves the production bundle builds.
+      - name: Production build
+        run: npm run build
+
+      - name: Cloudflare worker typecheck
+        run: npm run cf:typecheck
+
+      - name: Web unit tests
+        run: npm test
+
+  rust:
+    name: Desktop shell unit tests (cargo)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+
+      - name: Cache cargo registry and target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-rust-tests-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-tests-
+
+      - name: Install Linux dependencies (WebKitGTK toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      # tauri-build embeds the built frontend, so dist/ must exist before the
+      # crate will compile at all.
+      - name: Install dependencies and build the web app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Compile the desktop shell
+        working-directory: src-tauri
+        run: cargo check --locked --all-targets
+
+      - name: Run desktop unit tests
+        working-directory: src-tauri
+        run: cargo test --locked

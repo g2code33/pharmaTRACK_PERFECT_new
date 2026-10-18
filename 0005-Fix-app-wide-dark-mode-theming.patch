@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: g2code33 <269358183+g2code33@users.noreply.github.com>
+Date: Mon, 29 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Fix app-wide dark mode (Tailwind v4 custom-variant, main
+ content area, persistence) + global light->dark retrofit
+
+Three bugs are fixed here:
+
+1. Tailwind v4 requires an explicit `@custom-variant dark (...)`
+   declaration for the `dark:` utility variant to react to a `.dark`
+   class placed on an ancestor element. That declaration was missing
+   from src/index.css, so every `dark:` class in the app was dead code
+   -- Tailwind was silently falling back to the OS-level
+   prefers-color-scheme media query instead of the in-app toggle.
+
+2. The main content wrapper (<main>, the element that actually renders
+   every routed page via <Outlet/>) had a hardcoded light background
+   (bg-[#F8FAFC]) that never changed with the dark-mode toggle at all,
+   which is exactly why the sidebar/header could look dark while pages
+   like Settings and Learning Objectives stayed on a plain white/light
+   background with low-contrast text on top.
+
+3. The dark-mode preference was never persisted and never seeded from
+   the OS preference, so it silently reset to "light" on every launch.
+
+On top of that, most of the ~70 page/component files in src/ never had
+any `dark:` styling authored at all (hardcoded bg-white, text-gray-800,
+etc.). Instead of hand-editing every file, src/index.css now carries a
+global ".dark"-scoped retrofit that re-targets the closed set of
+light-theme utility classes actually used across the app, so every page
+gets a proper dark background and light, readable text as soon as
+`.dark` is set on <html> -- matching the "dark mode must be
+comprehensive, everywhere" requirement.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+diff --git a/src/components/Layout.tsx b/src/components/Layout.tsx
+index adab389..e519d34 100644
+--- a/src/components/Layout.tsx
++++ b/src/components/Layout.tsx
+@@ -64,10 +64,21 @@ const Layout: React.FC = () => {
+   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'downloading' | 'done'>('idle');
+   const [appVersion, setAppVersion] = useState(APP_VERSION_FALLBACK);
+   const [pwaUpdateAvailable, setPwaUpdateAvailable] = useState(false);
+-  const [darkMode, setDarkMode] = useState(false);
++  const [darkMode, setDarkMode] = useState(() => {
++    try {
++      const saved = localStorage.getItem('pharmatrack-dark-mode');
++      if (saved !== null) return saved === 'true';
++      return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
++    } catch {
++      return false;
++    }
++  });
+   const runtime = detectRuntimeCapabilities();
+ 
+-  useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); }, [darkMode]);
++  useEffect(() => {
++    document.documentElement.classList.toggle('dark', darkMode);
++    try { localStorage.setItem('pharmatrack-dark-mode', String(darkMode)); } catch { /* ignore */ }
++  }, [darkMode]);
+   useEffect(() => {
+     void getApplicationVersion(APP_VERSION_FALLBACK).then(setAppVersion);
+   }, []);
+@@ -280,7 +291,7 @@ const Layout: React.FC = () => {
+           {/* z-[120] beats the reader's side panels (z-[110]); backdrop-blur makes
+               this element a stacking context, so the search dropdown inside it
+               can never escape — the header itself has to sit above them. */}
+-          <header className="bg-white/80 backdrop-blur-md border-b border-gray-200 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
++          <header className="bg-white/80 dark:bg-slate-900/90 backdrop-blur-md border-b border-gray-200 dark:border-slate-700 px-3 py-2 sm:px-6 sm:py-4 flex-shrink-0 relative z-[120]">
+             <div className="flex items-center gap-4 lg:gap-6">
+               <button className="lg:hidden p-2 hover:bg-gray-100 rounded-xl" onClick={() => setMobileMenuOpen(true)}><Menu className="w-5 h-5 text-gray-600" /></button>
+               
+@@ -303,7 +314,7 @@ const Layout: React.FC = () => {
+                     onChange={(e) => setSearchQuery(e.target.value)}
+                     onFocus={() => setIsSearchFocused(true)}
+                     onKeyDown={onSearchKeyDown}
+-                    className="w-full pl-11 pr-12 py-3 bg-gray-100 border-none rounded-2xl text-sm font-medium focus:bg-white focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
++                    className="w-full pl-11 pr-12 py-3 bg-gray-100 dark:bg-slate-800 dark:text-slate-100 border-none rounded-2xl text-sm font-medium focus:bg-white dark:focus:bg-slate-700 focus:ring-4 focus:ring-[#2D6A4F]/10 outline-none transition-all shadow-inner"
+                   />
+                   {searchQuery ? (
+                     <button onClick={closeSearch} title="Clear" className="absolute inset-y-0 right-3 flex items-center text-gray-400 hover:text-gray-700"><X className="w-4 h-4" /></button>
+@@ -429,7 +440,7 @@ const Layout: React.FC = () => {
+               </div>
+             </div>
+           </header>
+-          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] p-3 sm:p-6 relative">
++          <main className="safe-area-bottom flex-1 min-h-0 overflow-y-auto bg-[#F8FAFC] dark:bg-slate-900 p-3 sm:p-6 relative">
+             {/* Scoped to the page area so a crashing route — or a lazy chunk
+                 that fails to load — leaves the sidebar, header, search and
+                 navigation fully usable. The Suspense fallback replaces ONLY
+diff --git a/src/index.css b/src/index.css
+index 29d370a..53548e4 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -1,5 +1,12 @@
+ @import "tailwindcss";
+ 
++/* Tailwind v4 requires this to be declared explicitly for the `dark:`
++   variant to respond to an ancestor `.dark` class (e.g. the one toggled
++   on <html> by the app's dark-mode switch in Layout.tsx). Without this,
++   Tailwind v4 falls back to `prefers-color-scheme`, which is completely
++   decoupled from the in-app toggle. */
++@custom-variant dark (&:where(.dark, .dark *));
++
+ /* Custom styles for PharmaTRACK */
+ :root {
+   --color-primary: #10B981;
+@@ -19,6 +26,102 @@
+ 
+ body { background-color: #F8FAFC; color: #0F172A; }
+ 
++html.dark body { background-color: #0f172a; color: #f1f5f9; }
++html.dark ::-webkit-scrollbar-track { background: #1e293b; }
++html.dark ::-webkit-scrollbar-thumb { background: #475569; }
++html.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
++
++/* ==========================================================================
++   Global dark-mode retrofit
++   --------------------------------------------------------------------------
++   The vast majority of pages in this app were authored with hardcoded
++   light-theme Tailwind utility classes (bg-white, text-gray-800, etc.) and
++   never given `dark:` variants. Rather than hand-edit every one of the ~70
++   page/component files, this block re-targets the small, closed set of
++   light-theme utility classes that are actually used across the app so
++   that EVERY page automatically gets proper dark backgrounds and light,
++   readable text as soon as `.dark` is present on <html> — with no risk of
++   missing a file. Intentionally-dark utilities (bg-slate-900, bg-[#0F172A]
++   sidebar, text-white badges, etc.) are left untouched since they already
++   render correctly in both themes.
++   ========================================================================== */
++
++/* Card / panel / page backgrounds that were authored as "light" */
++html.dark .bg-white { background-color: #1e293b !important; }
++html.dark .bg-gray-50,
++html.dark .bg-slate-50 { background-color: #0f172a !important; }
++html.dark .bg-gray-100,
++html.dark .bg-slate-100 { background-color: #273549 !important; }
++html.dark .bg-gray-200,
++html.dark .bg-slate-200 { background-color: #334155 !important; }
++html.dark .bg-gray-300,
++html.dark .bg-slate-300 { background-color: #475569 !important; }
++
++/* Hover states for the backgrounds above */
++html.dark .hover\:bg-gray-50:hover,
++html.dark .hover\:bg-slate-50:hover { background-color: #1e293b !important; }
++html.dark .hover\:bg-gray-100:hover,
++html.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
++html.dark .hover\:bg-gray-200:hover,
++html.dark .hover\:bg-slate-200:hover { background-color: #3f4b5e !important; }
++html.dark .hover\:bg-gray-300:hover { background-color: #475569 !important; }
++html.dark .hover\:bg-slate-600:hover { background-color: #475569 !important; }
++html.dark .hover\:bg-slate-900:hover { background-color: #0f172a !important; }
++
++/* Headings / primary text authored assuming a white background */
++html.dark .text-gray-900,
++html.dark .text-slate-900,
++html.dark .text-slate-950 { color: #f8fafc !important; }
++html.dark .text-gray-800,
++html.dark .text-slate-800 { color: #f1f5f9 !important; }
++
++/* Body copy / secondary text */
++html.dark .text-gray-700,
++html.dark .text-slate-700 { color: #e2e8f0 !important; }
++html.dark .text-gray-600,
++html.dark .text-slate-600 { color: #cbd5e1 !important; }
++
++/* Muted / helper text */
++html.dark .text-gray-500,
++html.dark .text-slate-500 { color: #94a3b8 !important; }
++html.dark .text-gray-400,
++html.dark .text-slate-400 { color: #7c8ba1 !important; }
++
++html.dark .hover\:text-gray-800:hover { color: #f1f5f9 !important; }
++html.dark .hover\:text-gray-700:hover,
++html.dark .hover\:text-slate-700:hover { color: #e2e8f0 !important; }
++html.dark .hover\:text-gray-600:hover,
++html.dark .hover\:text-slate-600:hover { color: #cbd5e1 !important; }
++
++/* Borders / dividers */
++html.dark .border-gray-50,
++html.dark .border-gray-100,
++html.dark .border-slate-50,
++html.dark .border-slate-100 { border-color: #334155 !important; }
++html.dark .border-gray-200,
++html.dark .border-gray-300,
++html.dark .border-slate-200,
++html.dark .border-slate-300,
++html.dark .border-gray-800 { border-color: #475569 !important; }
++html.dark .hover\:border-gray-300:hover,
++html.dark .hover\:border-slate-300:hover,
++html.dark .hover\:border-slate-400:hover { border-color: #64748b !important; }
++html.dark .divide-gray-50 > :not([hidden]) ~ :not([hidden]),
++html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
++html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: #334155 !important; }
++
++/* Safety net for plain form controls that never declared an explicit
++   background/text color and would otherwise stay browser-default white */
++html.dark input:not([type="checkbox"]):not([type="radio"]),
++html.dark select,
++html.dark textarea {
++  background-color: #1e293b;
++  color: #f1f5f9;
++  border-color: #334155;
++}
++html.dark input::placeholder,
++html.dark textarea::placeholder { color: #64748b; }
++
+ /* Mobile browser chrome and installed iPhone PWAs expose a dynamic viewport.
+    Keep the shell from growing behind the home indicator or forcing a page-level
+    horizontal scroll; individual viewers retain their own horizontal scrollers. */
+diff --git a/src/pages/SlideReader.tsx b/src/pages/SlideReader.tsx
+index 0000000..0000000 100644
+--- a/src/pages/SlideReader.tsx
++++ b/src/pages/SlideReader.tsx
+@@ -648,5 +648,5 @@
+ 
+   return (
+-    <div className={`flex flex-col h-full bg-[#F1F5F9] ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
++    <div className={`flex flex-col h-full bg-[#F1F5F9] dark:bg-slate-900 ${isFullscreen ? 'fixed inset-0 z-[100] h-screen w-screen' : 'h-[calc(100vh-120px)]'}`}>
+       <div className="bg-white px-4 py-1.5 border-b shadow-sm z-[110] flex items-center justify-between flex-shrink-0">
+         <div className="flex items-center gap-3 min-w-0">
+@@ -700,5 +700,5 @@
+ 
+       <div className="flex flex-1 overflow-hidden relative">
+-        <div className="flex flex-col bg-[#F8FAFC] min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
++        <div className="flex flex-col bg-[#F8FAFC] dark:bg-slate-900 min-w-0 relative group/viewer h-full overflow-hidden" style={{ flex: 1 }}>
+           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto flex flex-col items-center p-0 scrollbar-thin">
+             {renderUniversalContent()}
+ 
+2.43.0

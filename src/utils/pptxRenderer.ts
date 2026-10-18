@@ -237,19 +237,8 @@ async function loadTheme(zip: JSZip, masterRels: Map<string, Rel>): Promise<Them
     if (scheme) {
       for (const el of Array.from(scheme.children)) {
         const name = el.tagName.replace(/^a:/, '');
-        const srgb = child(el, 'a:srgbClr')?.getAttribute('val');
-        const sys = child(el, 'a:sysClr');
-        const sysLast = sys?.getAttribute('lastClr');
-        const sysName = sys?.getAttribute('val');
-        const hex =
-          srgb ||
-          sysLast ||
-          (sysName === 'window' || sysName === 'windowText'
-            ? sysName === 'window'
-              ? 'FFFFFF'
-              : '000000'
-            : undefined);
-        if (hex) colors[name] = `#${hex.toLowerCase()}`;
+        const css = colorChoiceCss(el);
+        if (css) colors[name] = css;
       }
     }
     const fontScheme = doc.getElementsByTagName('a:fontScheme')[0];
@@ -297,20 +286,155 @@ function resolveFont(face: string | undefined | null): string | undefined {
   return face;
 }
 
-function solidColor(fillEl: Element | null): string | undefined {
-  if (!fillEl) return undefined;
-  const srgb = child(fillEl, 'a:srgbClr')?.getAttribute('val');
-  if (srgb) return `#${srgb.toLowerCase()}`;
-  const sys = child(fillEl, 'a:sysClr');
-  if (sys) {
-    const last = sys.getAttribute('lastClr');
-    if (last) return `#${last.toLowerCase()}`;
-    if (sys.getAttribute('val') === 'window') return '#FFFFFF';
-    return '#000000';
+interface RgbaColor {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+const clampByte = (v: number): number => Math.max(0, Math.min(255, Math.round(v)));
+const clampUnit = (v: number): number => Math.max(0, Math.min(1, v));
+
+function parseOoxmlPercent(raw: string | null | undefined, fallback = 100000): number {
+  if (!raw) return fallback / 100000;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n / 100000 : fallback / 100000;
+}
+
+function parseHexColor(value: string | undefined | null): RgbaColor | null {
+  if (!value) return null;
+  const hex = value.replace(/^#/, '').trim();
+  if (!/^[0-9a-f]{6}$/i.test(hex)) return null;
+  const int = parseInt(hex, 16);
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255, a: 1 };
+}
+
+function rgbaToCss(color: RgbaColor): string {
+  const r = clampByte(color.r);
+  const g = clampByte(color.g);
+  const b = clampByte(color.b);
+  const a = clampUnit(color.a);
+  if (a < 0.999) return `rgba(${r}, ${g}, ${b}, ${Math.round(a * 1000) / 1000})`;
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+const PRESET_COLORS: Record<string, string> = {
+  black: '#000000',
+  blue: '#0000ff',
+  cyan: '#00ffff',
+  dkBlue: '#00008b',
+  dkCyan: '#008b8b',
+  dkGray: '#a9a9a9',
+  dkGreen: '#006400',
+  dkMagenta: '#8b008b',
+  dkRed: '#8b0000',
+  dkYellow: '#808000',
+  gray: '#808080',
+  green: '#008000',
+  ltGray: '#d3d3d3',
+  magenta: '#ff00ff',
+  red: '#ff0000',
+  white: '#ffffff',
+  yellow: '#ffff00',
+};
+
+function colorChoice(holder: Element | null): Element | null {
+  if (!holder) return null;
+  return child(holder, 'a:srgbClr')
+    ?? child(holder, 'a:scrgbClr')
+    ?? child(holder, 'a:hslClr')
+    ?? child(holder, 'a:sysClr')
+    ?? child(holder, 'a:schemeClr')
+    ?? child(holder, 'a:prstClr');
+}
+
+function hslToRgb(h: number, s: number, l: number): RgbaColor {
+  const hueToRgb = (p: number, q: number, t0: number) => {
+    let t = t0;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  if (s <= 0) {
+    const gray = l * 255;
+    return { r: gray, g: gray, b: gray, a: 1 };
   }
-  const scheme = child(fillEl, 'a:schemeClr');
-  if (scheme) return schemeColor(scheme.getAttribute('val') || '');
-  return undefined;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return {
+    r: hueToRgb(p, q, h + 1 / 3) * 255,
+    g: hueToRgb(p, q, h) * 255,
+    b: hueToRgb(p, q, h - 1 / 3) * 255,
+    a: 1,
+  };
+}
+
+function baseColorForChoice(colorEl: Element): RgbaColor | null {
+  const tag = colorEl.tagName.toLowerCase();
+  if (tag === 'a:srgbclr') return parseHexColor(colorEl.getAttribute('val'));
+  if (tag === 'a:scrgbclr') {
+    return {
+      r: parseOoxmlPercent(colorEl.getAttribute('r'), 0) * 255,
+      g: parseOoxmlPercent(colorEl.getAttribute('g'), 0) * 255,
+      b: parseOoxmlPercent(colorEl.getAttribute('b'), 0) * 255,
+      a: 1,
+    };
+  }
+  if (tag === 'a:hslclr') {
+    const hue = (parseInt(colorEl.getAttribute('hue') || '0', 10) / 60000) / 360;
+    return hslToRgb(hue, parseOoxmlPercent(colorEl.getAttribute('sat'), 0), parseOoxmlPercent(colorEl.getAttribute('lum'), 0));
+  }
+  if (tag === 'a:sysclr') {
+    const last = parseHexColor(colorEl.getAttribute('lastClr'));
+    if (last) return last;
+    return colorEl.getAttribute('val') === 'window'
+      ? { r: 255, g: 255, b: 255, a: 1 }
+      : { r: 0, g: 0, b: 0, a: 1 };
+  }
+  if (tag === 'a:schemeclr') return parseHexColor(schemeColor(colorEl.getAttribute('val') || ''));
+  if (tag === 'a:prstclr') return parseHexColor(PRESET_COLORS[colorEl.getAttribute('val') || '']);
+  return null;
+}
+
+function applyColorTransforms(colorEl: Element, base: RgbaColor): RgbaColor {
+  let out = { ...base };
+  for (const t of Array.from(colorEl.children)) {
+    const tag = t.tagName.toLowerCase();
+    const v = parseOoxmlPercent(t.getAttribute('val'));
+    if (tag === 'a:tint') {
+      out = { ...out, r: out.r + (255 - out.r) * v, g: out.g + (255 - out.g) * v, b: out.b + (255 - out.b) * v };
+    } else if (tag === 'a:shade') {
+      out = { ...out, r: out.r * v, g: out.g * v, b: out.b * v };
+    } else if (tag === 'a:lummod') {
+      out = { ...out, r: out.r * v, g: out.g * v, b: out.b * v };
+    } else if (tag === 'a:lumoff') {
+      out = { ...out, r: out.r + 255 * v, g: out.g + 255 * v, b: out.b + 255 * v };
+    } else if (tag === 'a:alpha') {
+      out = { ...out, a: v };
+    } else if (tag === 'a:alphamod') {
+      out = { ...out, a: out.a * v };
+    } else if (tag === 'a:alphaoff') {
+      out = { ...out, a: out.a + v };
+    }
+  }
+  return { r: clampByte(out.r), g: clampByte(out.g), b: clampByte(out.b), a: clampUnit(out.a) };
+}
+
+function colorChoiceCss(holder: Element | null): string | undefined {
+  const colorEl = colorChoice(holder);
+  if (!colorEl) return undefined;
+  const base = baseColorForChoice(colorEl);
+  if (!base) return undefined;
+  return rgbaToCss(applyColorTransforms(colorEl, base));
+}
+
+function solidColor(fillEl: Element | null): string | undefined {
+  if (!fillEl || child(fillEl, 'a:noFill')) return undefined;
+  return colorChoiceCss(fillEl);
 }
 
 /** CSS background for an a:solidFill / a:gradFill element (or its parent holder). */
@@ -321,11 +445,21 @@ function fillCss(holder: Element | null): string | undefined {
   if (flat) return flat;
   const grad = child(holder, 'a:gradFill');
   if (grad) {
-    // Each stop carries its colour directly (a:gs > a:srgbClr|a:schemeClr).
+    // Keep all gradient stops and stop positions. Many lecturer templates use
+    // tinted theme colours in gradients; preserving the whole CSS gradient is
+    // far closer than flattening it to one colour during PDF conversion.
+    const lin = child(grad, 'a:lin');
+    const rawAngle = lin?.getAttribute('ang');
+    const angle = rawAngle ? `${Math.round((parseInt(rawAngle, 10) / 60000) * 10) / 10}deg` : '135deg';
     const stops = Array.from(grad.getElementsByTagName('a:gs'))
-      .map((gs) => solidColor(gs))
+      .map((gs) => {
+        const c = solidColor(gs);
+        if (!c) return null;
+        const pos = gs.getAttribute('pos');
+        return pos ? `${c} ${Math.max(0, Math.min(100, parseInt(pos, 10) / 1000))}%` : c;
+      })
       .filter((c): c is string => Boolean(c));
-    if (stops.length >= 2) return `linear-gradient(135deg, ${stops[0]}, ${stops[stops.length - 1]})`;
+    if (stops.length >= 2) return `linear-gradient(${angle}, ${stops.join(', ')})`;
     if (stops.length === 1) return stops[0];
   }
   return undefined;
@@ -1018,9 +1152,9 @@ function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
     textScale: (ctx.t.sx + ctx.t.sy) / 2,
     isTitle,
   };
-  if (lineColor && lineW && lineW > 0) {
+  if (lineColor) {
     shape.borderColor = lineColor;
-    shape.borderWidth = Math.max(1, lineW);
+    shape.borderWidth = Math.max(1, lineW || 1);
   }
   if (text) shape.text = text;
   if (!shape.text && !shape.fill) return null; // empty, invisible placeholder

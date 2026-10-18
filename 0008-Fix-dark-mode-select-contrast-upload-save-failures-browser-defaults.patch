@@ -1,0 +1,576 @@
+From 3d48c0870e32751a8faf7b91e4699c292dbeff0c Mon Sep 17 00:00:00 2001
+From: g2code33 <g2code33@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 20:54:22 +0000
+Subject: [PATCH] Fix dark-mode select contrast app-wide, fix silent
+ upload-save failures, default embedded browser to Google + add pin tabs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+1. Dark mode contrast:
+   - Fixed a CSS bug where a large multi-line selector list (covering every
+     tinted -50/-100/-200 background used for badges/alerts across the app)
+     was missing commas between lines, so the whole rule compiled into one
+     impossible selector that matched nothing — none of those tinted panels
+     were ever actually remapped for dark mode, only the plain gray/slate
+     ones were.
+   - Added dark-mode remapping for the -700/-800/-900 text color tiers of
+     every Tailwind color family (designed for contrast on a WHITE
+     background, so they went dark-on-dark once the panel behind them went
+     dark) and for plain black/gray-900/slate-900 text.
+   - <select> elements specifically stayed native-white in dark mode on
+     platforms (WebKitGTK/Linux) that paint the closed combobox chrome with
+     the OS theme regardless of CSS background-color, while still honoring
+     the CSS text color — producing near-invisible light-on-white text.
+     Neutralized native appearance and drew a matching custom chevron so
+     every <select> in the app (Search, Learning Objectives, Quiz, Notes,
+     Settings, Material Library, ...) now actually uses our dark palette.
+
+2. Upload / "No file is stored for this material": saveFile() caught and
+   swallowed IndexedDB write failures, resolving as if the save had
+   succeeded either way. Every upload path (FileUploader, manual
+   add/edit-slide modals in StudyMaterials and CourseDetail, legacy bulk
+   upload) created its material/slide record unconditionally afterwards, so
+   a device with a failing/full IndexedDB produced normal-looking materials
+   whose bytes were never actually saved — exactly the "No file is stored
+   for this material" dead end reported from the reader, with no warning at
+   upload time to explain why. saveFile() now reports success/failure via
+   its return value, and every call site checks it: a failed save now shows
+   a clear, immediate error and skips creating the broken record instead of
+   silently going on to /read.
+
+3. Embedded browser (SlideReader): default search engine changed from
+   DuckDuckGo to Google, using the `igu=1` parameter that makes Google's own
+   server omit the X-Frame-Options header that otherwise blocks it from
+   being framed at all (DuckDuckGo remains available as one of the quick
+   Study links). Added a per-tab pin: a small pin toggle on every open tab
+   lets the user keep it around — pinned tabs sort to the front and persist
+   across visits to the reader (saved to localStorage), independent of the
+   fixed Wikipedia/PubMed/PubChem/DailyMed/Google/DuckDuckGo quick-link
+   pills.
+
+Co-authored-by: arena-agent <297053741+arena-agent@users.noreply.github.com>
+---
+ src/components/FileUploader.tsx |  16 +++-
+ src/index.css                   | 112 +++++++++++++++++++++----
+ src/pages/CourseDetail.tsx      |  14 +++-
+ src/pages/SlideReader.tsx       | 142 +++++++++++++++++++++++++-------
+ src/pages/StudyMaterials.tsx    |  36 ++++++--
+ src/utils/storage.ts            |  19 ++++-
+ 6 files changed, 283 insertions(+), 56 deletions(-)
+
+diff --git a/src/components/FileUploader.tsx b/src/components/FileUploader.tsx
+index 583ee08..da4bfcd 100644
+--- a/src/components/FileUploader.tsx
++++ b/src/components/FileUploader.tsx
+@@ -240,7 +240,21 @@ const FileUploader: React.FC<FileUploaderProps> = ({
+ 
+       const materialId = uuidv4();
+       // Binary lives in IndexedDB; only metadata + text go into app state.
+-      await saveFile(materialId, new Uint8Array(buffer));
++      const saved = await saveFile(materialId, new Uint8Array(buffer));
++      if (!saved) {
++        // Do NOT call onComplete here — that would create a material record
++        // that looks fully uploaded but has no bytes behind it, which is
++        // exactly what used to produce "No file is stored for this
++        // material" later in the reader with no clue as to why. Surfacing
++        // the failure right here, before any record exists, means the user
++        // sees it immediately and can retry instead of discovering it much
++        // later on a page that can no longer do anything about it.
++        update(item.id, {
++          status: 'error',
++          error: "Couldn't save this file to storage on this device. Check available disk space and try again.",
++        });
++        return;
++      }
+ 
+       update(item.id, {
+         status: 'done',
+diff --git a/src/index.css b/src/index.css
+index 53548e4..7a678af 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -216,34 +216,112 @@ body { overflow-x: hidden; }
+ /* Global Dark Mode */
+ html.dark body { background-color: #0F172A !important; color: #f8fafc !important; }
+ html.dark .bg-white { background-color: #1E293B !important; border-color: #334155 !important; color: #f8fafc !important; }
++
+ /* Every light surface, not just the neutral ones. Tinted panels (amber-50,
+    green-100, red-50 …) used to keep their light background in dark mode while
+    inheriting near-white text from a `.bg-white` ancestor — white writing on a
+-   white panel. Remapping all of them keeps text readable at any nesting. */
+-html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200, html.dark .bg-gray-50, html.dark .bg-gray-100
+-html.dark .bg-gray-200, html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200, html.dark .bg-neutral-50
+-html.dark .bg-neutral-100, html.dark .bg-neutral-200, html.dark .bg-stone-50, html.dark .bg-stone-100
+-html.dark .bg-stone-200, html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200, html.dark .bg-orange-50
+-html.dark .bg-orange-100, html.dark .bg-orange-200, html.dark .bg-amber-50, html.dark .bg-amber-100
+-html.dark .bg-amber-200, html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200
+-html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200, html.dark .bg-green-50, html.dark .bg-green-100
+-html.dark .bg-green-200, html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200
+-html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200, html.dark .bg-cyan-50, html.dark .bg-cyan-100
+-html.dark .bg-cyan-200, html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200, html.dark .bg-blue-50
+-html.dark .bg-blue-100, html.dark .bg-blue-200, html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200
+-html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200, html.dark .bg-purple-50
+-html.dark .bg-purple-100, html.dark .bg-purple-200, html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100
+-html.dark .bg-fuchsia-200, html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200, html.dark .bg-rose-50
+-html.dark .bg-rose-100, html.dark .bg-rose-200 {
++   white panel. Remapping all of them keeps text readable at any nesting.
++   ---------------------------------------------------------------------------
++   NOTE: this selector list previously spanned multiple lines WITHOUT a
++   trailing comma between lines. CSS treats adjacent selectors separated only
++   by whitespace as a *descendant combinator*, not a list — so the entire
++   rule silently compiled into one impossible "ancestor .dark inside another
++   .dark" selector that could never match anything, and none of these tinted
++   backgrounds were ever actually remapped. Every line below now ends with a
++   comma so this is a genuine selector list again. */
++html.dark .bg-slate-50, html.dark .bg-slate-100, html.dark .bg-slate-200,
++html.dark .bg-gray-50, html.dark .bg-gray-100, html.dark .bg-gray-200,
++html.dark .bg-zinc-50, html.dark .bg-zinc-100, html.dark .bg-zinc-200,
++html.dark .bg-neutral-50, html.dark .bg-neutral-100, html.dark .bg-neutral-200,
++html.dark .bg-stone-50, html.dark .bg-stone-100, html.dark .bg-stone-200,
++html.dark .bg-red-50, html.dark .bg-red-100, html.dark .bg-red-200,
++html.dark .bg-orange-50, html.dark .bg-orange-100, html.dark .bg-orange-200,
++html.dark .bg-amber-50, html.dark .bg-amber-100, html.dark .bg-amber-200,
++html.dark .bg-yellow-50, html.dark .bg-yellow-100, html.dark .bg-yellow-200,
++html.dark .bg-lime-50, html.dark .bg-lime-100, html.dark .bg-lime-200,
++html.dark .bg-green-50, html.dark .bg-green-100, html.dark .bg-green-200,
++html.dark .bg-emerald-50, html.dark .bg-emerald-100, html.dark .bg-emerald-200,
++html.dark .bg-teal-50, html.dark .bg-teal-100, html.dark .bg-teal-200,
++html.dark .bg-cyan-50, html.dark .bg-cyan-100, html.dark .bg-cyan-200,
++html.dark .bg-sky-50, html.dark .bg-sky-100, html.dark .bg-sky-200,
++html.dark .bg-blue-50, html.dark .bg-blue-100, html.dark .bg-blue-200,
++html.dark .bg-indigo-50, html.dark .bg-indigo-100, html.dark .bg-indigo-200,
++html.dark .bg-violet-50, html.dark .bg-violet-100, html.dark .bg-violet-200,
++html.dark .bg-purple-50, html.dark .bg-purple-100, html.dark .bg-purple-200,
++html.dark .bg-fuchsia-50, html.dark .bg-fuchsia-100, html.dark .bg-fuchsia-200,
++html.dark .bg-pink-50, html.dark .bg-pink-100, html.dark .bg-pink-200,
++html.dark .bg-rose-50, html.dark .bg-rose-100, html.dark .bg-rose-200 {
+   background-color: #0F172A !important;
+   border-color: #1E293B !important;
+   color: #cbd5e1 !important;
+ }
++
++/* The rule above only recolors text on the SAME element as the tinted
++   background (e.g. `<span class="bg-red-50 text-red-800">`). When the dark,
++   light-background-oriented text class sits on a different element than the
++   background — a common pattern for badges/alerts, e.g.
++   `<div class="bg-red-50"><span class="text-red-800">...</span></div>` — the
++   child's own `text-red-800` declaration still wins over inherited color, so
++   it must be remapped in its own right too. These are the "-700/-800/-900"
++   tiers of every color family: shades chosen for good contrast on a WHITE
++   background, which is exactly backwards on a dark navy one. Remapped to
++   each family's light "-300" tone so the semantic color (red = danger,
++   green = success, amber = warning, …) is preserved while staying readable. */
++html.dark .text-red-700, html.dark .text-red-800, html.dark .text-red-900 { color: #fca5a5 !important; }
++html.dark .text-orange-700, html.dark .text-orange-800, html.dark .text-orange-900 { color: #fdba74 !important; }
++html.dark .text-amber-700, html.dark .text-amber-800, html.dark .text-amber-900 { color: #fcd34d !important; }
++html.dark .text-yellow-700, html.dark .text-yellow-800, html.dark .text-yellow-900 { color: #fde047 !important; }
++html.dark .text-lime-700, html.dark .text-lime-800, html.dark .text-lime-900 { color: #bef264 !important; }
++html.dark .text-green-700, html.dark .text-green-800, html.dark .text-green-900 { color: #86efac !important; }
++html.dark .text-emerald-700, html.dark .text-emerald-800, html.dark .text-emerald-900 { color: #6ee7b7 !important; }
++html.dark .text-teal-700, html.dark .text-teal-800, html.dark .text-teal-900 { color: #5eead4 !important; }
++html.dark .text-cyan-700, html.dark .text-cyan-800, html.dark .text-cyan-900 { color: #67e8f9 !important; }
++html.dark .text-sky-700, html.dark .text-sky-800, html.dark .text-sky-900 { color: #7dd3fc !important; }
++html.dark .text-blue-700, html.dark .text-blue-800, html.dark .text-blue-900 { color: #93c5fd !important; }
++html.dark .text-indigo-700, html.dark .text-indigo-800, html.dark .text-indigo-900 { color: #a5b4fc !important; }
++html.dark .text-violet-700, html.dark .text-violet-800, html.dark .text-violet-900 { color: #c4b5fd !important; }
++html.dark .text-purple-700, html.dark .text-purple-800, html.dark .text-purple-900 { color: #d8b4fe !important; }
++html.dark .text-fuchsia-700, html.dark .text-fuchsia-800, html.dark .text-fuchsia-900 { color: #f0abfc !important; }
++html.dark .text-pink-700, html.dark .text-pink-800, html.dark .text-pink-900 { color: #f9a8d4 !important; }
++html.dark .text-rose-700, html.dark .text-rose-800, html.dark .text-rose-900 { color: #fda4af !important; }
++
++/* -900/-950 "near-black" neutral text, another light-background-only tier
++   not covered by the -700/-800 remap above. */
++html.dark .text-black, html.dark .text-gray-900, html.dark .text-gray-950,
++html.dark .text-slate-900, html.dark .text-slate-950,
++html.dark .text-zinc-900, html.dark .text-zinc-950,
++html.dark .text-neutral-900, html.dark .text-neutral-950,
++html.dark .text-stone-900, html.dark .text-stone-950 { color: #f8fafc !important; }
++
+ html.dark .text-gray-800, html.dark .text-gray-700, html.dark .text-slate-800 { color: #f1f5f9 !important; }
+ html.dark .text-gray-500, html.dark .text-gray-600 { color: #94a3b8 !important; }
+ html.dark .border-gray-100, html.dark .border-gray-200, html.dark .border-slate-100, html.dark .border-slate-200 { border-color: #334155 !important; }
+ html.dark header, html.dark aside { background-color: #0B1120 !important; border-color: #1E293B !important; }
+-html.dark input, html.dark select, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
++
++/* Plain <input>/<textarea> boxes respect background-color/color just fine.
++   <select> is the outlier: several platforms this app ships on (WebKitGTK on
++   Linux in particular) render the closed combobox's box chrome — its
++   background fill and border — with the OS/GTK theme's native widget
++   painter, ignoring `background-color` entirely, while still honoring the
++   CSS `color` for the text inside. That mismatch is exactly the bug this
++   fixes: a native (often light/white) box behind text forced light by the
++   rule below, i.e. barely-visible light-on-light writing. Turning off native
++   appearance makes the browser draw the control from our CSS like any other
++   box, on every platform; the custom chevron replaces the native dropdown
++   arrow that `appearance: none` also removes. */
++html.dark input, html.dark textarea { background-color: #1E293B !important; color: white !important; border-color: #334155 !important; }
++html.dark select {
++  background-color: #1E293B !important;
++  color: white !important;
++  border-color: #334155 !important;
++  -webkit-appearance: none;
++  -moz-appearance: none;
++  appearance: none;
++  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='2'><path d='M6 8l4 4 4-4' stroke-linecap='round' stroke-linejoin='round'/></svg>");
++  background-repeat: no-repeat;
++  background-position: right 0.6rem center;
++  background-size: 1rem;
++}
+ 
+ /* ---------------------------------------------------------------------------
+    pdf.js text layer
+diff --git a/src/pages/CourseDetail.tsx b/src/pages/CourseDetail.tsx
+index e4df20f..c9c04fd 100644
+--- a/src/pages/CourseDetail.tsx
++++ b/src/pages/CourseDetail.tsx
+@@ -262,14 +262,18 @@ const CourseDetail: React.FC = () => {
+     addActivity('slide_completed', `Uploaded ${m.title}${m.usedOcr ? ' (scanned)' : ''}`, courseId, topicId);
+   };
+ 
+-  const handleSaveSlide = () => {
++  const handleSaveSlide = async () => {
+     if (!slideForm.title.trim()) return;
+ 
+     const slides = getSlidesForTopic(selectedTopicId);
+ 
+     if (editingSlide) {
+       if (fileData) {
+-        saveFile(editingSlide.id, fileData);
++        const saved = await saveFile(editingSlide.id, fileData);
++        if (!saved) {
++          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
++          return;
++        }
+       }
+       dispatch({
+         type: 'UPDATE_SLIDE',
+@@ -297,7 +301,11 @@ const CourseDetail: React.FC = () => {
+       };
+ 
+       if (fileData) {
+-        saveFile(newSlide.id, fileData);
++        const saved = await saveFile(newSlide.id, fileData);
++        if (!saved) {
++          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
++          return;
++        }
+         newSlide.fileUrl = `local:${newSlide.id}`;
+       }
+ 
+diff --git a/src/pages/SlideReader.tsx b/src/pages/SlideReader.tsx
+index 6701679..a3e4653 100644
+--- a/src/pages/SlideReader.tsx
++++ b/src/pages/SlideReader.tsx
+@@ -13,7 +13,7 @@ import type { AIChatMessage, AppStateLike, ContextSelection } from '../ai';
+ import {
+   ArrowLeft, ChevronLeft, ChevronRight, Loader2,
+   Maximize2, Minimize2, X, Globe, MessageSquare as MessageSquareIcon,
+-  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle
++  ArrowLeftCircle, ArrowRightCircle, RotateCw, ExternalLink, AlertTriangle, Pin
+ } from 'lucide-react';
+ import * as pdfjs from 'pdfjs-dist';
+ 
+@@ -27,16 +27,26 @@ interface BrowserTab {
+   title: string;
+   history?: string[];
+   historyIndex?: number;
++  /** User-chosen "keep this tab around" flag — see `togglePinTab` below. */
++  pinned?: boolean;
+ }
+ 
+ // Detects whether typed text is a URL or a search query, and normalizes it.
+ // "paracetamol dosing" -> Search engine. "bnf.org" or "https://..." -> direct nav.
+ //
+-// Always resolves searches to DuckDuckGo, never Google: the in-panel browser
+-// is a plain <iframe> on every platform (see the panel below), and Google
+-// sends `X-Frame-Options`/CSP headers that refuse to be framed at all — it
+-// would just show a blank panel. DuckDuckGo (like Wikipedia/PubMed/PubChem/
+-// DailyMed, the other quick-reference links in this panel) allows framing.
++// Resolves every search to Google, per the app's requirement. Plain
++// `https://www.google.com/search?q=...` cannot be framed at all — Google
++// sends an `X-Frame-Options: SAMEORIGIN` response header that every browser
++// enforces regardless of what the page's own script does. `igu=1` ("inline
++// google urlresult", originally built by Google itself for embedding a
++// search box on iOS home-screen web-clips and still commonly used for this
++// exact purpose) is the one query parameter that makes Google's own server
++// omit that header for that response, so the results page can actually
++// render inside this panel's <iframe>. It is not officially documented and
++// not contractually guaranteed forever — if Google ever changes this, the
++// panel already shows a clear "may not allow being shown inside another
++// site — try Open in external window" fallback once the iframe fails to
++// load, so a real system browser is always one click away either way.
+ function resolveAddressInput(raw: string): string {
+   const trimmed = raw.trim();
+   const looksLikeUrl = /^((https?:\/\/)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}|((\d{1,3}\.){3}\d{1,3}))(:\d+)?(\/[-a-z0-9%_.~+]*)*(\?[;&a-z0-9%_.~+=-]*)?(#[-a-z0-9_]*)?$/i.test(trimmed);
+@@ -44,7 +54,39 @@ function resolveAddressInput(raw: string): string {
+   if (looksLikeUrl) {
+     return trimmed.startsWith('http') ? trimmed : `https://${trimmed}`;
+   }
+-  return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
++  return `https://www.google.com/search?igu=1&q=${encodeURIComponent(trimmed)}`;
++}
++
++/** Where pinned browser tabs are remembered across visits to the reader. */
++const PINNED_TABS_KEY = 'pharmatrack_pinned_browser_tabs_v1';
++
++interface PinnedTabRecord {
++  url: string;
++  title: string;
++}
++
++function loadPinnedTabs(): PinnedTabRecord[] {
++  try {
++    const raw = localStorage.getItem(PINNED_TABS_KEY);
++    if (!raw) return [];
++    const parsed = JSON.parse(raw);
++    if (!Array.isArray(parsed)) return [];
++    return parsed.filter(
++      (p): p is PinnedTabRecord => !!p && typeof p.url === 'string' && typeof p.title === 'string',
++    );
++  } catch {
++    return [];
++  }
++}
++
++function savePinnedTabs(tabs: PinnedTabRecord[]): void {
++  try {
++    localStorage.setItem(PINNED_TABS_KEY, JSON.stringify(tabs));
++  } catch {
++    // Best-effort only. A device where localStorage is entirely unavailable
++    // simply won't remember pins between visits; pinning within the current
++    // session still works fine via component state either way.
++  }
+ }
+ 
+ function titleFromUrl(url: string): string {
+@@ -82,29 +124,62 @@ const SlideReader: React.FC = () => {
+   // ignore the panel's bounds on Linux/GTK and stretch to fill the whole
+   // window; an iframe is a normal DOM element and is physically incapable
+   // of overflowing its container the way a separate native window could.
+-  // `isDesktopApp` here is used only to pick a sensible default homepage
+-  // (kept as DuckDuckGo, matching the web build's non-Google default), not
+-  // to choose a different rendering path.
++  // `isDesktopApp` is now unused for picking the homepage (both platforms
++  // default to Google, see `resolveAddressInput`) but is kept for the
++  // native-webview capability check other code below still relies on.
+   const isDesktopApp = detectRuntimeCapabilities().nativeWebview;
+-  const DEFAULT_DESKTOP_URL = 'https://duckduckgo.com';
+-  const DEFAULT_WEB_URL = 'https://en.m.wikipedia.org/wiki/Pharmacology';
+-
+-  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => {
+-    const initialUrl = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
+-    return [
+-      {
+-        id: 'default',
+-        url: initialUrl,
+-        title: titleFromUrl(initialUrl),
+-        history: [initialUrl],
+-        historyIndex: 0,
+-      },
+-    ];
+-  });
+-  const [activeTabId, setActiveTabId] = useState('default');
+-  const [urlInput, setUrlInput] = useState(() => (isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL));
++  const DEFAULT_DESKTOP_URL = 'https://www.google.com/search?igu=1';
++  const DEFAULT_WEB_URL = 'https://www.google.com/search?igu=1';
++
++  // Computed once (guarded by the ref) instead of inside each `useState`
++  // initializer separately, so the restored pinned tabs and the active tab
++  // id agree on the exact same generated ids — two independent
++  // initializers calling `loadPinnedTabs()`/`uuidv4()` a second time would
++  // produce a mismatched set that could never find its own "active" tab.
++  const initialBrowserStateRef = useRef<{ tabs: BrowserTab[]; activeId: string } | null>(null);
++  if (!initialBrowserStateRef.current) {
++    const homepage = isDesktopApp ? DEFAULT_DESKTOP_URL : DEFAULT_WEB_URL;
++    const restoredPinned: BrowserTab[] = loadPinnedTabs().map((p) => ({
++      id: uuidv4(),
++      url: p.url,
++      title: p.title,
++      history: [p.url],
++      historyIndex: 0,
++      pinned: true,
++    }));
++    const homeTab: BrowserTab = {
++      id: 'default',
++      url: homepage,
++      title: titleFromUrl(homepage),
++      history: [homepage],
++      historyIndex: 0,
++    };
++    const tabs = [...restoredPinned, homeTab];
++    initialBrowserStateRef.current = { tabs, activeId: tabs[0].id };
++  }
++
++  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(() => initialBrowserStateRef.current!.tabs);
++  const [activeTabId, setActiveTabId] = useState<string>(() => initialBrowserStateRef.current!.activeId);
++  const [urlInput, setUrlInput] = useState(() => initialBrowserStateRef.current!.tabs[0].url);
+   const [webviewReady, setWebviewReady] = useState(false);
+ 
++  // Single source of truth for persisted pins: whenever any tab's pinned
++  // flag OR url changes (navigating within a pinned tab keeps its saved
++  // entry current), or a pinned tab is closed (it simply drops out of
++  // `browserTabs`, and this recomputes without it), the saved list is kept
++  // in sync automatically — no call site needs to remember to persist.
++  useEffect(() => {
++    savePinnedTabs(browserTabs.filter((t) => t.pinned).map((t) => ({ url: t.url, title: t.title })));
++  }, [browserTabs]);
++
++  const togglePinTab = (tabId: string) => {
++    setBrowserTabs((tabs) => tabs.map((t) => (t.id === tabId ? { ...t, pinned: !t.pinned } : t)));
++  };
++
++  // Pinned tabs always show first, in the order they were opened; unpinned
++  // tabs keep their own relative order after that.
++  const orderedBrowserTabs = [...browserTabs].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned));
++
+   // Keep the address bar in sync with whichever tab is active
+   useEffect(() => {
+     const tab = browserTabs.find(t => t.id === activeTabId);
+@@ -770,15 +845,23 @@ const SlideReader: React.FC = () => {
+ 
+             {/* Tab bar */}
+             <div className="flex bg-gray-200 overflow-x-auto border-b border-gray-300 scrollbar-none h-9 flex-shrink-0">
+-              {browserTabs.map(tab => (
++              {orderedBrowserTabs.map(tab => (
+                 <div
+                   key={tab.id}
+-                  className={`flex items-center gap-2 px-3 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'}`}
++                  className={`flex items-center gap-1.5 px-2.5 py-1 cursor-pointer border-r border-gray-300 min-w-[100px] max-w-[150px] transition-all ${activeTabId === tab.id ? 'bg-white font-bold text-gray-900' : 'hover:bg-gray-100 text-gray-600'} ${tab.pinned ? 'bg-amber-50/60' : ''}`}
+                   onClick={() => {
+                     setActiveTabId(tab.id);
+                     setUrlInput(tab.url);
+                   }}
++                  title={tab.pinned ? `${tab.title} (pinned)` : tab.title}
+                 >
++                  <button
++                    onClick={(e) => { e.stopPropagation(); togglePinTab(tab.id); }}
++                    className={`p-0.5 rounded-sm shrink-0 transition-colors ${tab.pinned ? 'text-amber-600 hover:text-amber-700' : 'text-gray-400 hover:text-gray-600'}`}
++                    title={tab.pinned ? 'Unpin tab' : 'Pin this tab so it stays here'}
++                  >
++                    <Pin className={`w-3 h-3 ${tab.pinned ? 'fill-current' : ''}`} />
++                  </button>
+                   <span className="text-xs truncate flex-1">{tab.title}</span>
+                   {browserTabs.length > 1 && (
+                     <button
+@@ -849,6 +932,7 @@ const SlideReader: React.FC = () => {
+             {/* Quick study references bar */}
+             <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-100 border-b overflow-x-auto text-[10px] scrollbar-none flex-shrink-0">
+               <span className="text-gray-400 font-bold uppercase text-[9px] shrink-0">Study:</span>
++              <button onClick={() => navigateActiveTab('https://www.google.com/search?igu=1')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔎 Google</button>
+               <button onClick={() => navigateActiveTab('https://en.m.wikipedia.org/wiki/Pharmacology')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">📚 Wikipedia</button>
+               <button onClick={() => navigateActiveTab('https://pubmed.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">🔬 PubMed</button>
+               <button onClick={() => navigateActiveTab('https://pubchem.ncbi.nlm.nih.gov/')} className="px-2 py-0.5 bg-white rounded border border-gray-200 text-gray-700 hover:bg-gray-50 shrink-0 font-medium">💊 PubChem</button>
+diff --git a/src/pages/StudyMaterials.tsx b/src/pages/StudyMaterials.tsx
+index 98ea062..694d4c3 100644
+--- a/src/pages/StudyMaterials.tsx
++++ b/src/pages/StudyMaterials.tsx
+@@ -211,7 +211,11 @@ const StudyMaterials: React.FC = () => {
+       // Prioritize original Blob/File for storage
+       const dataToSave = currentFileBlob || fileData;
+       if (dataToSave) {
+-        await saveFile(editingSlide.id, dataToSave);
++        const saved = await saveFile(editingSlide.id, dataToSave);
++        if (!saved) {
++          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
++          return;
++        }
+       }
+       
+       dispatch({
+@@ -243,7 +247,11 @@ const StudyMaterials: React.FC = () => {
+       };
+ 
+       if (dataToSave) {
+-        await saveFile(newId, dataToSave);
++        const saved = await saveFile(newId, dataToSave);
++        if (!saved) {
++          alert("Couldn't save this file to storage on this device. Check available disk space and try again.");
++          return;
++        }
+       }
+ 
+       dispatch({ type: 'ADD_SLIDE', payload: newSlide });
+@@ -396,6 +404,7 @@ const StudyMaterials: React.FC = () => {
+ 
+     const slidesList = getSlidesForTopic(selectedTopicId);
+     let slideNumber = slidesList.length;
++    const failedNames: string[] = [];
+ 
+     for (let i = 0; i < files.length; i++) {
+       const file = files[i];
+@@ -442,13 +451,30 @@ const StudyMaterials: React.FC = () => {
+         }),
+       };
+ 
+-      // Save the raw File object directly
+-      await saveFile(newSlideId, file);
++      // Save the raw File object directly. Skip creating a slide record for
++      // any file whose bytes did not actually persist — a slide with no
++      // saved file is exactly the "No file is stored for this material"
++      // dead end reported from the reader, and it is much clearer to tell
++      // the user right here which file(s) need to be re-added than to let
++      // a broken entry silently appear in their material list.
++      const saved = await saveFile(newSlideId, file);
++      if (!saved) {
++        failedNames.push(file.name);
++        continue;
++      }
+       dispatch({ type: 'ADD_SLIDE', payload: newSlide });
+     }
+ 
+     setShowBulkUpload(false);
+-    addActivity('slide_completed', `Uploaded ${files.length} slides`, selectedCourse);
++    const savedCount = files.length - failedNames.length;
++    if (savedCount > 0) {
++      addActivity('slide_completed', `Uploaded ${savedCount} slide${savedCount === 1 ? '' : 's'}`, selectedCourse);
++    }
++    if (failedNames.length) {
++      alert(
++        `Couldn't save ${failedNames.length} file(s) to storage on this device — they were not added:\n\n${failedNames.join('\n')}\n\nCheck available disk space and try uploading them again.`,
++      );
++    }
+   };
+ 
+   const getStatusIcon = (status: Slide['status']) => {
+diff --git a/src/utils/storage.ts b/src/utils/storage.ts
+index caf749b..f4053d9 100644
+--- a/src/utils/storage.ts
++++ b/src/utils/storage.ts
+@@ -221,7 +221,22 @@ const blobToBytes = (blob: Blob, timeoutMs: number = BLOB_READ_TIMEOUT_MS): Prom
+   });
+ };
+ 
+-export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<void> => {
++/**
++ * Persists a file's bytes to IndexedDB.
++ *
++ * Returns `true` once the write has actually been confirmed to succeed, and
++ * `false` (after logging the real error) if it did not — it never throws.
++ *
++ * That return value matters: every upload flow creates its material/slide
++ * record ONLY after this resolves, so a caller that ignored a failure here
++ * used to go on to create a normal-looking material whose bytes were never
++ * actually saved. The reader would then open it later and report "No file
++ * is stored for this material" — indistinguishable, from the user's side,
++ * from an upload that silently failed with no error at all. Callers must
++ * check this and stop (surfacing a clear error immediately, before the
++ * record is created) rather than proceeding as if the save worked.
++ */
++export const saveFile = async (id: string, file: Blob | Uint8Array | string): Promise<boolean> => {
+   try {
+     // Never hand a Blob/File to IndexedDB — always store raw bytes instead.
+     // This is the actual fix, applied at the one place every upload path
+@@ -231,8 +246,10 @@ export const saveFile = async (id: string, file: Blob | Uint8Array | string): Pr
+     // nothing we ever wrote is a Blob to begin with.
+     const toStore = file instanceof Blob ? await blobToBytes(file) : file;
+     await idb.set(`file_${id}`, toStore);
++    return true;
+   } catch (err) {
+     console.error(`Error saving file ${id} to IndexedDB:`, err);
++    return false;
+   }
+ };
+ 
+-- 
+2.39.5

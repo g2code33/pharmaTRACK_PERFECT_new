@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { offsetsAreMeasured, pageNumberAtOffset, pagesByDistance } from '../utils/pageOffsets';
 import * as pdfjs from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
 import {
@@ -9,6 +10,7 @@ import {
 } from 'lucide-react';
 import SelectionPopup, { overlayFor } from './SelectionPopup';
 import type { Highlight, HighlightColor, HighlightRect } from '../types';
+import { keepPinchAnchor, usePinchZoom, type PinchAnchor } from '../platform/pinchZoom';
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -56,6 +58,8 @@ interface PdfViewerProps {
   focusHighlightId?: string;
   /** Pre-fill the find bar, e.g. from a global-search "In document" hit. */
   initialQuery?: string;
+  /** Lecture slides are landscape; opening them at page-fit avoids the half-slide view. */
+  initialZoom?: ZoomPreset;
 }
 
 interface SearchHit {
@@ -77,26 +81,42 @@ const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
  * Pages rendered around the viewport. Wide enough that normal scrolling always
  * lands on an already-painted page.
  */
-const RENDER_WINDOW = 6;
+const RENDER_WINDOW = 2;
 /**
- * Beyond this, canvases are released. One page at 2x DPR is roughly 20 MB, so
- * an unbounded cache would exhaust memory on a 100+ page deck.
+ * Beyond this, canvases are released. One page at high DPI can be tens of MB,
+ * so an unbounded cache makes the desktop WebView feel frozen on lecture decks.
  */
-const KEEP_WINDOW = 14;
+const KEEP_WINDOW = 8;
+
+/**
+ * Width, in device pixels, of the standing preview kept for every page.
+ * Large enough to read headings and recognise a figure, small enough that a
+ * whole lecture deck of them is a few megabytes of JPEG rather than the
+ * gigabytes the same pages would cost as live canvases.
+ */
+const PREVIEW_WIDTH = 640;
+const PREVIEW_QUALITY = 0.62;
+/** Repaint after this many new previews, rather than once per page. */
+const PREVIEW_BATCH = 4;
+
+const yieldToMainThread = () => new Promise<void>((resolve) => {
+  if (typeof window === 'undefined') { resolve(); return; }
+  window.setTimeout(resolve, 0);
+});
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const PdfViewer: React.FC<PdfViewerProps> = ({
   fileUrl, title, onPageChange, onTextExtracted,
   highlights = [], onCreateHighlight, onDeleteHighlight, onAskAi, jumpToPage,
-  focusHighlightId, initialQuery,
+  focusHighlightId, initialQuery, initialZoom = 'width',
 }) => {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
   const [scale, setScale] = useState(1.2);
-  const [zoomPreset, setZoomPreset] = useState<ZoomPreset>('width');
+  const [zoomPreset, setZoomPreset] = useState<ZoomPreset>(initialZoom);
   const [rotation, setRotation] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -143,16 +163,30 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const textTasks = useRef<Map<number, { cancel: () => void }>>(new Map());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const panState = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const panFrame = useRef<number | null>(null);
+  const panPointer = useRef<{ x: number; y: number } | null>(null);
+  const currentPageRef = useRef(1);
+  const scrollFrame = useRef<number | null>(null);
+  const renderSoonTimer = useRef<number | null>(null);
+  const renderSoonCentre = useRef<number | null>(null);
 
   /** page -> "scale|rotation" already painted. Lets us skip redundant renders. */
   const renderedKey = useRef<Map<number, string>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
+  const renderBatch = useRef(0);
+
+  useEffect(() => {
+    setZoomPreset(initialZoom);
+  }, [fileUrl, initialZoom]);
 
   /** Search state read from inside async render callbacks. */
   const searchRef = useRef({ query: '', matchCase: false, wholeWords: false, all: true });
   useEffect(() => {
     searchRef.current = { query, matchCase, wholeWords, all: highlightAllMatches };
   }, [query, matchCase, wholeWords, highlightAllMatches]);
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
 
   const scaledSize = useCallback((pageNum: number) => {
     const base = baseSizes[pageNum - 1];
@@ -193,6 +227,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           if (i === Math.min(4, pdf.numPages) || i === pdf.numPages) {
             if (!cancelled) setBaseSizes([...sizes]);
           }
+          if (i % 8 === 0) await yieldToMainThread();
         }
 
         pdf.getOutline().then((o) => !cancelled && o && setOutline(o as OutlineNode[])).catch(() => {});
@@ -223,6 +258,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   /* ---------------- extract text ---------------- */
   useEffect(() => {
     if (!doc) return;
+    // Do not scan every page on open. Large lecture PDFs/PPTX conversions were
+    // spending seconds extracting full text before the user even searched,
+    // making the whole WebView feel frozen. Visible pages fill pageTexts during
+    // renderPage; the full pass runs only when Find/deep-link search needs it.
+    if (!showSearch && !initialQuery) return;
     let cancelled = false;
     (async () => {
       const texts: string[] = [];
@@ -233,6 +273,14 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
           const content = await page.getTextContent();
           texts[i - 1] = content.items.map((it: any) => it.str).join(' ');
         } catch { texts[i - 1] = ''; }
+        if (i % 4 === 0) {
+          setPageTexts((prev) => {
+            const next = prev.slice();
+            texts.forEach((text, index) => { if (text !== undefined) next[index] = text; });
+            return next;
+          });
+          await yieldToMainThread();
+        }
       }
       if (cancelled) return;
       setPageTexts(texts);
@@ -240,7 +288,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       onTextExtracted?.(texts.map((text, i) => ({ page: i + 1, text })));
     })();
     return () => { cancelled = true; };
-  }, [doc]);
+  }, [doc, showSearch, initialQuery, onTextExtracted]);
 
   /* ---------------- search mark painting ---------------- */
 
@@ -330,7 +378,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
       const page = await doc.getPage(pageNum);
       const viewport = page.getViewport({ scale, rotation });
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
       canvas.style.width = `${Math.floor(viewport.width)}px`;
@@ -353,6 +401,13 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         textLayer.style.height = `${Math.floor(viewport.height)}px`;
 
         const content = await page.getTextContent();
+        const extractedText = content.items.map((it: any) => it.str).join(' ');
+        setPageTexts((prev) => {
+          if (prev[pageNum - 1] === extractedText) return prev;
+          const next = prev.slice();
+          next[pageNum - 1] = extractedText;
+          return next;
+        });
         const textTask = pdfjs.renderTextLayer({
           textContentSource: content, container: textLayer, viewport,
         });
@@ -384,9 +439,11 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderWindow = useCallback((centre: number) => {
     if (!doc || !numPages) return;
 
+    const batch = ++renderBatch.current;
+    const pages: number[] = [];
     for (let d = 0; d <= RENDER_WINDOW; d++) {
       for (const p of d === 0 ? [centre] : [centre - d, centre + d]) {
-        if (p >= 1 && p <= numPages) renderPage(p);
+        if (p >= 1 && p <= numPages && !pages.includes(p)) pages.push(p);
       }
     }
 
@@ -398,7 +455,56 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         renderedKey.current.delete(p);
       }
     }
+
+    void (async () => {
+      for (const p of pages) {
+        if (batch !== renderBatch.current) return;
+        await renderPage(p);
+        await yieldToMainThread();
+      }
+    })();
   }, [doc, numPages, renderPage]);
+
+  /**
+   * Coalesced entry point to `renderWindow`.
+   *
+   * Every call to renderWindow bumps `renderBatch`, which aborts the batch that
+   * is still rasterising. The viewport tracker used to call it from a rAF on
+   * every scroll frame and from every IntersectionObserver entry, so during a
+   * flick the render loop was cancelled and restarted dozens of times a second
+   * and no page ever finished painting — the document appeared to lag behind
+   * the scrollbar and then snap. Collapsing those calls into one per short
+   * window keeps rasterisation moving forward while the user scrolls.
+   */
+  const scheduleRenderWindow = useCallback((centre: number, delay = 90) => {
+    renderSoonCentre.current = centre;
+    if (renderSoonTimer.current != null) return;
+    renderSoonTimer.current = window.setTimeout(() => {
+      renderSoonTimer.current = null;
+      const next = renderSoonCentre.current;
+      renderSoonCentre.current = null;
+      if (next != null) renderWindow(next);
+    }, delay);
+  }, [renderWindow]);
+
+  useEffect(() => () => {
+    if (renderSoonTimer.current != null) window.clearTimeout(renderSoonTimer.current);
+    renderSoonTimer.current = null;
+  }, []);
+
+  useEffect(() => {
+    const onResume = () => {
+      if (!doc || !numPages) return;
+      const centre = currentPageRef.current;
+      for (let page = Math.max(1, centre - 1); page <= Math.min(numPages, centre + 1); page += 1) {
+        renderedKey.current.delete(page);
+        void renderPage(page, true);
+      }
+      renderWindow(centre);
+    };
+    window.addEventListener('pharmatrack:resume', onResume);
+    return () => window.removeEventListener('pharmatrack:resume', onResume);
+  }, [doc, numPages, renderPage, renderWindow]);
 
   /* ---------------- viewport tracking ---------------- */
   useEffect(() => {
@@ -406,21 +512,114 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
-            const pageNum = Number((entry.target as HTMLElement).dataset.page);
+          if (!entry.isIntersecting) continue;
+          const pageNum = Number((entry.target as HTMLElement).dataset.page);
+          scheduleRenderWindow(pageNum);
+          if (entry.intersectionRatio > 0.45) {
+            currentPageRef.current = pageNum;
             setCurrentPage(pageNum);
             setPageInput(String(pageNum));
           }
         }
       },
-      { root: containerRef.current, threshold: [0.5] },
+      { root: containerRef.current, rootMargin: '900px 0px', threshold: [0.01, 0.45, 0.7] },
     );
     pageRefs.current.slice(0, numPages).forEach((el) => el && observer.observe(el));
     return () => observer.disconnect();
-  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode]);
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, scheduleRenderWindow]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!doc || !el || !numPages || !baseSizes.length) return;
+    const horizontal = scrollMode === 'horizontal';
+
+    // Page offsets are measured once per layout change and then reused.
+    //
+    // The previous implementation asked the browser for
+    // `document.elementsFromPoint()` on every scroll frame. A hit test has to
+    // flush layout and walk the paint order of everything under the cursor
+    // position — on a reader whose pages carry a canvas plus a full
+    // transparent text layer that is one of the most expensive calls available,
+    // and it ran 60 times a second while the wheel was moving. Comparing the
+    // scroll offset against cached page offsets is pure arithmetic.
+    let offsets: number[] = [];
+    const measure = () => {
+      const base = el.getBoundingClientRect();
+      const next: number[] = [];
+      for (let i = 0; i < numPages; i += 1) {
+        const page = pageRefs.current[i];
+        if (!page) {
+          next.push(next.length ? next[next.length - 1] : 0);
+          continue;
+        }
+        const rect = page.getBoundingClientRect();
+        next.push(horizontal
+          ? rect.left - base.left + el.scrollLeft
+          : rect.top - base.top + el.scrollTop);
+      }
+      // Before the first layout every rect reads as 0; acting on that would
+      // report the last page and throw the reader to the end of the document.
+      offsets = offsetsAreMeasured(next, numPages) ? next : [];
+    };
+
+    const pageAtViewport = () => {
+      if (!offsets.length) return currentPageRef.current;
+      const probe = horizontal
+        ? el.scrollLeft + el.clientWidth * 0.5
+        : el.scrollTop + el.clientHeight * 0.42;
+      return pageNumberAtOffset(offsets, probe, numPages);
+    };
+
+    const syncPage = () => {
+      scrollFrame.current = null;
+      const best = pageAtViewport();
+      if (!Number.isFinite(best) || best < 1 || best > numPages) return;
+      if (best !== currentPageRef.current) {
+        currentPageRef.current = best;
+        setCurrentPage(best);
+        setPageInput(String(best));
+      }
+    };
+
+    let settleTimer: number | undefined;
+    const settle = () => {
+      settleTimer = undefined;
+      el.classList.remove('is-scrolling');
+      // Heights change as pages rasterise, so re-measure whenever the user
+      // pauses rather than on a timer that competes with the scroll itself.
+      measure();
+      syncPage();
+      scheduleRenderWindow(currentPageRef.current, 0);
+    };
+
+    const onScroll = () => {
+      if (!el.classList.contains('is-scrolling')) el.classList.add('is-scrolling');
+      if (scrollFrame.current == null) scrollFrame.current = window.requestAnimationFrame(syncPage);
+      if (settleTimer !== undefined) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(settle, 120);
+    };
+
+    measure();
+    syncPage();
+    el.addEventListener('scroll', onScroll, { passive: true });
+
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => { measure(); })
+      : null;
+    resizeObserver?.observe(el);
+
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      resizeObserver?.disconnect();
+      el.classList.remove('is-scrolling');
+      if (settleTimer !== undefined) window.clearTimeout(settleTimer);
+      if (scrollFrame.current != null) window.cancelAnimationFrame(scrollFrame.current);
+      scrollFrame.current = null;
+    };
+  }, [doc, numPages, baseSizes.length, scrollMode, spreadMode, scale, rotation, scheduleRenderWindow]);
 
   // Keep the render window centred on wherever the user is.
-  useEffect(() => { renderWindow(currentPage); }, [currentPage, renderWindow]);
+  useEffect(() => { scheduleRenderWindow(currentPage); }, [currentPage, scheduleRenderWindow]);
 
   // Zoom or rotation invalidates every cached raster.
   useEffect(() => {
@@ -467,6 +666,82 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     if (containerRef.current) ro.observe(containerRef.current);
     return () => ro.disconnect();
   }, [doc, zoomPreset, rotation, spreadMode, baseSizes]);
+
+  /* ---------------- standing page previews ----------------
+     Skipping to page 90 used to show a blank sheet while that page was
+     rasterised, because only a handful of pages around the viewport are kept
+     as live canvases — and they have to be, since one page at reading
+     resolution is tens of megabytes and a lecture deck would exhaust the
+     WebView in seconds.
+
+     So every page gets a small JPEG of itself instead, built once in the
+     background and then kept. It sits underneath the real canvas, so a jump
+     lands on a readable page immediately and the sharp render simply replaces
+     it a moment later. A 200-page deck costs a few megabytes this way.
+
+     Pages are prepared outwards from wherever the reader currently is, so the
+     most likely destinations are ready first. */
+  const previewUrls = useRef<Map<number, string>>(new Map());
+  const [previewTick, setPreviewTick] = useState(0);
+  const previewFor = (pageNum: number): string | undefined =>
+    previewTick < 0 ? undefined : previewUrls.current.get(pageNum);
+
+  useEffect(() => {
+    if (!doc || !numPages) return;
+    let cancelled = false;
+    const urls = previewUrls.current;
+
+    void (async () => {
+      const scratch = document.createElement('canvas');
+      const ctx = scratch.getContext('2d', { alpha: false });
+      if (!ctx) return;
+      let sinceRepaint = 0;
+
+      for (const pageNum of pagesByDistance(numPages, currentPageRef.current)) {
+        if (cancelled) return;
+        if (urls.has(pageNum)) continue;
+        try {
+          const page = await doc.getPage(pageNum);
+          if (cancelled) return;
+          const unscaled = page.getViewport({ scale: 1, rotation });
+          // Never upscale: a page already smaller than the preview width is
+          // cheapest rendered at its own size.
+          const viewport = page.getViewport({
+            scale: Math.min(1, PREVIEW_WIDTH / Math.max(1, unscaled.width)),
+            rotation,
+          });
+          scratch.width = Math.max(1, Math.floor(viewport.width));
+          scratch.height = Math.max(1, Math.floor(viewport.height));
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          if (cancelled) return;
+
+          const blob = await new Promise<Blob | null>((resolve) => {
+            if (typeof scratch.toBlob !== 'function') { resolve(null); return; }
+            scratch.toBlob(resolve, 'image/jpeg', PREVIEW_QUALITY);
+          });
+          if (cancelled) { if (blob) URL.revokeObjectURL(URL.createObjectURL(blob)); return; }
+          if (blob) {
+            urls.set(pageNum, URL.createObjectURL(blob));
+            sinceRepaint += 1;
+            if (sinceRepaint >= PREVIEW_BATCH) { sinceRepaint = 0; setPreviewTick((t) => t + 1); }
+          }
+        } catch {
+          // A page that refuses to preview still renders normally when reached.
+        }
+        // One page per task, so preparing the document never competes with
+        // scrolling, typing or the live render of the page being read.
+        await yieldToMainThread();
+      }
+      if (!cancelled && sinceRepaint > 0) setPreviewTick((t) => t + 1);
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const url of urls.values()) URL.revokeObjectURL(url);
+      urls.clear();
+    };
+  }, [doc, numPages, rotation]);
 
   /* ---------------- navigation ---------------- */
   const goToPage = useCallback((n: number) => {
@@ -531,6 +806,61 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     setScale((s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, +(s + delta).toFixed(2))));
   };
 
+  /* ---------------- pinch & trackpad zoom ----------------
+     The installed app refuses browser zoom, so the reader has to provide the
+     real thing: pinching the page zooms the page, not the whole interface. */
+  const scaleRef = useRef(scale);
+  useEffect(() => { scaleRef.current = scale; }, [scale]);
+  const pinchRef = useRef<{ anchor: PinchAnchor; startScale: number } | null>(null);
+
+  usePinchZoom(containerRef, {
+    onStart: (anchor) => { pinchRef.current = { anchor, startScale: scaleRef.current }; },
+    onZoom: (factor) => {
+      const base = pinchRef.current;
+      if (!base) return;
+      setZoomPreset('actual');
+      setScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, base.startScale * factor)));
+    },
+    onEnd: () => { pinchRef.current = null; },
+    // Keyed on the document: the scroller is only in the tree once there is
+    // something to scroll, and an error screen replaces it entirely.
+  }, Boolean(doc));
+
+  // Runs after the rescaled pages are laid out, so the point between the
+  // fingers is still the point on screen.
+  useLayoutEffect(() => {
+    const base = pinchRef.current;
+    const el = containerRef.current;
+    if (!base || !el) return;
+    keepPinchAnchor(el, base.anchor, scale / base.startScale);
+  }, [scale]);
+
+  // ctrl/⌘ + wheel is the trackpad pinch and the mouse-wheel zoom. Without
+  // this the guard would simply swallow it and desktop would lose a gesture
+  // it used to have.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (event.cancelable) event.preventDefault();
+      const box = el.getBoundingClientRect();
+      const anchor: PinchAnchor = {
+        x: event.clientX - box.left,
+        y: event.clientY - box.top,
+        scrollLeft: el.scrollLeft,
+        scrollTop: el.scrollTop,
+      };
+      const startScale = scaleRef.current;
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale * Math.exp(-event.deltaY / 420)));
+      pinchRef.current = { anchor, startScale };
+      setZoomPreset('actual');
+      setScale(next);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [doc]);
+
   /* ---------------- hand tool ---------------- */
   const onPanStart = (e: React.MouseEvent) => {
     if (tool !== 'hand' || !containerRef.current) return;
@@ -541,15 +871,28 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   };
   useEffect(() => {
     if (tool !== 'hand') return;
+    const applyPan = () => {
+      panFrame.current = null;
+      if (!panState.current || !panPointer.current || !containerRef.current) return;
+      containerRef.current.scrollLeft = panState.current.left - (panPointer.current.x - panState.current.x);
+      containerRef.current.scrollTop = panState.current.top - (panPointer.current.y - panState.current.y);
+    };
     const move = (e: MouseEvent) => {
       if (!panState.current || !containerRef.current) return;
-      containerRef.current.scrollLeft = panState.current.left - (e.clientX - panState.current.x);
-      containerRef.current.scrollTop = panState.current.top - (e.clientY - panState.current.y);
+      panPointer.current = { x: e.clientX, y: e.clientY };
+      if (panFrame.current == null) panFrame.current = window.requestAnimationFrame(applyPan);
     };
-    const up = () => { panState.current = null; };
-    window.addEventListener('mousemove', move);
+    const up = () => {
+      panState.current = null;
+      panPointer.current = null;
+      if (panFrame.current != null) {
+        window.cancelAnimationFrame(panFrame.current);
+        panFrame.current = null;
+      }
+    };
+    window.addEventListener('mousemove', move, { passive: true });
     window.addEventListener('mouseup', up);
-    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); up(); };
   }, [tool]);
 
   /* ---------------- selection ---------------- */
@@ -976,7 +1319,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
         <div
           ref={containerRef}
           onMouseDown={onPanStart}
-          className={`flex-1 min-h-0 py-4 px-2 ${
+          className={`pdf-viewer-scroll flex-1 min-h-0 py-4 px-2 ${
             scrollMode === 'horizontal' ? 'overflow-x-auto overflow-y-hidden flex items-start gap-4'
               : scrollMode === 'wrapped' ? 'overflow-auto flex flex-wrap justify-center items-start gap-4 content-start'
               : 'overflow-y-scroll overflow-x-auto'
@@ -1003,7 +1346,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                 key={n}
                 data-page={n}
                 ref={(el) => { pageRefs.current[n - 1] = el; }}
-                className={`bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mb-4'}`}
+                className={`pdf-page-shell bg-white shadow-lg rounded-sm relative ${inline ? '' : 'mb-4'}`}
                 // Sized from the measured viewport before any pixels are drawn,
                 // so the scrollbar is correct and jumps land precisely.
                 // marginInline:auto rather than mx-auto so the value is stable
@@ -1015,7 +1358,18 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   marginInline: inline ? undefined : 'auto',
                 }}
               >
-                <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="block rounded-sm" />
+                {/* Underneath the canvas: visible while this page has no live
+                    render, which is exactly the moment a jump lands on it. */}
+                {previewFor(n) && (
+                  <img
+                    src={previewFor(n)}
+                    alt=""
+                    aria-hidden="true"
+                    draggable={false}
+                    className="pdf-page-preview"
+                  />
+                )}
+                <canvas ref={(el) => { canvasRefs.current[n - 1] = el; }} className="relative z-[1] block rounded-sm" />
 
                 {pageHighlights.map((h) =>
                   h.rects!.map((r, i) => (

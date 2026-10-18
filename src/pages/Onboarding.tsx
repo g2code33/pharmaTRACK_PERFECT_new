@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import NativeTitleBar from '../components/NativeTitleBar';
 import { Student } from '../types';
 import { GraduationCap, User, Building, BookOpen, Calendar, ArrowRight, Sparkles } from 'lucide-react';
 
@@ -40,7 +41,9 @@ const Onboarding: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#1B4332] via-[#2D6A4F] to-[#40916C] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-[#1B4332] via-[#2D6A4F] to-[#40916C] flex flex-col">
+      <NativeTitleBar sticky />
+      <div className="flex flex-1 items-center justify-center p-4">
       <div className="w-full max-w-lg">
         {/* Logo and intro */}
         <div className="text-center mb-8">
@@ -231,6 +234,7 @@ const Onboarding: React.FC = () => {
             <p className="text-xs">Track Progress</p>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
