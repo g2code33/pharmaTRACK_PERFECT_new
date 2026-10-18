@@ -22,12 +22,15 @@ import RouteLoading from '../components/RouteLoading';
 import RouteErrorBoundary from '../components/RouteErrorBoundary';
 import {
   DEFAULT_BACKGROUND_PREFETCH_ROUTES,
+  chunkFileForModule,
   isChunkLoadError,
   prefetchRoute,
   registerRoute,
   scheduleRoutePrefetch,
   lazyWithRetry,
 } from '../utils/routeLoader';
+import fs from 'node:fs';
+import path from 'node:path';
 import { __testing as idleSchedulerTesting } from '../utils/idleScheduler';
 
 // ---------------------------------------------------------------------------
@@ -253,6 +256,94 @@ describe('route prefetch', () => {
       </Suspense>,
     );
     expect(await screen.findByTestId('loaded-ok')).toBeInTheDocument();
+  });
+});
+
+describe('module MIME refusal recovery', () => {
+  // Pretend the one automatic reload has already happened, so the loader goes
+  // straight to reporting instead of navigating (jsdom cannot reload).
+  beforeEach(() => {
+    sessionStorage.setItem('pharmatrack:chunk-reload', String(Date.now()));
+  });
+  afterEach(() => {
+    sessionStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it('treats WebKit\'s MIME refusal as a chunk-load failure', () => {
+    // The exact wording from the field screenshots (Linux desktop app).
+    expect(
+      isChunkLoadError(new Error("'application/pdf' is not a valid JavaScript MIME type.")),
+    ).toBe(true);
+  });
+
+  it('names the damaged file instead of repeating the MIME error at the user', async () => {
+    const url = 'https://tauri.localhost/assets/StudyMaterials-BxWFNAMN.js';
+    const factory = vi.fn(async () => {
+      throw new Error(`Failed to fetch dynamically imported module: ${url}`);
+    });
+    // The webview claims JavaScript, delivers a PDF: the app must say which
+    // file is wrong and what repairs it, not echo a MIME type.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7 damaged').buffer,
+      })),
+    );
+
+    const Lazy = lazyWithRetry(factory as never);
+    render(
+      <RouteErrorBoundary>
+        <Suspense fallback={<RouteLoading />}>
+          <Lazy />
+        </Suspense>
+      </RouteErrorBoundary>,
+    );
+
+    expect(await screen.findByText(/StudyMaterials-BxWFNAMN\.js/)).toBeInTheDocument();
+    expect(screen.getByText(/arrived as a PDF document/)).toBeInTheDocument();
+    expect(screen.getByText(/Reinstall PharmaTRACK/i)).toBeInTheDocument();
+    expect(screen.queryByText(/is not a valid JavaScript MIME type/)).not.toBeInTheDocument();
+  });
+});
+
+describe('route chunk map', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('resolves a page source path to the file this build emitted', async () => {
+    // WebKit's refusal names no URL, so this map is how recovery finds the
+    // exact file instead of guessing from the resource timeline.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ 'src/pages/StudyMaterials.tsx': 'assets/StudyMaterials-BQuRKAmX.js' }),
+      })),
+    );
+    expect(await chunkFileForModule('src/pages/StudyMaterials.tsx')).toBe(
+      'http://localhost:3000/assets/StudyMaterials-BQuRKAmX.js',
+    );
+  });
+
+  it('returns null for a page the map does not know', async () => {
+    expect(await chunkFileForModule('src/pages/NoSuchPage.tsx')).toBeNull();
+    expect(await chunkFileForModule(undefined)).toBeNull();
+  });
+
+  it('every lazy route declares a source path that exists on disk', () => {
+    // A typo here would silently degrade recovery back to a guess, so the
+    // source path is checked instead of trusted.
+    const app = fs.readFileSync(path.resolve('src/App.tsx'), 'utf8');
+    const ids = [...app.matchAll(/lazyRoute\([^,]+,\s*\(\)\s*=>\s*import\('[^']+'\),\s*'([^']+)'\)/g)].map(
+      (match) => match[1],
+    );
+    expect(ids.length).toBeGreaterThan(20);
+    for (const id of ids) {
+      expect(fs.existsSync(path.resolve(id)), `${id} is missing`).toBe(true);
+    }
   });
 });
 

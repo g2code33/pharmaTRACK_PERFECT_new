@@ -76,8 +76,51 @@ function integrityManifest(): Plugin {
   };
 }
 
+/**
+ * Writes dist/chunk-map.json: source path -> emitted chunk file, for every
+ * dynamically imported page. The router hands each page's source path to
+ * lazyRoute, so when a webview refuses a module the app can name and re-fetch
+ * the EXACT file instead of guessing from the resource timeline. WebKit's
+ * refusal ("'application/pdf' is not a valid JavaScript MIME type") carries no
+ * URL at all, which is what makes the map necessary — see
+ * src/utils/moduleRescue.ts.
+ *
+ * Only dynamic entries are recorded: those are the lazy routes. (The plugin
+ * deliberately records the emitted name from the same build that wrote it, so
+ * a stale hash can never be looked up.)
+ */
+function routeChunkMap(): Plugin {
+  return {
+    name: 'pharmatrack-route-chunk-map',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const map: Record<string, string> = {};
+      for (const item of Object.values(bundle)) {
+        if (item.type !== 'chunk') continue;
+        if (!item.isDynamicEntry || !item.facadeModuleId) continue;
+        const id = path
+          .relative(process.cwd(), item.facadeModuleId)
+          .split(path.sep)
+          .join('/');
+        map[id] = item.fileName;
+      }
+      this.emitFile({
+        type: 'asset',
+        fileName: 'chunk-map.json',
+        source: `${JSON.stringify(map, null, 2)}\n`,
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), versionServiceWorker(), integrityManifest()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    versionServiceWorker(),
+    integrityManifest(),
+    routeChunkMap(),
+  ],
   base: './',
   
   // This explicitly forces Vite to read the GitHub Action secrets!

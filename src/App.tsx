@@ -21,35 +21,41 @@ import ResetPassword from './pages/ResetPassword';
  * Each import is written out in full rather than built from a template string:
  * a computed `import(`./pages/${name}`)` silently resolves to nothing at build
  * time and the pages never reach the bundle.
+ *
+ * The third argument is the page's source path. The build writes
+ * `chunk-map.json` (source path -> emitted chunk) so a route whose response is
+ * mis-labelled can be re-fetched and re-imported by exact URL instead of by
+ * guess — WebKit's MIME refusal names the MIME type, never the file. See
+ * src/utils/moduleRescue.ts.
  */
-const StudyMaterials = lazyRoute('/materials', () => import('./pages/StudyMaterials'));
-const Highlights = lazyRoute('/highlights', () => import('./pages/Highlights'));
-const Courses = lazyRoute('/courses', () => import('./pages/Courses'));
-const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'));
-const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'));
-const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'));
-const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'));
-const QuickCourse = lazyRoute('/quick-course', () => import('./pages/QuickCourse'));
-const Planner = lazyRoute('/planner', () => import('./pages/Planner'));
-const Notes = lazyRoute('/notes', () => import('./pages/Notes'));
-const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'));
-const Settings = lazyRoute('/settings', () => import('./pages/Settings'));
-const CourseDetail = lazyRoute('/course', () => import('./pages/CourseDetail'));
-const SlideReader = lazyRoute('/read', () => import('./pages/SlideReader'));
-const Timetable = lazyRoute('/timetable', () => import('./pages/Timetable'));
-const Profile = lazyRoute('/profile', () => import('./pages/Profile'));
-const AcademicArchive = lazyRoute('/archive', () => import('./pages/AcademicArchive'));
-const ArchiveViewer = lazyRoute('/archive-viewer', () => import('./pages/ArchiveViewer'));
-const StorageManager = lazyRoute('/storage', () => import('./pages/StorageManager'));
-const MaterialLibrary = lazyRoute('/library', () => import('./pages/MaterialLibrary'));
-const AcademicSearch = lazyRoute('/search', () => import('./pages/Search'));
-const Today = lazyRoute('/learn', () => import('./pages/Today'));
-const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'));
-const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'));
-const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'));
-const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'));
-const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'));
-const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
+const StudyMaterials = lazyRoute('/materials', () => import('./pages/StudyMaterials'), 'src/pages/StudyMaterials.tsx');
+const Highlights = lazyRoute('/highlights', () => import('./pages/Highlights'), 'src/pages/Highlights.tsx');
+const Courses = lazyRoute('/courses', () => import('./pages/Courses'), 'src/pages/Courses.tsx');
+const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'), 'src/pages/LearningObjectives.tsx');
+const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'), 'src/pages/QuestionBank.tsx');
+const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'), 'src/pages/Quiz.tsx');
+const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'), 'src/pages/QuickQuiz.tsx');
+const QuickCourse = lazyRoute('/quick-course', () => import('./pages/QuickCourse'), 'src/pages/QuickCourse.tsx');
+const Planner = lazyRoute('/planner', () => import('./pages/Planner'), 'src/pages/Planner.tsx');
+const Notes = lazyRoute('/notes', () => import('./pages/Notes'), 'src/pages/Notes.tsx');
+const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'), 'src/pages/Analytics.tsx');
+const Settings = lazyRoute('/settings', () => import('./pages/Settings'), 'src/pages/Settings.tsx');
+const CourseDetail = lazyRoute('/course', () => import('./pages/CourseDetail'), 'src/pages/CourseDetail.tsx');
+const SlideReader = lazyRoute('/read', () => import('./pages/SlideReader'), 'src/pages/SlideReader.tsx');
+const Timetable = lazyRoute('/timetable', () => import('./pages/Timetable'), 'src/pages/Timetable.tsx');
+const Profile = lazyRoute('/profile', () => import('./pages/Profile'), 'src/pages/Profile.tsx');
+const AcademicArchive = lazyRoute('/archive', () => import('./pages/AcademicArchive'), 'src/pages/AcademicArchive.tsx');
+const ArchiveViewer = lazyRoute('/archive-viewer', () => import('./pages/ArchiveViewer'), 'src/pages/ArchiveViewer.tsx');
+const StorageManager = lazyRoute('/storage', () => import('./pages/StorageManager'), 'src/pages/StorageManager.tsx');
+const MaterialLibrary = lazyRoute('/library', () => import('./pages/MaterialLibrary'), 'src/pages/MaterialLibrary.tsx');
+const AcademicSearch = lazyRoute('/search', () => import('./pages/Search'), 'src/pages/Search.tsx');
+const Today = lazyRoute('/learn', () => import('./pages/Today'), 'src/pages/Today.tsx');
+const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'), 'src/pages/Clinical.tsx');
+const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'), 'src/pages/AiAssistant.tsx');
+const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'), 'src/pages/ExaminationBuilder.tsx');
+const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'), 'src/pages/KioskEntry.tsx');
+const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'), 'src/pages/SecureExamination.tsx');
+const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'), 'src/pages/ExaminationAdmin.tsx');
 
 import { readWorkspaceRaw } from './utils/storage';
 import {
