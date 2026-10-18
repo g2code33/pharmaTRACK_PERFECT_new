@@ -36,6 +36,15 @@ manifest_path, dist_dir = sys.argv[1], sys.argv[2]
 with open(manifest_path) as fh:
     manifest = json.load(fh)["files"]
 
+def fingerprint(path):
+    """First bytes + size, so the screenshot tells us WHAT the corruption is."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(16)
+        return len(head), " ".join(f"{b:02x}" for b in head)
+    except OSError as exc:
+        return -1, f"unreadable: {exc}"
+
 bad, missing, ok = [], [], 0
 for rel, expected in sorted(manifest.items()):
     full = os.path.join(dist_dir, rel)
@@ -49,14 +58,23 @@ for rel, expected in sorted(manifest.items()):
     else:
         ok += 1
 
-print(f"    {ok} files match the release")
-for rel in bad:
-    print(f"    CORRUPTED (bytes differ): {rel}")
-for rel in missing:
-    print(f"    MISSING: {rel}")
+print(f"    {ok} of {len(manifest)} files match the release")
+for label, items in (("CORRUPTED (bytes differ)", bad), ("MISSING", missing)):
+    for rel in items[:12]:
+        full = os.path.join(dist_dir, rel)
+        size, head = fingerprint(full) if label.startswith("CORRUPTED") else (-1, "-")
+        note = ""
+        if head.startswith("25 50 44 46"):
+            note = "  <-- starts with %PDF (a PDF is sitting where this file should be!)"
+        print(f"    {label}: {rel}  ({size} bytes, head: {head}){note}")
+    if len(items) > 12:
+        print(f"    … and {len(items) - 12} more {label.split()[0].lower()} files")
 if bad or missing:
     print("!! The files on disk are NOT what the package shipped.")
-    print("   Repair: run scripts/update-ubuntu.sh (it reinstalls over the same version).")
+    print("   This is decided on DISK — no webview, no cache, no protocol involved.")
+    print("   Repair attempt: run scripts/update-ubuntu.sh (reinstalls the same version).")
+    print("   If the same files fail again after that, the disk or RAM is writing bad")
+    print("   bytes — run a memory test and check disk health before anything else.")
     sys.exit(1)
 print("==> Disk is clean: every file is exactly what the package shipped.")
 EOF
