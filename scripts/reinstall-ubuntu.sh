@@ -6,13 +6,14 @@
 # a plain reinstall only touches the first:
 #
 #   1. The package files        — replaced by any reinstall.
-#   2. The webview's caches and SERVICE WORKER REGISTRATIONS, which live in
-#      ~/.config/com.pharmatrack.app/ and survive every reinstall forever.
-#      A worker registered there once intercepts every /assets/ request the
-#      app makes; its own fetches bypass the shell's protocol handler, so
-#      pages crash with wrong-MIME errors on a perfectly clean disk.
-#   3. The user's own data (IndexedDB, Local Storage, databases) — in the
-#      SAME profile directory, so this script deletes only the cache and
+#   2. The webview's CACHES and service-worker state, which live in
+#      ~/.local/share/com.pharmatrack.app/ (WebKitGTK base data dir, set by
+#      wry) and survive every reinstall forever. A broken build once wrote
+#      wrong content into that HTTP cache under the same URLs the app still
+#      uses, so WebKit keeps serving the poisoned bytes — wrong-MIME errors
+#      and unreadable files on a perfectly clean disk.
+#   3. The user's own data (IndexedDB, Local Storage, databases, cookies) —
+#      in the SAME directory, so this script deletes only the cache and
 #      service-worker entries BY NAME and leaves all data alone.
 #
 # Run WITHOUT sudo (it elevates itself). Close PharmaTRACK first.
@@ -57,26 +58,36 @@ PROFILE_DIRS="$(
 if [ -n "${PROFILE_DIRS}" ]; then
   echo "    webview storage found:"
   echo "${PROFILE_DIRS}" | sed 's/^/      /'
-  # ONLY the cache and service-worker entries go, BY NAME. The user's data
-  # (IndexedDB, Local Storage, databases, settings) is preserved.
+  # ONLY the cache and service-worker entries go, BY NAME — the names
+  # WebKitGTK actually uses. The user's data (IndexedDB inside databases/,
+  # localstorage/, cookies) is preserved.
   while IFS= read -r dir; do
-    for entry in "EBICache" "Service Worker" "Code Cache" "GPUCache" "Cache" "CachedLayers"; do
-      rm -rf "${dir:?}/${entry}"
+    for entry in "${dir}"/*; do
+      [ -e "${entry}" ] || continue
+      base="$(basename "${entry}")"
+      case "${base}" in
+        localstorage|databases|cookies*) ;;                # your data: keep
+        "Version "*|CacheStorage|serviceworkers|applications|itp)
+          rm -rf -- "${dir:?}/${base}"
+          echo "      wiped: ${base}" ;;
+        *) ;;                                             # unknown: keep
+      esac
     done
-    rm -rf "${dir:?}"/serviceworker* 2>/dev/null || true
+    rm -rf -- "${dir:?}"/serviceworker* 2>/dev/null || true
     ls -la "${dir}" 2>/dev/null | sed 's/^/      /' || true
   done <<EOF
 ${PROFILE_DIRS}
 EOF
-  echo "    cleared cache + service-worker registrations (your data is preserved)."
+  echo "    cleared HTTP cache + Cache API + service-worker registrations (your data is preserved)."
 else
   echo "    (no webview storage found in ~/.config, ~/.local/share or ~/.cache — clean.)"
 fi
 
 echo "==> Step 3/4: fresh install of the latest release…"
-curl --fail --location --retry 3 --silent --show-error -o /tmp/pharmatrack-update.sh \
+UPDATER="${HOME}/pharmatrack-update.sh"
+curl --fail --location --retry 3 --silent --show-error -o "${UPDATER}" \
   "${BRANCH_REF}/scripts/update-ubuntu.sh"
-sudo bash /tmp/pharmatrack-update.sh
+sudo bash "${UPDATER}"
 
 echo "==> Step 4/4: verifying what landed on disk…"
 PKG_NAME="pharma-track"
