@@ -255,8 +255,15 @@ const Layout: React.FC = () => {
    * filtered connection, `check()` can sit there indefinitely. That left the
    * version pill stuck on "Checking…" and disabled for the rest of the
    * session — the app looked permanently behind. Every check is now bounded.
+   *
+   * The budget is generous on purpose: a kiosk on a congested or throttled
+   * link can take tens of seconds just for the manifest round trip to
+   * GitHub, and a timeout that fires while the server is still answering
+   * reads as "updating is broken" on that machine — forever, because every
+   * retry hits the same cap. 60s fails only when the connection is genuinely
+   * unusable, and the download itself is not capped at all.
    */
-  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 20000): Promise<T> =>
+  const withUpdateTimeout = <T,>(work: Promise<T>, ms = 60000): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       const timer = window.setTimeout(
         () => reject(new Error(`The update server did not answer within ${Math.round(ms / 1000)}s. Check your connection and try again.`)),
