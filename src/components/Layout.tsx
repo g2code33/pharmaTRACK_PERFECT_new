@@ -5,6 +5,12 @@ import RouteErrorBoundary from './RouteErrorBoundary';
 import RouteLoading from './RouteLoading';
 import { scheduleRoutePrefetch } from '../utils/routeLoader';
 import { scheduleBackgroundWork } from '../utils/idleScheduler';
+import {
+  integrityRepairHint,
+  lastIntegrityResult,
+  verifyInstallation,
+  type IntegrityResult,
+} from '../utils/integrityCheck';
 import { getSecureKioskState, subscribeSecureKiosk } from '../examination/kioskState';
 import { searchAcademic } from '../utils/academicSearch';
 import { onSearchIndex } from '../utils/searchNotify';
@@ -435,6 +441,23 @@ const Layout: React.FC = () => {
     });
   }, []);
 
+  // Installation self-verification (packaged shell only, once, while idle).
+  // A partially-unpacked update or a disk error leaves files whose content no
+  // longer matches the release; the shell then serves them with the MIME their
+  // bytes imply and modules fail to load with errors that name nothing. This
+  // turns that into a banner that names the files and the repair command.
+  const [integrityDamage, setIntegrityDamage] = useState<IntegrityResult | null>(
+    () => lastIntegrityResult(),
+  );
+  const integrityCheckedRef = useRef(false);
+  useEffect(() => {
+    if (integrityCheckedRef.current) return;
+    integrityCheckedRef.current = true;
+    void verifyInstallation().then((result) => {
+      if (result && !result.ok) setIntegrityDamage(result);
+    });
+  }, []);
+
   if (kioskState.active) {
     const target = kioskState.attemptId ? `/examination/secure/${kioskState.attemptId}` : '/examinations/kiosk';
     return <Navigate to={target} replace />;
@@ -777,6 +800,45 @@ const Layout: React.FC = () => {
           })}
         </div>
       </nav>
+
+      {integrityDamage && !integrityDamage.ok && (
+        <div
+          role="alert"
+          data-testid="integrity-damage-banner"
+          className="fixed bottom-3 left-1/2 z-[200] w-[min(94vw,44rem)] -translate-x-1/2 rounded-2xl border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/95 p-4 shadow-2xl"
+        >
+          <p className="text-sm font-black text-red-800 dark:text-red-200">
+            This copy of PharmaTRACK is damaged
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-red-700 dark:text-red-300">
+            {integrityDamage.corrupted.length > 0 && (
+              <>
+                {integrityDamage.corrupted.length} file{integrityDamage.corrupted.length === 1 ? '' : 's'} no
+                longer match the release (first: <span className="font-mono break-all">{integrityDamage.corrupted[0]}</span>).
+              </>
+            )}
+            {integrityDamage.missing.length > 0 && (
+              <>
+                {integrityDamage.missing.length > 0 && integrityDamage.corrupted.length > 0 ? ' ' : ''}
+                {integrityDamage.missing.length} file{integrityDamage.missing.length === 1 ? '' : 's'} could not be read.
+              </>
+            )}
+            {' '}Pages may fail to load until it is repaired. Nothing you saved is affected.
+          </p>
+          <p className="mt-2 rounded-lg bg-white/70 dark:bg-black/30 px-2 py-1.5 font-mono text-[10px] leading-relaxed break-all select-text text-red-900 dark:text-red-200">
+            {integrityRepairHint()}
+          </p>
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setIntegrityDamage(null)}
+              className="rounded-lg px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 dark:text-red-200 dark:hover:bg-red-900/60"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       <UpdateDialog
         state={updateFlow}

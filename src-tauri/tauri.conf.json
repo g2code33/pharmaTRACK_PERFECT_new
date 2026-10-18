@@ -36,7 +36,7 @@
   },
   "productName": "PharmaTRACK",
   "mainBinaryName": "PharmaTRACK",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "identifier": "com.pharmatrack.app",
   "plugins": {
     "updater": {

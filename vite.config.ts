@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -31,8 +32,52 @@ function versionServiceWorker(): Plugin {
   };
 }
 
+/**
+ * Writes dist/integrity.json after every build: the SHA-256 of every shipped
+ * file. The packaged app verifies itself against this manifest at startup, so
+ * an installation whose files were corrupted after packaging (interrupted
+ * package unpack, disk error, tampering) is DETECTED and named instead of
+ * crashing with a misleading "not a valid JavaScript MIME type" module error.
+ *
+ * The desktop shell's asset protocol decides a response's MIME type from the
+ * file's actual content, not its extension — a file that contains PDF bytes
+ * at its start is served as application/pdf no matter what it is called, and
+ * the app then cannot load the module. Only a reinstall can repair that, and
+ * the user needs to be told so in words.
+ */
+function integrityManifest(): Plugin {
+  return {
+    name: 'pharmatrack-integrity-manifest',
+    closeBundle() {
+      const dist = path.resolve(process.cwd(), 'dist');
+      if (!fs.existsSync(dist)) return;
+      const files: Record<string, string> = {};
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walk(full);
+          } else if (entry.name !== 'integrity.json') {
+            const relative = path.relative(dist, full).split(path.sep).join('/');
+            files[relative] = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(full))
+              .digest('hex');
+          }
+        }
+      };
+      walk(dist);
+      fs.writeFileSync(
+        path.join(dist, 'integrity.json'),
+        `${JSON.stringify({ files }, null, 2)}\n`,
+      );
+      console.log(`[integrity] manifest written for ${Object.keys(files).length} files`);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), versionServiceWorker()],
+  plugins: [react(), tailwindcss(), versionServiceWorker(), integrityManifest()],
   base: './',
   
   // This explicitly forces Vite to read the GitHub Action secrets!
