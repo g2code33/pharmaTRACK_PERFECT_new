@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+<<<<<<< HEAD
+=======
+import * as pdfjs from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.js?url';
+import * as mammoth from 'mammoth';
+>>>>>>> origin/main
 import { ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
 import { inspectFile } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
@@ -114,7 +120,10 @@ const uploadKindFromDetected = (detected: MaterialKind | 'ole' | 'text', file: F
     case 'pdf': return 'pdf';
     case 'docx': return 'docx';
     case 'pptx': return 'pptx';
+<<<<<<< HEAD
     case 'xlsx': return 'xlsx';
+=======
+>>>>>>> origin/main
     case 'image': return 'image';
     default: return kindOf(file);
   }
@@ -140,7 +149,11 @@ const FileUploader: React.FC<FileUploaderProps> = ({
   // supported extension is still listed explicitly (so nothing gets greyed
   // out the way `.pptm`/`.doc` used to), and `inspectFile()`'s byte-sniffing
   // below is the real gatekeeper regardless of what the OS dialog shows.
+<<<<<<< HEAD
   accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.xlsx,.xlsm,.xls,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
+=======
+  accept = '.pdf,.docx,.doc,.pptx,.pptm,.ppt,.txt,.md,.csv,.jpg,.jpeg,.png,.webp,.gif,.bmp',
+>>>>>>> origin/main
   maxSizeMb = MAX_DEFAULT_MB,
   compact = false,
 }) => {
@@ -191,6 +204,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
       let textFailed = false;
       let visualStatus: VisualStatus = 'unknown';
       let pageTexts: { page: number; text: string }[] = [];
+<<<<<<< HEAD
       // The original bytes, always: what is saved is exactly what was chosen.
       const bytesToSave: Uint8Array<ArrayBufferLike> = new Uint8Array(buffer);
       const fileType: UploadedMaterial['fileType'] = fileTypeFor(item.kind, item.file);
@@ -257,6 +271,36 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         text = r.text; textFailed = r.failed;
         pageTexts = r.pages;
         pages = r.pages.length || 1;
+=======
+      let bytesToSave: Uint8Array<ArrayBufferLike> = new Uint8Array(buffer);
+      let fileType: UploadedMaterial['fileType'] = fileTypeFor(item.kind, item.file);
+      let materialKind: MaterialKind = item.kind === 'pptx' ? 'pptx' : item.kind === 'docx' ? 'docx' : item.kind === 'image' ? 'image' : item.kind;
+      let sizeBytes = item.file.size;
+
+      if (item.kind === 'pdf') {
+        const r = await processPdf(item, buffer);
+        text = r.text; pages = r.pages; usedOcr = r.ocr;
+        pageTexts = r.pageTexts;
+      } else if (item.kind === 'docx') {
+        const r = await mammoth.extractRawText({ arrayBuffer: buffer });
+        text = r.value;
+      } else if (item.kind === 'pptx') {
+        // PowerPoint uploads are normalised to PDF immediately. The reader then
+        // uses the fast, bounded PDF renderer instead of reparsing a PPTX on
+        // every open, which fixes the freezes users saw with large decks and
+        // makes all presentations behave like regular handouts.
+        const { convertPptxToPdf } = await import('../utils/pptxToPdf');
+        const converted = await convertPptxToPdf(item.file, (progress, message) => {
+          update(item.id, { status: 'reading', progress, message });
+        });
+        text = converted.text;
+        pages = converted.pageCount;
+        pageTexts = converted.pageTexts;
+        bytesToSave = converted.pdfBytes;
+        fileType = 'pdf';
+        materialKind = 'pdf';
+        sizeBytes = converted.pdfBytes.byteLength;
+>>>>>>> origin/main
         visualStatus = 'ok';
       } else if (item.kind === 'image') {
         if (ocrRequestedRef.current) {
@@ -297,6 +341,7 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         });
         return;
       }
+<<<<<<< HEAD
 
       const doneMessage = () => {
         if (item.kind === 'pptx') {
@@ -309,11 +354,19 @@ const FileUploader: React.FC<FileUploaderProps> = ({
         if (textFailed) return `Ready${pages > 1 ? ` · ${pages} page(s)` : ''} · text could not be read (still viewable)`;
         return `Ready · ${pages} page(s)`;
       };
+=======
+>>>>>>> origin/main
 
       update(item.id, {
         status: 'done',
         progress: 1,
+<<<<<<< HEAD
         message: doneMessage(),
+=======
+        message: item.kind === 'pptx'
+          ? `Converted to PDF · ${pages} slide${pages === 1 ? '' : 's'}`
+          : usedOcr ? `Read ${pages} page(s) with OCR` : `Ready · ${pages} page(s)`,
+>>>>>>> origin/main
         usedOcr,
       });
 
@@ -435,7 +488,11 @@ const FileUploader: React.FC<FileUploaderProps> = ({
           {dragging ? 'Drop to upload' : 'Tap to browse or drop files here'}
         </p>
         <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-slate-400 sm:max-w-none">
+<<<<<<< HEAD
           PDF · Word · PowerPoint · Spreadsheets · Images — up to {maxSizeMb} MB each
+=======
+          PDF · Word · PowerPoint (converted to PDF) · Images — up to {maxSizeMb} MB each
+>>>>>>> origin/main
         </p>
       </div>
 

@@ -21,41 +21,35 @@ import ResetPassword from './pages/ResetPassword';
  * Each import is written out in full rather than built from a template string:
  * a computed `import(`./pages/${name}`)` silently resolves to nothing at build
  * time and the pages never reach the bundle.
- *
- * The third argument is the page's source path. The build writes
- * `chunk-map.json` (source path -> emitted chunk) so a route whose response is
- * mis-labelled can be re-fetched and re-imported by exact URL instead of by
- * guess — WebKit's MIME refusal names the MIME type, never the file. See
- * src/utils/moduleRescue.ts.
  */
-const StudyMaterials = lazyRoute('/materials', () => import('./pages/StudyMaterials'), 'src/pages/StudyMaterials.tsx');
-const Highlights = lazyRoute('/highlights', () => import('./pages/Highlights'), 'src/pages/Highlights.tsx');
-const Courses = lazyRoute('/courses', () => import('./pages/Courses'), 'src/pages/Courses.tsx');
-const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'), 'src/pages/LearningObjectives.tsx');
-const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'), 'src/pages/QuestionBank.tsx');
-const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'), 'src/pages/Quiz.tsx');
-const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'), 'src/pages/QuickQuiz.tsx');
-const QuickCourse = lazyRoute('/quick-course', () => import('./pages/QuickCourse'), 'src/pages/QuickCourse.tsx');
-const Planner = lazyRoute('/planner', () => import('./pages/Planner'), 'src/pages/Planner.tsx');
-const Notes = lazyRoute('/notes', () => import('./pages/Notes'), 'src/pages/Notes.tsx');
-const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'), 'src/pages/Analytics.tsx');
-const Settings = lazyRoute('/settings', () => import('./pages/Settings'), 'src/pages/Settings.tsx');
-const CourseDetail = lazyRoute('/course', () => import('./pages/CourseDetail'), 'src/pages/CourseDetail.tsx');
-const SlideReader = lazyRoute('/read', () => import('./pages/SlideReader'), 'src/pages/SlideReader.tsx');
-const Timetable = lazyRoute('/timetable', () => import('./pages/Timetable'), 'src/pages/Timetable.tsx');
-const Profile = lazyRoute('/profile', () => import('./pages/Profile'), 'src/pages/Profile.tsx');
-const AcademicArchive = lazyRoute('/archive', () => import('./pages/AcademicArchive'), 'src/pages/AcademicArchive.tsx');
-const ArchiveViewer = lazyRoute('/archive-viewer', () => import('./pages/ArchiveViewer'), 'src/pages/ArchiveViewer.tsx');
-const StorageManager = lazyRoute('/storage', () => import('./pages/StorageManager'), 'src/pages/StorageManager.tsx');
-const MaterialLibrary = lazyRoute('/library', () => import('./pages/MaterialLibrary'), 'src/pages/MaterialLibrary.tsx');
-const AcademicSearch = lazyRoute('/search', () => import('./pages/Search'), 'src/pages/Search.tsx');
-const Today = lazyRoute('/learn', () => import('./pages/Today'), 'src/pages/Today.tsx');
-const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'), 'src/pages/Clinical.tsx');
-const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'), 'src/pages/AiAssistant.tsx');
-const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'), 'src/pages/ExaminationBuilder.tsx');
-const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'), 'src/pages/KioskEntry.tsx');
-const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'), 'src/pages/SecureExamination.tsx');
-const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'), 'src/pages/ExaminationAdmin.tsx');
+const StudyMaterials = lazyRoute('/materials', () => import('./pages/StudyMaterials'));
+const Highlights = lazyRoute('/highlights', () => import('./pages/Highlights'));
+const Courses = lazyRoute('/courses', () => import('./pages/Courses'));
+const LearningObjectives = lazyRoute('/objectives', () => import('./pages/LearningObjectives'));
+const QuestionBank = lazyRoute('/questions', () => import('./pages/QuestionBank'));
+const Quiz = lazyRoute('/quiz', () => import('./pages/Quiz'));
+const QuickQuiz = lazyRoute('/quick-quiz', () => import('./pages/QuickQuiz'));
+const QuickCourse = lazyRoute('/quick-course', () => import('./pages/QuickCourse'));
+const Planner = lazyRoute('/planner', () => import('./pages/Planner'));
+const Notes = lazyRoute('/notes', () => import('./pages/Notes'));
+const Analytics = lazyRoute('/analytics', () => import('./pages/Analytics'));
+const Settings = lazyRoute('/settings', () => import('./pages/Settings'));
+const CourseDetail = lazyRoute('/course', () => import('./pages/CourseDetail'));
+const SlideReader = lazyRoute('/read', () => import('./pages/SlideReader'));
+const Timetable = lazyRoute('/timetable', () => import('./pages/Timetable'));
+const Profile = lazyRoute('/profile', () => import('./pages/Profile'));
+const AcademicArchive = lazyRoute('/archive', () => import('./pages/AcademicArchive'));
+const ArchiveViewer = lazyRoute('/archive-viewer', () => import('./pages/ArchiveViewer'));
+const StorageManager = lazyRoute('/storage', () => import('./pages/StorageManager'));
+const MaterialLibrary = lazyRoute('/library', () => import('./pages/MaterialLibrary'));
+const AcademicSearch = lazyRoute('/search', () => import('./pages/Search'));
+const Today = lazyRoute('/learn', () => import('./pages/Today'));
+const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'));
+const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'));
+const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'));
+const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'));
+const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'));
+const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
 
 import { readWorkspaceRaw } from './utils/storage';
 import {
@@ -223,8 +217,11 @@ const ResumePaintRecovery: React.FC = () => {
   useEffect(() => {
     let settleTimer: number | undefined;
     let guardTimer: number | undefined;
+<<<<<<< HEAD
     let nudgeTimerA: number | undefined;
     let nudgeTimerB: number | undefined;
+=======
+>>>>>>> origin/main
     let firstFrame: number | undefined;
     let secondFrame: number | undefined;
 
@@ -234,6 +231,7 @@ const ResumePaintRecovery: React.FC = () => {
       firstFrame = undefined;
       secondFrame = undefined;
     };
+<<<<<<< HEAD
     const cancelNudges = () => {
       window.clearTimeout(nudgeTimerA);
       window.clearTimeout(nudgeTimerB);
@@ -246,6 +244,17 @@ const ResumePaintRecovery: React.FC = () => {
       if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const root = document.getElementById('root');
       if (!root) return;
+=======
+
+    const repaint = () => {
+      if (typeof document === 'undefined' || typeof window === 'undefined') return;
+      const root = document.getElementById('root');
+      if (!root) return;
+      window.clearTimeout(settleTimer);
+      window.clearTimeout(guardTimer);
+      cancelFrames();
+
+>>>>>>> origin/main
       // Dropping the compositing layer and immediately re-creating it forces
       // the webview to rasterise this content into a NEW texture. Re-applying
       // the same translateZ(0) on its own is a no-op the compositor is free to
@@ -261,6 +270,7 @@ const ResumePaintRecovery: React.FC = () => {
       root.style.opacity = '0.999';
       root.getBoundingClientRect();
       window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
+<<<<<<< HEAD
     };
 
     const repaint = () => {
@@ -273,6 +283,8 @@ const ResumePaintRecovery: React.FC = () => {
       cancelNudges();
 
       forceSurfaceRefresh();
+=======
+>>>>>>> origin/main
 
       const restore = () => {
         root.style.transform = '';
@@ -280,8 +292,11 @@ const ResumePaintRecovery: React.FC = () => {
         document.documentElement.classList.remove('pharmatrack-resume-paint');
         window.clearTimeout(settleTimer);
         cancelFrames();
+<<<<<<< HEAD
         // If the surface already drew cleanly there is nothing left to nudge.
         cancelNudges();
+=======
+>>>>>>> origin/main
       };
 
       // Release on the frame after the repaint actually lands rather than after
@@ -293,6 +308,7 @@ const ResumePaintRecovery: React.FC = () => {
       // guarantees the styles never get stuck on.
       settleTimer = window.setTimeout(restore, 600);
 
+<<<<<<< HEAD
       // Some WebViews discard the very first frame after resume, so the single
       // refresh above never becomes pixels and the window stays blank until
       // something else draws. Two extra nudges inside the first quarter second
@@ -307,6 +323,8 @@ const ResumePaintRecovery: React.FC = () => {
         if (document.visibilityState === 'visible') forceSurfaceRefresh();
       }, 260);
 
+=======
+>>>>>>> origin/main
       guardTimer = window.setTimeout(() => {
         const style = window.getComputedStyle(root);
         if (!root.childElementCount || style.display === 'none' || style.visibility === 'hidden') {
@@ -318,16 +336,25 @@ const ResumePaintRecovery: React.FC = () => {
     window.addEventListener('pageshow', repaint);
     window.addEventListener('focus', repaint);
     document.addEventListener('visibilitychange', onVisible);
+<<<<<<< HEAD
     // The native shell fires this from the Rust side on every platform
     // (WebKitGTK and the Android WebView alike): a webview can come back with
     // a blank surface without ever delivering a focus event to the page, which
     // is how the window ends up blank after switching away.
+=======
+    // The Linux desktop shell fires this from the native side: its webview can
+    // come back with a blank surface without ever delivering a focus event to
+    // the page, which is how the window ends up black after switching away.
+>>>>>>> origin/main
     window.addEventListener('pharmatrack:native-resume', repaint);
     return () => {
       window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
       cancelFrames();
+<<<<<<< HEAD
       cancelNudges();
+=======
+>>>>>>> origin/main
       window.removeEventListener('pageshow', repaint);
       window.removeEventListener('focus', repaint);
       document.removeEventListener('visibilitychange', onVisible);
@@ -378,10 +405,14 @@ const App = () => {
   if (storageBlocked) {
     return (
       <ErrorBoundary>
+<<<<<<< HEAD
         {/* future.v7_startTransition: navigation renders run as transitions,
             so React keeps whatever is on screen while the next chunk arrives
             (same rationale as the main router below). */}
         <HashRouter future={{ v7_startTransition: true }}>
+=======
+        <HashRouter>
+>>>>>>> origin/main
           <ResumePaintRecovery />
           <div className="min-h-screen bg-slate-50">
             <NativeTitleBar sticky />
@@ -406,6 +437,7 @@ const App = () => {
     // and any crash in the router itself.
     <ErrorBoundary>
       <AIProvider>
+<<<<<<< HEAD
         {/* future.v7_startTransition: navigation renders run as transitions, so
             React keeps the current page on screen while the next page's chunk
             is still downloading. Without it the route update is urgent and
@@ -414,6 +446,9 @@ const App = () => {
             in-Layout boundary and the sidebar's hover prefetch, a tab switch
             normally swaps pages with no loading state at all. */}
         <HashRouter future={{ v7_startTransition: true }}>
+=======
+        <HashRouter>
+>>>>>>> origin/main
           <ResumePaintRecovery />
           <Suspense fallback={<PageLoading />}>
             <ExamLaunchRouter />

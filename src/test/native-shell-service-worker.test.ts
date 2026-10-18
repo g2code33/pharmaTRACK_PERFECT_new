@@ -294,16 +294,12 @@ describe('chunk retry after a failed dynamic import', () => {
   it('wires that retry into the lazy route loader ahead of the reload', () => {
     const raw = read('src/utils/routeLoader.ts');
     const source = stripComments(raw);
-    // Two healing steps run before the page is ever reloaded: a cache-busted
-    // re-import of the same file, then the byte-level rescue that re-imports
-    // it with the correct MIME type (utils/moduleRescue.ts).
-    expect(source).toContain('importChunkFresh');
-    expect(source).toContain('rescueModuleImport');
+    expect(source).toContain('retryChunkFromError');
     // The specifier is built at runtime, so Vite must leave it alone.
     expect(raw).toContain('@vite-ignore');
-    const reload = source.indexOf('return recoverByReload()');
-    expect(source.indexOf('importChunkFresh<T>(failingUrl)')).toBeLessThan(reload);
-    expect(source.indexOf('rescueModuleImport<T>(candidate)')).toBeLessThan(reload);
+    expect(source.indexOf('retryChunkFromError<T>(secondError)')).toBeLessThan(
+      source.indexOf('return recoverByReload()'),
+    );
   });
 
   it('lets the error boundary Retry button clear the worker that caused it', () => {

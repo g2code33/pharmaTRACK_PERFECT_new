@@ -22,10 +22,17 @@ class PharmaTRACKKioskBridge(private val activity: MainActivity) {
     private var externalIntentsRestricted = false
     private var screenCaptureBlocked = false
     private var pendingPharmaExamBytes: ByteArray? = null
+<<<<<<< HEAD
 
     // Session-specific hosts (e.g. the LAN examination authority) join the
     // policy's defaults at decision time.
     private val allowedHosts = mutableSetOf(
+=======
+    private val allowedHosts = mutableSetOf(
+        "localhost",
+        "127.0.0.1",
+        "10.0.2.2",
+>>>>>>> origin/main
         "pharmatrack.appassets.androidplatform.net",
     )
 

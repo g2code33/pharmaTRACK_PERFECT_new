@@ -573,6 +573,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     setFsChrome(visible);
   }, []);
 
+  const setFsChromeVisible = useCallback((visible: boolean) => {
+    if (fsChromeVisibleRef.current === visible) return;
+    fsChromeVisibleRef.current = visible;
+    setFsChrome(visible);
+  }, []);
+
   /* ---------------- parse (once per file / retry) ---------------- */
   useEffect(() => {
     let cancelled = false;

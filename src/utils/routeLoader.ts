@@ -26,8 +26,6 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from 'react';
 import { scheduleBackgroundWork } from './idleScheduler';
 import { recoverServiceWorker } from './serviceWorkerRecovery';
-import { DamagedAssetError, isRouteModule, rescueModuleImport } from './moduleRescue';
-import { isNativeShell } from '../platform/runtime';
 
 /** sessionStorage flag so a stale-chunk reload happens at most once per tab. */
 const RELOAD_FLAG = 'pharmatrack:chunk-reload';
@@ -160,15 +158,13 @@ export function withCacheBust(url: string, stamp: number = Date.now()): string {
 }
 
 /**
- * Re-imports a chunk under a fresh URL AND proves the result is a route module.
- *
- * The proof matters whenever the URL came from the performance timeline rather
- * than from the error message: importing another page's chunk would mount the
- * wrong screen, which is worse than showing the recovery card.
+ * Re-imports the failing chunk under a fresh URL. Returns null when the error
+ * carried no usable URL, so the caller can fall through to its next strategy.
  */
-async function importChunkFresh<T>(url: string): Promise<{ default: T } | null> {
-  const mod = (await import(/* @vite-ignore */ withCacheBust(url))) as { default: T };
-  return isRouteModule(mod) ? mod : null;
+async function retryChunkFromError<T>(error: unknown): Promise<{ default: T } | null> {
+  const url = chunkUrlFromError(error);
+  if (!url) return null;
+  return (await import(/* @vite-ignore */ withCacheBust(url))) as { default: T };
 }
 
 /**
@@ -189,49 +185,12 @@ async function recoverByReload(): Promise<never> {
 }
 
 /**
- * The exact file a route's source file was bundled into, from `chunk-map.json`
- * (written by the routeChunkMap Vite plugin at build time).
- *
- * This exists because the failure we most need to repair names no URL: WebKit
- * refuses a mis-labelled module with "'application/pdf' is not a valid
- * JavaScript MIME type", full stop. Without this map the only way to find the
- * broken file would be to guess from the resource timeline, and importing a
- * guessed chunk can mount the wrong page. With it, recovery re-fetches exactly
- * the chunk the route asked for.
- */
-let chunkMapPromise: Promise<Record<string, string>> | null = null;
-
-export async function chunkFileForModule(moduleId: string | undefined): Promise<string | null> {
-  if (!moduleId || typeof document === 'undefined' || typeof fetch !== 'function') return null;
-  try {
-    chunkMapPromise ??= fetch(new URL('chunk-map.json', document.baseURI).toString(), {
-      cache: 'no-store',
-    })
-      .then((response) => (response.ok ? (response.json() as Promise<Record<string, string>>) : {}))
-      .catch(() => ({}));
-    const map = await chunkMapPromise;
-    const file = map[moduleId];
-    if (!file) {
-      // Nothing usable: do not remember the miss (a dev build has no map, and
-      // the next failure should look again rather than stay blind).
-      if (Object.keys(map).length === 0) chunkMapPromise = null;
-      return null;
-    }
-    return new URL(file, document.baseURI).toString();
-  } catch {
-    chunkMapPromise = null;
-    return null;
-  }
-}
-
-/**
  * Wraps a dynamic import so a transient failure is retried, a stale-asset
  * failure triggers exactly one guarded reload, and a genuine failure is thrown
  * for the error boundary to present with a Retry action.
  */
 export function lazyWithRetry<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
-  moduleId?: string,
 ): LazyExoticComponent<T> {
   return lazy(async () => {
     try {
@@ -247,58 +206,25 @@ export function lazyWithRetry<T extends ComponentType<any>>(
         return mod;
       } catch (secondError) {
         if (!isChunkLoadError(secondError)) throw secondError;
-
-        // WebKit's MIME refusal names the MIME type but not the file, so the
-        // URL comes from the message when present and from the resource
-        // timeline otherwise. Every use below re-validates what it gets.
-        const failingUrl = chunkUrlFromError(secondError);
-
         // 2) Re-request the same file under a unique URL. Without this the
         //    retry above is a no-op whenever the engine has already cached the
         //    rejection for that specifier, which is the usual case.
-        if (failingUrl) {
-          try {
-            const mod = await importChunkFresh<T>(failingUrl);
-            if (mod) {
-              clearReloadStamp();
-              return mod;
-            }
-          } catch {
-            /* fall through to the byte-level rescue */
+        try {
+          const mod = await retryChunkFromError<T>(secondError);
+          if (mod) {
+            clearReloadStamp();
+            return mod;
           }
+        } catch {
+          /* fall through to the reload */
         }
-
-        // 3) Byte-level rescue (see utils/moduleRescue.ts). A module response
-        //    that was labelled wrong can still be executed: fetch the file
-        //    ourselves, verify it really is JavaScript, and import it from a
-        //    blob URL that carries the right type. When the bytes are not
-        //    JavaScript at all, the thrown DamagedAssetError names the file
-        //    and the repair instead of repeating a MIME type at the user.
-        let diagnosed: Error | null = null;
-        const candidate =
-          failingUrl ??
-          (await chunkFileForModule(moduleId)) ??
-          chunkUrlForDiagnostics(secondError);
-        if (candidate) {
-          try {
-            const mod = await rescueModuleImport<T>(candidate);
-            if (isRouteModule(mod)) {
-              clearReloadStamp();
-              return mod;
-            }
-          } catch (rescueError) {
-            if (rescueError instanceof DamagedAssetError) diagnosed = rescueError;
-          }
-        }
-
-        // 4) Looks like the cached HTML points at a chunk from a previous
+        // 3) Looks like the cached HTML points at a chunk from a previous
         //    build. Refresh the worker and reload — but only once.
         if (canControlledReload()) {
           return recoverByReload();
         }
-        // 5) Already reloaded and still failing: hand the boundary the most
-        //    useful error we have.
-        throw diagnosed ?? secondError;
+        // 4) Already reloaded and still failing: hand it to the boundary.
+        throw secondError;
       }
     }
   });
@@ -324,26 +250,13 @@ export function registerRoute(path: string, factory: () => Promise<unknown>): vo
 export function lazyRoute<T extends ComponentType<any>>(
   path: string,
   factory: () => Promise<{ default: T }>,
-  /** Source path of the page, e.g. 'src/pages/StudyMaterials.tsx'. */
-  moduleId?: string,
 ): LazyExoticComponent<T> {
   registerRoute(path, factory);
-  return lazyWithRetry(factory, moduleId);
+  return lazyWithRetry(factory);
 }
 
-/**
- * Warms a single route's chunk. Safe to call repeatedly; each runs once.
- *
- * Deliberately a no-op inside a packaged shell. There the bundle is read from
- * the app's own protocol out of memory, so a warm chunk saves milliseconds
- * while costing something real: background warming is the only time this app
- * fetches a dozen scripts at once, and concurrent responses on the Linux
- * webview are what produce the mis-labelled assets `moduleRescue.ts` exists
- * for. A failed prefetch also poisons the engine's module cache for the route
- * the user later clicks. Navigation there loads exactly what it needs, once.
- */
+/** Warms a single route's chunk. Safe to call repeatedly; each runs once. */
 export function prefetchRoute(path: string): void {
-  if (isNativeShell()) return;
   const factory = registry.get(path);
   if (!factory || prefetched.has(path)) return;
   scheduledPrefetches.get(path)?.();

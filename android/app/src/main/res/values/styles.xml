@@ -1,9 +1,13 @@
 <resources>
+<<<<<<< HEAD
     <!-- MainActivity extends AppCompatActivity, which REQUIRES an AppCompat
          theme: the previous android:style/Theme.Material parent compiled fine
          but crashed at launch with "You need to use a Theme.AppCompat theme".
          The Light variant keeps this kiosk's white system bars. -->
     <style name="Theme.PharmaTRACK.NoActionBar" parent="Theme.AppCompat.Light.NoActionBar">
+=======
+    <style name="Theme.PharmaTRACK.NoActionBar" parent="android:style/Theme.Material.Light.NoActionBar">
+>>>>>>> origin/main
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:fontFamily">sans</item>
