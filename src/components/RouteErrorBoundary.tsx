@@ -39,6 +39,22 @@ class RouteErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[Route] load/render error:', error, info.componentStack);
+    // A user on a kiosk or shared laptop has no devtools; their screenshot of
+    // this card is often the only crash report that ever reaches us. Keep the
+    // last error on disk and show it on the card itself.
+    try {
+      window.localStorage.setItem(
+        'pharmatrack.lastRouteError',
+        JSON.stringify({
+          message: error?.message ?? String(error),
+          stack: (error?.stack ?? '').slice(0, 2000),
+          componentStack: (info?.componentStack ?? '').slice(0, 2000),
+          at: new Date().toISOString(),
+        }),
+      );
+    } catch {
+      /* storage may be unavailable; the card still shows the message */
+    }
   }
 
   componentDidUpdate(prev: Props) {
@@ -124,9 +140,18 @@ class RouteErrorBoundary extends React.Component<Props, State> {
           <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 mb-2">
             Something went wrong on this page
           </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
+          <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
             The rest of the app is still working, and nothing you saved has been
             lost.
+          </p>
+          {/* The actual error, on the card: a screenshot of this card is the
+              only crash report a kiosk user can send, and "something went
+              wrong" tells us nothing. Keep it short, mono, and selectable. */}
+          <p
+            data-testid="route-error-detail"
+            className="mb-6 max-h-24 overflow-y-auto text-left text-[11px] leading-relaxed font-mono break-words bg-red-50 dark:bg-slate-900/60 border border-red-100 dark:border-slate-700 rounded-lg px-2.5 py-2 text-red-700 dark:text-red-300 select-text"
+          >
+            {error?.message || String(error)}
           </p>
           <div className="flex flex-wrap gap-2 justify-center">
             <button
