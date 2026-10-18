@@ -122,6 +122,15 @@ jobs:
             echo "Updater artifacts: DISABLED for this validation build (no signing key)."
           fi
 
+      # The cargo cache restores src-tauri/target wholesale — including old
+      # release/bundle output from earlier builds of OTHER versions. Those
+      # stale installers once shipped inside a release as the wrong version
+      # (a 1.3.0 MSI was published as "1.4.0"), so the bundle output is wiped
+      # before every build: only artifacts from THIS build can be collected.
+      - name: Purge stale bundle output from the restored cache
+        shell: bash
+        run: rm -rf src-tauri/target/release/bundle
+
       # No tagName: this job only builds. The release workflow uploads and
       # publishes assets itself, after every platform has succeeded.
       - name: Build Windows installers
@@ -136,23 +145,45 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
-          MSI_SRC="$(find src-tauri/target/release/bundle/msi -name '*.msi' | head -n 1)"
-          EXE_SRC="$(find src-tauri/target/release/bundle/nsis -name '*-setup.exe' | head -n 1)"
-          if [ -z "$MSI_SRC" ] || [ -z "$EXE_SRC" ]; then
-            echo "::error title=Windows build output missing::Expected one MSI and one NSIS installer under src-tauri/target/release/bundle. Got MSI='${MSI_SRC:-none}' NSIS='${EXE_SRC:-none}'."
+          # Tauri names each bundle with the app version, so the expected
+          # paths are exact. A find|head scan of the directory once grabbed a
+          # stale, alphabetically-first MSI from a previous version restored
+          # by the cargo cache and published it as this release.
+          MSI_SRC="src-tauri/target/release/bundle/msi/PharmaTRACK_${VERSION}_x64_en-US.msi"
+          EXE_SRC="src-tauri/target/release/bundle/nsis/PharmaTRACK_${VERSION}_x64-setup.exe"
+          if [ ! -f "$MSI_SRC" ] || [ ! -f "$EXE_SRC" ]; then
+            echo "::error title=Windows build output missing::Expected $MSI_SRC and $EXE_SRC. Found instead:"
+            ls -R src-tauri/target/release/bundle 2>/dev/null || echo "(no bundle directory)"
             exit 1
           fi
           cp "$MSI_SRC" "PharmaTRACK-$VERSION-windows-x64.msi"
           cp "$EXE_SRC" "PharmaTRACK-$VERSION-windows-x64.exe"
           # Detached updater signatures, when this was a signed build.
           if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-            for pair in "msi:PharmaTRACK-$VERSION-windows-x64.msi" "nsis:PharmaTRACK-$VERSION-windows-x64.exe"; do
-              dir="${pair%%:*}"; out="${pair#*:}"
-              sig="$(find "src-tauri/target/release/bundle/$dir" -name '*.sig' | head -n 1)"
-              if [ -z "$sig" ]; then
-                echo "::error title=Windows updater signature missing::No .sig produced for the $dir bundle; the desktop updater would ship an unusable latest.json."
+            # Each .sig is base64 wrapping a minisign block whose trusted
+            # comment names the exact file that was signed
+            # (…file:PharmaTRACK_<version>_x64_en-US.msi). Verify that name
+            # says THIS version — a signature over any other file would make
+            # the updater reject the download or reinstall an old build.
+            verify_sig() {
+              sig="$1"; signed_name="$2"
+              decoded="$(node -e "process.stdout.write(Buffer.from(require('fs').readFileSync(process.argv[1],'utf8'),'base64').toString())" "$sig")"
+              if ! printf '%s' "$decoded" | grep -q "file:$signed_name"; then
+                echo "::error title=Windows updater signature mismatch::$sig was not signed for $signed_name. Its trusted comment does not name that file — a stale artifact from another version or build may have been picked up. Decoded signature:"
+                printf '%s\n' "$decoded"
                 exit 1
               fi
+            }
+            for pair in \
+              "src-tauri/target/release/bundle/msi/PharmaTRACK_${VERSION}_x64_en-US.msi.sig:PharmaTRACK_${VERSION}_x64_en-US.msi:PharmaTRACK-$VERSION-windows-x64.msi" \
+              "src-tauri/target/release/bundle/nsis/PharmaTRACK_${VERSION}_x64-setup.exe.sig:PharmaTRACK_${VERSION}_x64-setup.exe:PharmaTRACK-$VERSION-windows-x64.exe"; do
+              sig="${pair%%:*}"; rest="${pair#*:}"
+              signed_name="${rest%%:*}"; out="${rest#*:}"
+              if [ ! -f "$sig" ]; then
+                echo "::error title=Windows updater signature missing::No .sig at $sig; the desktop updater would ship an unusable latest.json."
+                exit 1
+              fi
+              verify_sig "$sig" "$signed_name"
               cp "$sig" "$out.sig"
             done
           fi
