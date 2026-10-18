@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
+  clearIntegrityResult,
   lastIntegrityResult,
   verifyInstallation,
   integrityRepairHint,
@@ -19,11 +20,19 @@ const sha256 = (data: string | Uint8Array) =>
   createHash('sha256').update(data).digest('hex');
 
 const nativeShell = vi.hoisted(() => ({ value: true }));
+const swControlled = vi.hoisted(() => ({ value: false }));
 vi.mock('../platform/runtime', async (importOriginal) => {
   const original = await importOriginal<typeof import('../platform/runtime')>();
   return {
     ...original,
     isNativeShell: () => nativeShell.value,
+  };
+});
+vi.mock('../utils/serviceWorkerRecovery', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../utils/serviceWorkerRecovery')>();
+  return {
+    ...original,
+    isServiceWorkerControlled: () => swControlled.value,
   };
 });
 
@@ -44,6 +53,7 @@ describe('installation integrity verification', () => {
   beforeEach(() => {
     localStorage.clear();
     nativeShell.value = true;
+    swControlled.value = false;
   });
 
   afterEach(() => {
@@ -104,6 +114,27 @@ describe('installation integrity verification', () => {
     const result = lastIntegrityResult();
     expect(result?.ok).toBe(false);
     expect(result?.corrupted).toEqual(['assets/x.js']);
+  });
+
+  it('refuses to judge the installation while a service worker controls the page', async () => {
+    // The worker intercepts /assets/ fetches; results would describe it,
+    // not the disk. No damage may be reported in that state.
+    swControlled.value = true;
+    const good = 'x';
+    mockFetch({
+      'integrity.json': { body: JSON.stringify({ files: { 'assets/a.js': sha256(good) } }) },
+    });
+    expect(await verifyInstallation()).toBeNull();
+  });
+
+  it('clearIntegrityResult drops a stale failure so it cannot outlive its cause', () => {
+    localStorage.setItem(
+      'pharmatrack.integrity',
+      JSON.stringify({ ok: false, corrupted: ['assets/old.js'], missing: [], checkedAt: 'earlier' }),
+    );
+    expect(lastIntegrityResult()?.ok).toBe(false);
+    clearIntegrityResult();
+    expect(lastIntegrityResult()).toBeNull();
   });
 
   it('offers a repair command that reinstalls the release', () => {

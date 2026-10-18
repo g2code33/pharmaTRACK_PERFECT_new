@@ -42,7 +42,12 @@ done
 WORKDIR="$(mktemp -d /tmp/pharmatrack-update.XXXXXX)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-CURRENT="$(dpkg-query -W -f='${Version}' pharmatrack 2>/dev/null || true)"
+# The Debian package name is decided by the bundler from the product name
+# ("pharma-track"), not the file name — read it from the package itself
+# instead of guessing, so version reporting works on every build.
+PKG_NAME="pharma-track"
+
+CURRENT="$(dpkg-query -W -f='${Version}' "$PKG_NAME" 2>/dev/null || true)"
 echo "==> Installed PharmaTRACK version: ${CURRENT:-none}"
 
 echo "==> Reading the release manifest (${MANIFEST_URL})…"
@@ -60,6 +65,7 @@ echo "==> Latest release: ${VERSION}"
 DEB="$WORKDIR/pharmatrack_${VERSION}_amd64.deb"
 echo "==> Downloading ${DEB_URL##*/} …"
 curl --fail --location --retry 3 --progress-bar "$DEB_URL" -o "$DEB"
+PKG_NAME="$(dpkg-deb -f "$DEB" Package 2>/dev/null || echo "$PKG_NAME")"
 
 # The release publishes SHA256SUMS.txt next to the packages; verify the
 # download against it so a truncated or tampered file never installs.
@@ -84,7 +90,7 @@ echo "    checksum ok ($ACTUAL)"
 echo "==> Installing…"
 apt-get install -y --reinstall -- "$DEB"
 
-INSTALLED="$(dpkg-query -W -f='${Version}' pharmatrack 2>/dev/null || true)"
+INSTALLED="$(dpkg-query -W -f='${Version}' "$PKG_NAME" 2>/dev/null || true)"
 echo "==> Done. Installed version: ${INSTALLED:-unknown}"
 if [ "$INSTALLED" != "$VERSION" ]; then
   echo "!! dpkg reports ${INSTALLED:-nothing} after installing $VERSION — check the apt output above." >&2

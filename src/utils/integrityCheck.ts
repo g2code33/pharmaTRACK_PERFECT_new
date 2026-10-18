@@ -16,6 +16,7 @@
  * and has nothing local to verify), once, while the machine is idle.
  */
 import { isNativeShell } from '../platform/runtime';
+import { isServiceWorkerControlled } from './serviceWorkerRecovery';
 
 export interface IntegrityResult {
   ok: boolean;
@@ -46,6 +47,15 @@ export function lastIntegrityResult(): IntegrityResult | null {
   }
 }
 
+/** Drops a stored result so a stale failure cannot outlive its cause. */
+export function clearIntegrityResult(): void {
+  try {
+    storage()?.removeItem(STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buffer);
   return Array.from(new Uint8Array(digest))
@@ -60,6 +70,11 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
  */
 export async function verifyInstallation(): Promise<IntegrityResult | null> {
   if (!isNativeShell()) return null;
+  // A controlling service worker intercepts /assets/ fetches and its own
+  // fetches bypass the shell's protocol handler, so the results here would
+  // describe the worker, not the installation. Refuse to report damage in
+  // that state; the enforcement loop removes the worker first.
+  if (isServiceWorkerControlled()) return null;
   if (typeof fetch !== 'function' || typeof crypto?.subtle?.digest !== 'function') return null;
 
   let manifest: { files: Record<string, string> };

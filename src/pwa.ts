@@ -19,8 +19,15 @@ export { isPWAStandalone as isPwaStandalone } from './platform/runtime';
 let registration: ServiceWorkerRegistration | undefined;
 let reloadingForUpdate = false;
 
-/** sessionStorage guard so the self-healing reload can only happen once. */
+/**
+ * Reload budget for the native cleanup. A single guarded reload was not
+ * enough: the reload itself can be interrupted (machine sleeps, window is
+ * killed mid-navigation), and the page then stays controlled by the worker
+ * for the rest of the session with the guard flag already set. A small
+ * budget beats interrupted reloads while still making a loop impossible.
+ */
 const NATIVE_CLEANUP_FLAG = 'pharmatrack:native-sw-cleanup';
+const MAX_CLEANUP_RELOADS = 3;
 
 /**
  * A packaged app must never be served by a service worker.
@@ -46,7 +53,7 @@ function canRegister(): boolean {
 
 function reloadAlreadyAttempted(): boolean {
   try {
-    return Boolean(sessionStorage.getItem(NATIVE_CLEANUP_FLAG));
+    return (Number(sessionStorage.getItem(NATIVE_CLEANUP_FLAG)) || 0) >= MAX_CLEANUP_RELOADS;
   } catch {
     return true; // No sessionStorage: never risk a reload loop.
   }
@@ -54,7 +61,8 @@ function reloadAlreadyAttempted(): boolean {
 
 function markReloadAttempted(): void {
   try {
-    sessionStorage.setItem(NATIVE_CLEANUP_FLAG, String(Date.now()));
+    const used = Number(sessionStorage.getItem(NATIVE_CLEANUP_FLAG)) || 0;
+    sessionStorage.setItem(NATIVE_CLEANUP_FLAG, String(used + 1));
   } catch {
     /* ignore */
   }
@@ -87,8 +95,30 @@ export async function purgeNativeShellServiceWorkers(): Promise<boolean> {
       /* ignore */
     }
   }
-
   return unregistered || cachesDropped;
+}
+
+/**
+ * The relentless guard for a RUNNING packaged app: being controlled by a
+ * service worker there is always wrong — every /assets/ request then goes
+ * through the worker, whose own fetches bypass the shell's protocol handler
+ * and fail or come back with a wrong MIME type (that is the "'application/pdf'
+ * is not a valid JavaScript MIME type" crash, and the "every asset fetch
+ * fails while the page itself loaded" state the integrity check reported).
+ *
+ * Call this whenever control is detected. It purges and reloads while the
+ * budget lasts; when the budget is spent it reports 'exhausted' so the UI can
+ * tell the user to reopen the app instead of spinning.
+ */
+export type SwEnforcement = 'uncontrolled' | 'purging' | 'exhausted';
+
+export async function enforceNativeShellNoServiceWorker(): Promise<SwEnforcement> {
+  if (!isNativeShell()) return 'uncontrolled';
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return 'uncontrolled';
+  if (!isServiceWorkerControlled()) return 'uncontrolled';
+  if (reloadAlreadyAttempted()) return 'exhausted';
+  await purgeNativeShellServiceWorkers(); // reloads the page while budget remains
+  return 'purging';
 }
 
 /**
