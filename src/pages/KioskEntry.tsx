@@ -635,11 +635,18 @@ const KioskEntry: React.FC = () => {
           {error}
         </p>
       )}
+      {staged && !requiredReady && !busy && (
+        <p className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900" data-testid="kiosk-readiness-hint">
+          Run the readiness checks above — Enter secure examination unlocks once the required
+          checks pass. {checks.length === 0 ? 'Checks have not been run for this package yet.' : 'At least one required check is still failing.'}
+        </p>
+      )}
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
           disabled={!requiredReady || busy}
           onClick={() => void enterExam()}
+          title={requiredReady ? 'Start the locked examination' : 'Run the readiness checks first — Enter unlocks when they pass'}
           className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 font-black disabled:opacity-40"
         >
           Enter secure examination

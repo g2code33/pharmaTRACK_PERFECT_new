@@ -658,6 +658,25 @@ async fn destroy_website(
     Ok(())
 }
 
+/// The LAN authority's advertised host must be THIS device's Wi-Fi address —
+/// student devices connect to it directly, so a hardcoded guess like
+/// 192.168.1.20 silently strands every student on a different network.
+/// Connecting a UDP socket sends no packet; it only makes the OS pick the
+/// route, and the local address of that route is exactly the address to
+/// advertise. Returns None when there is no usable route (offline, loopback
+/// only), and the admin UI keeps its editable field either way.
+#[tauri::command]
+fn detect_lan_host() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let address = socket.local_addr().ok()?;
+    let ip = address.ip();
+    if ip.is_loopback() {
+        return None;
+    }
+    Some(ip.to_string())
+}
+
 #[tauri::command]
 fn start_lan_exam_server(
     app: tauri::AppHandle,
@@ -995,10 +1014,13 @@ fn set_native_titlebar(
 /// WebKitGTK can bring a window back from being hidden or unfocused with a
 /// blank surface, and it does not always deliver a focus event to the page, so
 /// the recovery that lives in the app never runs and the user is left looking
-/// at a black window. The native side always gets the event, so it dispatches
-/// a dedicated one of its own. A dedicated name is used rather than a
-/// synthetic "focus" so examination focus tracking is not affected.
-#[cfg(target_os = "linux")]
+/// at a black window. The same happens on Android, where the WebView surface
+/// is discarded while the app is backgrounded: on return the user sees a blank
+/// frame until something forces a fresh one, which reads as "the app goes
+/// blank before it snaps back". The native side always gets the event on every
+/// platform, so it dispatches a dedicated one of its own. A dedicated name is
+/// used rather than a synthetic "focus" so examination focus tracking is not
+/// affected.
 const RESUME_REPAINT_NUDGE: &str =
     "window.dispatchEvent(new Event('pharmatrack:native-resume'));";
 
@@ -1140,12 +1162,9 @@ fn main() {
             if window.label() != "main" {
                 return;
             }
-            #[cfg(target_os = "linux")]
-            {
-                if matches!(event, WindowEvent::Focused(true)) {
-                    if let Some(webview) = window.app_handle().get_webview_window("main") {
-                        let _ = webview.eval(RESUME_REPAINT_NUDGE);
-                    }
+            if matches!(event, WindowEvent::Focused(true)) {
+                if let Some(webview) = window.app_handle().get_webview_window("main") {
+                    let _ = webview.eval(RESUME_REPAINT_NUDGE);
                 }
             }
             let secure_state = window.app_handle().state::<SecureExamHostState>();
@@ -1251,6 +1270,7 @@ fn main() {
             material_file_info,
             load_material_file_chunk,
             delete_material_file,
+            detect_lan_host,
             start_lan_exam_server,
             stop_lan_exam_server,
             lan_exam_server_status

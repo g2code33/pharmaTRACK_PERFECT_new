@@ -85,6 +85,23 @@ export async function startLanExamServer(config: LanServerConfig): Promise<LanSe
   return invoke<LanServerStatus>('start_lan_exam_server', { config });
 }
 
+/**
+ * This device's real LAN address, for pre-filling the advertised host field.
+ * A hardcoded 192.168.1.x guess strands every student on a different network,
+ * which is the number one reason "start the LAN authority" looks broken from
+ * the student side. Returns null in the browser preview or when the host has
+ * no usable route; the field stays editable either way.
+ */
+export async function detectLanHost(): Promise<string | null> {
+  if (!isNativeLanServerAvailable()) return null;
+  try {
+    const host = await invoke<string | null>('detect_lan_host');
+    return host && host.trim() ? host.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function stopLanExamServer(): Promise<void> {
   if (!isNativeLanServerAvailable()) return;
   await invoke('stop_lan_exam_server');

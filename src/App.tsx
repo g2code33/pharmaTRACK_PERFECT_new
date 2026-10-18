@@ -217,6 +217,8 @@ const ResumePaintRecovery: React.FC = () => {
   useEffect(() => {
     let settleTimer: number | undefined;
     let guardTimer: number | undefined;
+    let nudgeTimerA: number | undefined;
+    let nudgeTimerB: number | undefined;
     let firstFrame: number | undefined;
     let secondFrame: number | undefined;
 
@@ -226,15 +228,18 @@ const ResumePaintRecovery: React.FC = () => {
       firstFrame = undefined;
       secondFrame = undefined;
     };
+    const cancelNudges = () => {
+      window.clearTimeout(nudgeTimerA);
+      window.clearTimeout(nudgeTimerB);
+      nudgeTimerA = undefined;
+      nudgeTimerB = undefined;
+    };
 
-    const repaint = () => {
+    /** Forces a fresh rasterisation of the root layer and nudges the viewers. */
+    const forceSurfaceRefresh = () => {
       if (typeof document === 'undefined' || typeof window === 'undefined') return;
       const root = document.getElementById('root');
       if (!root) return;
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(guardTimer);
-      cancelFrames();
-
       // Dropping the compositing layer and immediately re-creating it forces
       // the webview to rasterise this content into a NEW texture. Re-applying
       // the same translateZ(0) on its own is a no-op the compositor is free to
@@ -250,6 +255,18 @@ const ResumePaintRecovery: React.FC = () => {
       root.style.opacity = '0.999';
       root.getBoundingClientRect();
       window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
+    };
+
+    const repaint = () => {
+      if (typeof document === 'undefined' || typeof window === 'undefined') return;
+      const root = document.getElementById('root');
+      if (!root) return;
+      window.clearTimeout(settleTimer);
+      window.clearTimeout(guardTimer);
+      cancelFrames();
+      cancelNudges();
+
+      forceSurfaceRefresh();
 
       const restore = () => {
         root.style.transform = '';
@@ -257,6 +274,8 @@ const ResumePaintRecovery: React.FC = () => {
         document.documentElement.classList.remove('pharmatrack-resume-paint');
         window.clearTimeout(settleTimer);
         cancelFrames();
+        // If the surface already drew cleanly there is nothing left to nudge.
+        cancelNudges();
       };
 
       // Release on the frame after the repaint actually lands rather than after
@@ -267,6 +286,20 @@ const ResumePaintRecovery: React.FC = () => {
       // Frames are not delivered to a window that is still unmapped; the timer
       // guarantees the styles never get stuck on.
       settleTimer = window.setTimeout(restore, 600);
+
+      // Some WebViews discard the very first frame after resume, so the single
+      // refresh above never becomes pixels and the window stays blank until
+      // something else draws. Two extra nudges inside the first quarter second
+      // — while the document is actually visible — make the surface recover
+      // immediately instead of "blank for a moment, then it snaps back". They
+      // only re-dirty the layer; the already-scheduled restore cleans up after
+      // whichever refresh landed last.
+      nudgeTimerA = window.setTimeout(() => {
+        if (document.visibilityState === 'visible') forceSurfaceRefresh();
+      }, 90);
+      nudgeTimerB = window.setTimeout(() => {
+        if (document.visibilityState === 'visible') forceSurfaceRefresh();
+      }, 260);
 
       guardTimer = window.setTimeout(() => {
         const style = window.getComputedStyle(root);
@@ -279,14 +312,16 @@ const ResumePaintRecovery: React.FC = () => {
     window.addEventListener('pageshow', repaint);
     window.addEventListener('focus', repaint);
     document.addEventListener('visibilitychange', onVisible);
-    // The Linux desktop shell fires this from the native side: its webview can
-    // come back with a blank surface without ever delivering a focus event to
-    // the page, which is how the window ends up black after switching away.
+    // The native shell fires this from the Rust side on every platform
+    // (WebKitGTK and the Android WebView alike): a webview can come back with
+    // a blank surface without ever delivering a focus event to the page, which
+    // is how the window ends up blank after switching away.
     window.addEventListener('pharmatrack:native-resume', repaint);
     return () => {
       window.clearTimeout(settleTimer);
       window.clearTimeout(guardTimer);
       cancelFrames();
+      cancelNudges();
       window.removeEventListener('pageshow', repaint);
       window.removeEventListener('focus', repaint);
       document.removeEventListener('visibilitychange', onVisible);

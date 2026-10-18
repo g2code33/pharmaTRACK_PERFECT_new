@@ -21,6 +21,7 @@ import { ExaminationHighAvailability, type AuthorityStatusView } from '../examin
 import { runDemoSimulation, type DemoSimulation } from '../examination/demo';
 import {
   createLanServerConfig,
+  detectLanHost,
   isNativeLanServerAvailable,
   lanExamServerStatus,
   startLanExamServer,
@@ -55,7 +56,25 @@ const ExaminationAdmin: React.FC = () => {
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   const [demo, setDemo] = useState<DemoSimulation | null>(null);
   const [lanStatus, setLanStatus] = useState<LanServerStatus | null>(null);
-  const [lanHost, setLanHost] = useState('192.168.1.20');
+  const [lanHost, setLanHost] = useState('');
+  const [lanHostDetected, setLanHostDetected] = useState(false);
+  /** Stable for the page's life: the real TCP server only exists in the app. */
+  const nativeHostAvailable = isNativeLanServerAvailable();
+
+  // Prefill the advertised host with THIS device's Wi-Fi address. A hardcoded
+  // 192.168.1.x guess was the silent killer: the server started fine and no
+  // student could reach it. The field stays editable when detection fails.
+  useEffect(() => {
+    let disposed = false;
+    void detectLanHost().then((host) => {
+      if (disposed || !host) return;
+      setLanHost(host);
+      setLanHostDetected(true);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
   const [lanToken, setLanToken] = useState('');
   const [selectedForRelease, setSelectedForRelease] = useState<Set<string>>(new Set());
 
@@ -191,9 +210,22 @@ const ExaminationAdmin: React.FC = () => {
   };
 
   const startLanServer = async () => {
-    if (!session || !repository) return;
-    if (!isNativeLanServerAvailable()) {
-      setMessage('The real LAN server runs from the authorized Tauri admin/examination host.');
+    if (!nativeHostAvailable) {
+      setMessage(
+        'Browser preview cannot host the LAN authority — no browser may bind a TCP listener. Start it from the installed PharmaTRACK app running on the invigilator\'s machine.',
+      );
+      return;
+    }
+    if (!session || !repository) {
+      setMessage(
+        'No examination session exists on this device yet. A LAN authority serves one session: open the signed .pharmaexam package on the Kiosk Entry screen (or publish a version in the Builder) first, then come back and start the authority.',
+      );
+      return;
+    }
+    if (!lanHost.trim()) {
+      setMessage(
+        'Advertised LAN host is empty. Enter this machine\'s Wi-Fi address (or reconnect to the examination Wi-Fi so it can be auto-detected) — student devices connect straight to it.',
+      );
       return;
     }
     setBusy(true);
@@ -492,12 +524,40 @@ const ExaminationAdmin: React.FC = () => {
               The Tauri host binds a real TCP authority on the LAN. Browser preview mode cannot
               listen for student devices and will not show a fake connected state.
             </p>
+            {/* The start prerequisites, stated up front instead of a silently
+                disabled button: the most common "it does nothing" report was
+                exactly this — no session on the device yet. */}
+            <p className="text-xs font-bold mt-2" data-testid="lan-start-prerequisites">
+              <span className={nativeHostAvailable ? 'text-emerald-700' : 'text-amber-700'}>
+                {nativeHostAvailable ? '✓ Native host ready' : '⚠ Browser preview — use the installed app'}
+              </span>
+              {' · '}
+              <span className={session ? 'text-emerald-700' : 'text-amber-700'}>
+                {session ? `✓ Session ${session.id}` : '⚠ No examination session yet'}
+              </span>
+              {!session && (
+                <>
+                  {' · '}
+                  <Link to="/examinations/kiosk" className="text-blue-700 underline">
+                    open a .pharmaexam on Kiosk Entry to create one
+                  </Link>
+                </>
+              )}
+            </p>
           </div>
           <div className="flex gap-2">
             <button
-              disabled={busy || !session}
+              disabled={busy}
               onClick={() => void startLanServer()}
-              className="rounded-lg bg-emerald-600 text-white px-4 py-2 font-black"
+              data-testid="start-lan-authority"
+              title={
+                !nativeHostAvailable
+                  ? 'Requires the installed PharmaTRACK app (desktop or Android)'
+                  : !session
+                    ? 'Requires an examination session — open a .pharmaexam on the Kiosk Entry screen first'
+                    : 'Bind the LAN examination authority on this device'
+              }
+              className="rounded-lg bg-emerald-600 text-white px-4 py-2 font-black disabled:opacity-40"
             >
               Start LAN authority
             </button>
@@ -515,10 +575,16 @@ const ExaminationAdmin: React.FC = () => {
             Advertised LAN host/IP
             <input
               value={lanHost}
-              onChange={(event) => setLanHost(event.target.value)}
+              onChange={(event) => { setLanHost(event.target.value); setLanHostDetected(false); }}
+              data-testid="lan-host-input"
               className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="192.168.1.20"
+              placeholder="Auto-detected on this device — or type this machine's Wi-Fi IP"
             />
+            <span className="mt-1 block text-xs font-semibold text-slate-500">
+              {lanHostDetected
+                ? 'Auto-detected: this device’s Wi-Fi address. Students must be on the same network.'
+                : 'This must be THIS machine’s Wi-Fi address — student devices connect straight to it.'}
+            </span>
           </label>
           <div className="rounded-lg bg-slate-50 border p-3 text-sm">
             <strong>Status</strong>

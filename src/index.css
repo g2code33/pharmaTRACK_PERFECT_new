@@ -28,8 +28,25 @@ body { background-color: #F8FAFC; color: #0F172A; }
 
 .app-page-main {
   overscroll-behavior: contain;
-  scroll-behavior: auto;
+  /* In-app jumps (filter → question, search hit → question) glide instead of
+     teleporting. Anything that must stay instant opts out below. */
+  scroll-behavior: smooth;
   scrollbar-gutter: stable;
+  /* No-op on modern engines; keeps older Android WebViews on the composited
+     scroll path instead of the main-thread one. */
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Scrollers that must NEVER glide: page-per-screen readers and document
+   viewers page to exact offsets, and a smooth animation there reads as lag
+   ("the scrolling is not smooth") and can land between pages. */
+.app-page-main--reader,
+.app-page-main--reader .app-page-main,
+.pdf-viewer-scroll,
+.pptx-viewer-scroll,
+.docx-viewer-scroll,
+.xlsx-viewer-scroll {
+  scroll-behavior: auto;
 }
 
 /* `transition-all` is "transition every animatable property", width, height

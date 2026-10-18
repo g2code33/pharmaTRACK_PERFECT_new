@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
-import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp } from 'lucide-react';
+import { FileQuestion, Upload, Plus, X, Trash2, CheckCircle2, Edit2, ChevronDown, ChevronUp, BookOpen, Layers, AlertCircle, Sparkles, Download, Share2, FileUp, ListChecks } from 'lucide-react';
 import type { Course, ExamQuestion, Topic } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import QuestionAnalytics from '../components/QuestionAnalytics';
@@ -22,6 +22,12 @@ const QuestionBank = () => {
   const questionId = params.get('question');
   /** Questions the student picked to send to the AI as context. */
   const [selectedForAI, setSelectedForAI] = useState<Set<string>>(new Set());
+  /**
+   * Free-text filter across the whole bank. It narrows the rendered questions
+   * AND scopes the Select-all controls, so "filter then select all" is one
+   * gesture instead of tick-box archaeology through every topic.
+   */
+  const [questionQuery, setQuestionQuery] = useState('');
   const questionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const appliedQuestion = useRef('');
   
@@ -54,6 +60,15 @@ const QuestionBank = () => {
     () => state.topics.filter((t) => t.courseId === selectedCourseId),
     [selectedCourseId, state.topics],
   );
+
+  const normalizedQuery = questionQuery.trim().toLowerCase();
+  /** Case-insensitive match against the question text, its options and its answer. */
+  const questionMatches = (q: ExamQuestion) => {
+    if (!normalizedQuery) return true;
+    if (q.questionText.toLowerCase().includes(normalizedQuery)) return true;
+    if ((q.correctAnswer ?? '').toLowerCase().includes(normalizedQuery)) return true;
+    return (q.options ?? []).some((opt) => opt.toLowerCase().includes(normalizedQuery));
+  };
 
   useEffect(() => {
     if (!questionId || appliedQuestion.current === questionId) return;
@@ -304,6 +319,7 @@ const QuestionBank = () => {
 
     for (const question of state.examQuestions) {
       if (!question.topicId) continue;
+      if (!questionMatches(question)) continue;
       const bucket = questionsByTopic.get(question.topicId);
       if (bucket) bucket.push(question);
       else questionsByTopic.set(question.topicId, [question]);
@@ -324,18 +340,98 @@ const QuestionBank = () => {
         return { ...course, topics: courseTopics, totalQs };
       })
       .filter((course) => course.totalQs > 0);
-  }, [state.courses, state.examQuestions, state.topics]);
+    // questionMatches is re-created per render but is a pure function of
+    // normalizedQuery, which IS a dependency — listing the function itself
+    // would defeat the memo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.courses, state.examQuestions, state.topics, normalizedQuery]);
 
   const uncategorizedQs = useMemo(() => {
     const knownCourseIds = new Set(state.courses.map((course) => course.id));
-    return state.examQuestions.filter((question) => !knownCourseIds.has(question.courseId));
-  }, [state.courses, state.examQuestions]);
+    return state.examQuestions.filter(
+      (question) => !knownCourseIds.has(question.courseId) && questionMatches(question),
+    );
+    // questionMatches is stable per render with normalizedQuery; spelled out
+    // as deps so the memo tracks the active filter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.courses, state.examQuestions, normalizedQuery]);
+
+  /**
+   * While a filter is active the matches open themselves: a student filtering
+   * for "propranolol" should not also have to expand every course by hand.
+   */
+  useEffect(() => {
+    if (!normalizedQuery) return;
+    setExpandedCourses((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const course of groupedData) if (!next.has(course.id)) { next.add(course.id); changed = true; }
+      return changed ? next : prev;
+    });
+    setExpandedTopics((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const course of groupedData)
+        for (const topic of course.topics)
+          if (!next.has(topic.id)) { next.add(topic.id); changed = true; }
+      return changed ? next : prev;
+    });
+  }, [normalizedQuery, groupedData]);
   const analytics = useMemo(() => bankAnalytics(state), [state]);
   const questionStats = useMemo(() => allQuestionPerformance(state), [state]);
   const selectedQuestionsForQuickQuiz = useMemo(
     () => state.examQuestions.filter((q) => selectedForAI.has(q.id)),
     [selectedForAI, state.examQuestions],
   );
+
+  /** Every question currently visible under the active filter. */
+  const visibleQuestions = useMemo(
+    () => groupedData.flatMap((course) => course.topics.flatMap((topic) => topic.questions)),
+    [groupedData],
+  );
+  const allVisibleSelected =
+    visibleQuestions.length > 0 && visibleQuestions.every((q) => selectedForAI.has(q.id));
+  const allCourseSelected = (course: CourseQuestionGroup) =>
+    course.totalQs > 0 && course.topics.every((t) => t.questions.every((q) => selectedForAI.has(q.id)));
+  const allTopicSelected = (topic: TopicWithQuestions) =>
+    topic.questions.length > 0 && topic.questions.every((q) => selectedForAI.has(q.id));
+
+  /** Select-all follows the filter: it toggles exactly what is on screen. */
+  const toggleSelectAllVisible = () => {
+    setSelectedForAI((prev) => {
+      const next = new Set(prev);
+      const selecting = !allVisibleSelected;
+      for (const q of visibleQuestions) {
+        if (selecting) next.add(q.id);
+        else next.delete(q.id);
+      }
+      return next;
+    });
+  };
+  const toggleSelectAllInCourse = (course: CourseQuestionGroup) => {
+    setSelectedForAI((prev) => {
+      const next = new Set(prev);
+      const selecting = !allCourseSelected(course);
+      for (const topic of course.topics)
+        for (const q of topic.questions) {
+          if (selecting) next.add(q.id);
+          else next.delete(q.id);
+        }
+      return next;
+    });
+  };
+  const toggleSelectAllInTopic = (topic: TopicWithQuestions) => {
+    setSelectedForAI((prev) => {
+      const next = new Set(prev);
+      const selecting = !allTopicSelected(topic);
+      for (const q of topic.questions) {
+        if (selecting) next.add(q.id);
+        else next.delete(q.id);
+      }
+      return next;
+    });
+  };
+  const clearQuestionSelection = () => setSelectedForAI(new Set());
 
   return (
     <div className="max-w-7xl mx-auto space-y-4 sm:space-y-6 pb-12">
@@ -361,10 +457,38 @@ const QuestionBank = () => {
         </div>
       </div>
 
-      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex-wrap">
         <div className="flex items-center gap-3 sm:px-4">
            <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-xl flex items-center justify-center font-bold text-lg">{state.examQuestions.length}</div>
            <div><p className="font-bold text-slate-800">Total Questions</p><p className="text-xs text-slate-500 uppercase font-semibold">Across all courses</p></div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 sm:px-4 w-full sm:w-auto">
+          <input
+            value={questionQuery}
+            onChange={(e) => setQuestionQuery(e.target.value)}
+            data-testid="question-filter-input"
+            placeholder="Filter questions…"
+            className="flex-1 min-w-[10rem] sm:w-56 border-2 border-slate-200 focus:border-purple-500 outline-none rounded-xl px-4 py-2.5 text-sm font-semibold bg-slate-50"
+          />
+          <button
+            onClick={toggleSelectAllVisible}
+            disabled={visibleQuestions.length === 0}
+            data-testid="select-all-questions"
+            title={allVisibleSelected ? 'Deselect every question shown by the current filter' : 'Select every question shown by the current filter'}
+            className="border-2 border-indigo-200 bg-indigo-50 text-indigo-800 px-4 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 hover:bg-indigo-100 disabled:opacity-40"
+          >
+            <ListChecks size={16} />
+            {allVisibleSelected ? 'Deselect all' : 'Select all'} ({visibleQuestions.length})
+          </button>
+          {selectedForAI.size > 0 && (
+            <button
+              onClick={clearQuestionSelection}
+              data-testid="clear-question-selection"
+              className="border-2 border-slate-200 bg-white text-slate-700 px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-50"
+            >
+              Clear ({selectedForAI.size})
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -374,7 +498,7 @@ const QuestionBank = () => {
             className="bg-white border border-slate-200 text-slate-800 px-4 sm:px-5 py-3.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 disabled:opacity-40"
           >
             <Sparkles size={18} />
-            <span>Ask AI about {selectedForAI.size ? `${selectedForAI.size} selected` : 'questions'}</span>
+            <span>Ask AI about {selectedForAI.size ? `${selectedForAI.size} selected${selectedForAI.size > 8 ? ' (first 8)' : ''}` : 'questions'}</span>
           </button>
           <button
             onClick={(e) => void shareQuickQuiz(selectedQuestionsForQuickQuiz, `Selected PharmaTRACK Questions (${selectedForAI.size})`, e)}
@@ -398,10 +522,10 @@ const QuestionBank = () => {
 
       <div className="space-y-4">
         {groupedData.length === 0 && uncategorizedQs.length === 0 ? (
-          <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100">
+          <div className="text-center py-20 bg-white rounded-3xl shadow-sm border border-slate-100" data-testid={normalizedQuery ? 'question-filter-no-matches' : 'question-bank-empty'}>
             <FileQuestion className="mx-auto h-20 w-20 text-slate-200 mb-6" />
-            <h3 className="text-2xl font-black text-slate-700 mb-2">Your Bank is Empty</h3>
-            <p className="text-slate-500 font-medium">Add a question or import a JSON bank. You do not need a generator.</p>
+            <h3 className="text-2xl font-black text-slate-700 mb-2">{normalizedQuery ? 'No questions match your filter' : 'Your Bank is Empty'}</h3>
+            <p className="text-slate-500 font-medium">{normalizedQuery ? `Nothing matches “${questionQuery.trim()}”. Try a different word, or clear the filter to see every question.` : 'Add a question or import a JSON bank. You do not need a generator.'}</p>
           </div>
         ) : (
           groupedData.map(course => (
@@ -418,6 +542,7 @@ const QuestionBank = () => {
                   <div className="text-left min-w-0"><h2 className="text-base sm:text-xl font-bold text-slate-800 truncate">{course.courseCode}: {course.courseName}</h2><p className="text-xs sm:text-sm font-semibold text-slate-500">{course.totalQs} Questions Available</p></div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto justify-end">
+                  <button onClick={(e) => { e.stopPropagation(); toggleSelectAllInCourse(course); }} data-testid={`select-all-course-${course.id}`} title={allCourseSelected(course) ? 'Deselect every question in this course' : 'Select every question in this course for AI / sharing'} className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 rounded-lg text-xs font-black uppercase transition-colors"><ListChecks size={14} /> {allCourseSelected(course) ? 'Deselect' : 'Select all'} ({course.totalQs})</button>
                   <button onClick={(e) => shareQuickCourse(course, e)} data-testid={`share-course-${course.id}`} title={`Share all ${course.topics.length} topics — whoever opens the link chooses which topic to do, and can come back for the rest`} className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 text-white hover:bg-indigo-700 border border-indigo-500 rounded-lg text-xs font-black uppercase transition-colors"><Layers size={14} /> Share course</button>
                   <button onClick={(e) => handleExportCourse(course.id, e)} title="Export this course's questions to share" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-[#2D6A4F] hover:bg-green-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><Download size={14} /> Export</button>
                   <button onClick={(e) => openShareImport('course', course.id, undefined, e)} title="Import a PharmaTRACK question pack shared by another user" className="flex items-center gap-1.5 px-3 py-2 bg-white text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg text-xs font-black uppercase transition-colors"><FileUp size={14} /> Import</button>
@@ -436,6 +561,7 @@ const QuestionBank = () => {
                            <span className="shrink-0 px-2.5 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-black">{topic.questions.length} Qs</span>
                          </div>
                          <div className="flex flex-wrap items-center justify-end gap-2">
+                           <button onClick={(e) => { e.stopPropagation(); toggleSelectAllInTopic(topic); }} data-testid={`select-all-topic-${topic.id}`} title={allTopicSelected(topic) ? 'Deselect the questions in this topic' : 'Select every question in this topic for AI / sharing'} className="text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><ListChecks size={14}/> <span>{allTopicSelected(topic) ? 'Deselect' : 'Select all'} ({topic.questions.length})</span></button>
                            <button onClick={(e) => void shareQuickQuiz(topic.questions, `${topic.topicName} Quick Quiz`, e)} data-testid={`share-topic-${topic.id}`} title="Share a link that opens this topic as an instant quiz" className="text-white bg-indigo-600 hover:bg-indigo-700 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Share2 size={14}/> <span>Quick Start</span></button>
                            <button onClick={(e) => handleExportTopic(topic.id, e)} title="Export this topic's questions to share" className="text-slate-500 hover:text-[#2D6A4F] hover:bg-green-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><Download size={14}/> <span className="hidden sm:inline">Export</span></button>
                            <button onClick={(e) => openShareImport('topic', topic.courseId, topic.id, e)} title="Import a PharmaTRACK question pack shared by another user" className="text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition-colors font-bold text-xs flex items-center gap-1"><FileUp size={14}/> <span className="hidden sm:inline">Import</span></button>

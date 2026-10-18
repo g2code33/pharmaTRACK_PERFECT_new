@@ -95,6 +95,14 @@ const Layout: React.FC = () => {
     }
   });
   const runtime = detectRuntimeCapabilities();
+  // Navigating between pages must not inherit the previous page's scroll
+  // position — arriving mid-scroll on a fresh page reads as broken jumping.
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    // 'instant' overrides the main scroller's smooth behavior on purpose:
+    // route changes should cut, not animate.
+    mainScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  }, [location.pathname]);
   const isReaderRoute = location.pathname.startsWith('/read/');
   const showBackButton = location.pathname !== '/';
   const goBack = () => {
@@ -725,7 +733,7 @@ const Layout: React.FC = () => {
               browser scroll it on the compositor instead of clipping a
               rounded rect on the main thread every frame. */}
           <div className="app-page-frame flex flex-1 min-h-0 flex-col">
-          <main className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
+          <main ref={mainScrollRef} className={`app-page-main safe-area-bottom flex-1 min-h-0 bg-[#F8FAFC] dark:bg-slate-900 relative ${isReaderRoute ? 'app-page-main--reader p-0 overflow-hidden flex flex-col' : 'p-3 sm:p-6 overflow-y-auto'}`}>
             {/* Scoped to the page area so a crashing route — or a lazy chunk
                 that fails to load — leaves the sidebar, header, search and
                 navigation fully usable. The Suspense fallback replaces ONLY
