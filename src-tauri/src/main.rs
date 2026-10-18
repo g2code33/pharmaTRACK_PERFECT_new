@@ -1286,9 +1286,43 @@ fn main() {
         .setup(|app| {
             app.manage(lan_server::LanServerHandle::default());
             app.manage(PendingPharmaTrackLinks::default());
-            let main_window = app
-                .get_webview_window("main")
-                .expect("main window must exist at startup");
+            // The main window is declared in tauri.conf.json with
+            // `create: false` so it can be built here with a web-resource
+            // request handler attached.
+            //
+            // Why the handler exists: on Linux the app is served from the
+            // `tauri://localhost` custom scheme. WebKitGTK runs CORS-mode
+            // requests (fetch(), dynamic import(), modulepreload, font loads)
+            // through an access-control check whose Origin serialization for
+            // custom schemes cannot match the `Access-Control-Allow-Origin:
+            // tauri://localhost` header that tauri's asset protocol adds by
+            // default. Every such request then fails with "Fetch API cannot
+            // load ... due to access control checks" and lazy route chunks
+            // die with a wrong-MIME module error, while plain <script> loads
+            // (no CORS) keep working. Tauri's own IPC protocol solves this by
+            // answering with `Access-Control-Allow-Origin: *`; we do the same
+            // for every embedded asset. The assets are public, carry no
+            // credentials, and are compiled into the binary, so `*` is safe.
+            let main_window = {
+                let window_config = app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "main")
+                    .cloned()
+                    .expect("main window must be defined in tauri.conf.json");
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)
+                    .expect("main window configuration must be valid")
+                    .on_web_resource_request(|_request, response| {
+                        response.headers_mut().insert(
+                            tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                            tauri::http::HeaderValue::from_static("*"),
+                        );
+                    })
+                    .build()
+                    .expect("main window must be creatable at startup")
+            };
             // Runs before the user can navigate anywhere, and independently of
             // whatever bundle the window ended up loading.
             if let Err(error) = main_window.eval(SHELL_SERVICE_WORKER_CLEANUP) {
