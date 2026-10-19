@@ -15,7 +15,7 @@
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 const discovery = vi.hoisted(() => ({
@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 describe('authority auto-discovery on the student device', () => {
-  it('auto-fills endpoint AND session token when one open-enrollment authority answers', async () => {
+  it('auto-fills endpoint, session ID AND session token when one open-enrollment authority answers', async () => {
     discovery.found = [authority()];
     open();
 
@@ -99,10 +99,12 @@ describe('authority auto-discovery on the student device', () => {
         'http://10.42.0.7:8787',
       );
     });
-    // Open enrollment: the student types nothing at all.
+    // Open enrollment: the student types nothing at all — the session ID from
+    // the broadcast joins the admin's session, not a local look-alike.
     expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe(
       'token-from-broadcast',
     );
+    expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_1');
     expect(screen.getByTestId('discovered-authorities').textContent).toContain(
       'found automatically',
     );
@@ -130,6 +132,7 @@ describe('authority auto-discovery on the student device', () => {
       authority({
         endpoint: 'http://10.42.0.9:8787',
         serverId: 'srv-2',
+        sessionId: 'session_2',
         openEnrollment: false,
         sessionToken: undefined,
       }),
@@ -146,6 +149,8 @@ describe('authority auto-discovery on the student device', () => {
     expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
       'http://10.42.0.9:8787',
     );
+    // The picked authority's session is the one that gets joined.
+    expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_2');
     // Closed enrollment on the picked authority: token untouched.
     expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe('');
   });
@@ -158,6 +163,41 @@ describe('authority auto-discovery on the student device', () => {
         'No examination authority answered',
       );
     });
+  });
+
+  it('keeps scanning by itself until the invigilator starts the authority', async () => {
+    // The zero-typing promise covers the real classroom sequence: students
+    // open the app first, the invigilator starts the authority afterwards.
+    // The page must find it WITHOUT a refresh and fill everything in.
+    vi.useFakeTimers();
+    try {
+      discovery.found = [];
+      open();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30);
+      });
+      expect(screen.getByTestId('discovery-status').textContent).toContain(
+        'No examination authority answered',
+      );
+
+      discovery.found = [authority()];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4100);
+      });
+
+      expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
+        'http://10.42.0.7:8787',
+      );
+      expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe(
+        'token-from-broadcast',
+      );
+      expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_1');
+      expect(screen.getByTestId('discovered-authorities').textContent).toContain(
+        'found automatically',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps manual entry in the browser preview (no UDP from a browser tab)', async () => {

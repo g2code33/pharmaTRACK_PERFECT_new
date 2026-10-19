@@ -1683,7 +1683,13 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
                   style={{ transform: `scale(${scale})`, width: deck.slideWidth, height: deck.slideHeight }}
                 >
                   {currentSlide ? (
-                    <SlideCanvas slide={currentSlide} sw={deck.slideWidth} sh={deck.slideHeight} mediaEpoch={mediaEpoch} />
+                    <div
+                      key={slide}
+                      className="pptx-slide-enter relative h-full w-full"
+                      aria-label={`Slide ${slide}`}
+                    >
+                      <SlideCanvas slide={currentSlide} sw={deck.slideWidth} sh={deck.slideHeight} mediaEpoch={mediaEpoch} />
+                    </div>
                   ) : null}
                 </div>
               </div>

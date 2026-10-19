@@ -68,7 +68,11 @@ const ExaminationAdmin: React.FC = () => {
   const [lanStatus, setLanStatus] = useState<LanServerStatus | null>(null);
   const [lanHost, setLanHost] = useState('');
   const [lanHostDetected, setLanHostDetected] = useState(false);
-  const [openEnrollment, setOpenEnrollment] = useState(false);
+  // Open enrollment is the default: the promise to students is "connect to
+  // the Wi-Fi and type nothing" — the token broadcast only authorises student
+  // session routes, never admin actions, so zero-typing is the safe default.
+  // The invigilator can still untick it for strict, read-the-board entry.
+  const [openEnrollment, setOpenEnrollment] = useState(true);
   const [lanImportMessage, setLanImportMessage] = useState('');
   const [reviewResultId, setReviewResultId] = useState('');
   // Console password gate: students run the same app, so the admin console

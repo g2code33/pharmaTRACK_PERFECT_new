@@ -28,6 +28,11 @@ import { isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
+/** How often the student device re-scans for the authority while none has
+ * answered yet. Short enough that the invigilator's "start" lands within a
+ * breath, long enough that the radio is not hammered. */
+const DISCOVERY_RETRY_MS = 4000;
+
 type Check = { label: string; ok: boolean; required: boolean; detail: string };
 
 const KioskEntry: React.FC = () => {
@@ -70,45 +75,63 @@ const KioskEntry: React.FC = () => {
 
   /**
    * Zero-config authority discovery: broadcast on this Wi-Fi and auto-fill
-   * whatever answers. One authority → endpoint (and, with open enrollment,
-   * the session token) land in the form with no typing at all. Several → the
-   * student picks from a list. None / browser → manual entry, unchanged.
-   * The last used endpoint is remembered across launches.
+   * whatever answers. One authority → endpoint, session ID (and, with open
+   * enrollment, the session token) land in the form with no typing at all.
+   * Several → the student picks from a list. None / browser → manual entry,
+   * unchanged. The last used endpoint is remembered across launches.
+   *
+   * The scan REPEATS while nothing answers: students open the app long before
+   * the invigilator starts the authority, and the promise is "connect to the
+   * Wi-Fi, type nothing" — so the page keeps looking by itself and the
+   * authority appears the second it is started, without a refresh.
    */
   useEffect(() => {
     if (!isNativeLanServerAvailable()) return;
     let disposed = false;
+    let retryTimer: number | null = null;
     try {
       const remembered = window.localStorage.getItem('pharmatrack:lan-endpoint');
       if (remembered && !disposed) setLanEndpoint(remembered);
     } catch {
       /* storage may be unavailable; discovery does not depend on it */
     }
-    setDiscovering(true);
-    void discoverLanAuthorities()
-      .then((found) => {
-        if (disposed) return;
-        setDiscovered(found);
-        if (found.length === 1) {
-          const match = found[0];
-          setLanEndpoint(match.endpoint);
-          if (match.openEnrollment && match.sessionToken) setLanToken(match.sessionToken);
-        } else if (found.length > 1 && !lanEndpoint) {
-          setLanEndpoint(found[0].endpoint);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
+    let foundAny = false;
+    const applyFound = (found: LanDiscoveredAuthority[]) => {
+      setDiscovered(found);
+      foundAny = found.length > 0;
+      if (found.length === 1) {
+        const match = found[0];
+        setLanEndpoint(match.endpoint);
+        setSessionId(match.sessionId);
+        if (match.openEnrollment && match.sessionToken) setLanToken(match.sessionToken);
+      } else if (found.length > 1 && !lanEndpoint) {
+        setLanEndpoint(found[0].endpoint);
+      }
+    };
+    const runScan = async (): Promise<void> => {
+      setDiscovering(true);
+      try {
+        applyFound(await discoverLanAuthorities());
+      } catch {
+        /* an unreachable authority is not fatal — the next scan retries */
+      } finally {
         if (!disposed) setDiscovering(false);
-      });
+      }
+      if (!disposed && !foundAny) {
+        retryTimer = window.setTimeout(() => void runScan(), DISCOVERY_RETRY_MS);
+      }
+    };
+    void runScan();
     return () => {
       disposed = true;
+      if (retryTimer != null) window.clearTimeout(retryTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const pickDiscoveredAuthority = (authority: LanDiscoveredAuthority) => {
     setLanEndpoint(authority.endpoint);
+    setSessionId(authority.sessionId);
     if (authority.openEnrollment && authority.sessionToken) setLanToken(authority.sessionToken);
   };
 
@@ -575,8 +598,9 @@ const KioskEntry: React.FC = () => {
         )}
         {!discovering && discovered && discovered.length === 0 && (
           <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-bold text-amber-900" data-testid="discovery-status">
-            No examination authority answered on this Wi-Fi. Make sure the invigilator started it,
-            that you are on the examination network, then enter the endpoint below.
+            No examination authority answered yet — this page keeps looking on its own and fills
+            everything in the moment the invigilator starts it. Just stay on the examination Wi-Fi
+            (or type the endpoint below if you know it).
           </p>
         )}
         {discovered && discovered.length > 0 && (
@@ -636,8 +660,9 @@ const KioskEntry: React.FC = () => {
             <input
               value={sessionId}
               onChange={(event) => setSessionId(event.target.value)}
+              data-testid="session-id-input"
               className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="Created by admin"
+              placeholder="Filled in automatically — or as written by the admin"
             />
           </label>
           <label className="text-sm font-bold">

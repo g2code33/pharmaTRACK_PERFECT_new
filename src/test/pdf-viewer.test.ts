@@ -361,3 +361,35 @@ describe('deep search hand-off', () => {
     expect(reader).toMatch(/materialList\.findIndex\(\(m\) => m\.id === deepLinkMaterial\)/);
   });
 });
+
+describe('resume position + swift scrolling', () => {
+  it('restores the last-read page for local files, once sizes settle', () => {
+    // The resume helpers must exist and be keyed to durable local: URLs only.
+    expect(viewer).toMatch(/function loadSavedPdfPage/);
+    expect(viewer).toMatch(/fileUrl\.startsWith\('local:'\)/);
+    expect(viewer).toMatch(/loadSavedPdfPage\(fileUrl\)/);
+  });
+
+  it('deep links win over the saved position', () => {
+    expect(viewer).toMatch(/jumpToPage \|\| focusHighlightId \|\| initialQuery\) return/);
+  });
+
+  it('never clobbers the saved page with page 1 on open', () => {
+    // The saver is gated until the restore decision has run, and the decision
+    // resets per document.
+    expect(viewer).toMatch(/resumeChecked\.current = false;/);
+    expect(viewer).toMatch(/if \(!resumeChecked\.current \|\| !doc \|\| !numPages\) return;/);
+    expect(viewer).toMatch(/savePdfPosition\(fileUrl, currentPage\)/);
+  });
+
+  it('skips layout and paint for offscreen page shells', () => {
+    expect(viewer).toMatch(/contentVisibility: 'auto'/);
+  });
+
+  it('gives PPTX slide changes a fast fade, and none under reduced motion', () => {
+    expect(pptxViewer).toMatch(/pptx-slide-enter/);
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,240}pptx-slide-enter[\s\S]{0,80}animation: none/,
+    );
+  });
+});

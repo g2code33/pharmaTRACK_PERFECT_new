@@ -99,6 +99,43 @@ const PREVIEW_QUALITY = 0.62;
 /** Repaint after this many new previews, rather than once per page. */
 const PREVIEW_BATCH = 4;
 
+/* ------------------------------------------------------------------ */
+/* Resume position (per material, local only) — mirrors the PPTX        */
+/* reader: where did this PDF get to last time?                        */
+/* ------------------------------------------------------------------ */
+const PDF_POS_KEY = 'pharmatrack:pdf-position';
+
+function loadSavedPdfPage(fileUrl: string): number | null {
+  try {
+    // Archive previews use ephemeral blob: URLs — no meaningful resume target.
+    if (!fileUrl.startsWith('local:')) return null;
+    const raw = localStorage.getItem(PDF_POS_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) as Record<string, { page: number; t: number }>;
+    const entry = map[fileUrl];
+    return entry && Number.isFinite(entry.page) && entry.page > 1 ? entry.page : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePdfPosition(fileUrl: string, page: number): void {
+  try {
+    if (!fileUrl.startsWith('local:')) return;
+    const raw = localStorage.getItem(PDF_POS_KEY);
+    const map: Record<string, { page: number; t: number }> = raw ? JSON.parse(raw) : {};
+    const entries = Object.entries(map);
+    if (entries.length >= 50 && !map[fileUrl]) {
+      const oldest = entries.sort((a, b) => a[1].t - b[1].t)[0];
+      if (oldest) delete map[oldest[0]];
+    }
+    map[fileUrl] = { page, t: Date.now() };
+    localStorage.setItem(PDF_POS_KEY, JSON.stringify(map));
+  } catch {
+    /* quota exceeded — resume is a nicety, never block on it */
+  }
+}
+
 const yieldToMainThread = () => new Promise<void>((resolve) => {
   if (typeof window === 'undefined') { resolve(); return; }
   window.setTimeout(resolve, 0);
@@ -174,6 +211,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
   const renderedKey = useRef<Map<number, string>>(new Map());
   const inFlight = useRef<Set<number>>(new Set());
   const renderBatch = useRef(0);
+  /** Whether the open-document resume decision has been made (guards the
+   * position saver from overwriting the stored page with page 1). */
+  const resumeChecked = useRef(false);
 
   useEffect(() => {
     setZoomPreset(initialZoom);
@@ -204,6 +244,9 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
     setBaseSizes([]); setOutline([]); setAttachments([]); setDocInfo(null);
     setTextReady(false); setPageTexts([]);
     renderedKey.current.clear();
+    // A new document means a fresh resume decision — page 1 has not been
+    // "read" yet, and its own saved position may still be worth reopening on.
+    resumeChecked.current = false;
 
     const task = pdfjs.getDocument(fileUrl);
     task.promise.then(
@@ -755,10 +798,35 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
 
   useEffect(() => {
     if (jumpToPage && numPages && baseSizes.length) {
+      resumeChecked.current = true;
       const t = setTimeout(() => goToPage(jumpToPage), 120);
       return () => clearTimeout(t);
     }
   }, [jumpToPage, numPages, baseSizes.length, goToPage]);
+
+  // "Effective studies" = never lose your place. Once the document has its
+  // page sizes (the scrollbar is trustworthy then), reopen on the last page
+  // this device was reading — unless a deep link already chose a destination.
+  useEffect(() => {
+    if (resumeChecked.current) return;
+    if (!numPages || !baseSizes.length) return;
+    resumeChecked.current = true;
+    if (jumpToPage || focusHighlightId || initialQuery) return;
+    const saved = loadSavedPdfPage(fileUrl);
+    if (saved && saved <= numPages) {
+      const t = setTimeout(() => goToPage(saved), 120);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numPages, baseSizes.length]);
+
+  // Persist the reading position — but only after the restore decision, so
+  // opening a document never clobbers its own saved page with page 1.
+  useEffect(() => {
+    if (!resumeChecked.current || !doc || !numPages) return;
+    savePdfPosition(fileUrl, currentPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, numPages, currentPage]);
 
   // Carry a global-search term into the document's own find bar, so the user
   // arrives with the matches already highlighted.
@@ -1356,6 +1424,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({
                   height: size?.h,
                   flex: '0 0 auto',
                   marginInline: inline ? undefined : 'auto',
+                  // Offscreen shells keep their exact box (width/height are
+                  // explicit) but skip layout+paint of their contents, so a
+                  // 300-page past paper scrolls like a 5-pager.
+                  contentVisibility: 'auto',
                 }}
               >
                 {/* Underneath the canvas: visible while this page has no live
