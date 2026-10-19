@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight,
-  Download, FileText, Info, Loader2, Maximize, Menu, Minimize,
+  Download, FileText, Image as ImageIcon, Info, Loader2, Maximize, Menu, Minimize,
   PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { isSymbolBulletFont, mapSymbolFontChar, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
@@ -51,6 +51,13 @@ export interface PptxViewerProps {
    * ai/context/builder.ts).
    */
   onSlideChange?: (slide: number, total: number, text: string) => void;
+  /**
+   * Fires whenever this viewer's own "Slide Show" fullscreen mode starts or
+   * stops. The slide reader shell uses this to make its own "Expand
+   * Reader" (wide) state conform to the slide show instead of the two
+   * running as two independent, occasionally-conflicting fullscreen modes.
+   */
+  onFullscreenChange?: (active: boolean) => void;
 }
 
 type ZoomMode = 'fitWidth' | 'fit' | 'custom';
@@ -326,6 +333,49 @@ const TableView = memo(function TableView({ shape, base }: { shape: PptxShape; b
   );
 });
 
+/**
+ * A slide picture, with a visible fallback instead of a silent gap when the
+ * browser cannot decode the source (older decks sometimes embed legacy
+ * Windows Metafile/EMF or TIFF pictures that no browser's <img> renders —
+ * there is still a real, intentional picture there, so a labelled
+ * placeholder beats the blank space those used to leave behind).
+ */
+const SlideImage = memo(function SlideImage({
+  src,
+  style,
+  className,
+}: {
+  src: string;
+  style: React.CSSProperties;
+  className: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (failed) {
+    return (
+      <div
+        aria-hidden
+        className="absolute flex items-center justify-center gap-1 border border-dashed border-gray-300 bg-gray-50/90 text-gray-400"
+        style={style}
+      >
+        <ImageIcon className="h-4 w-4 shrink-0" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider">Image</span>
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      draggable={false}
+      className={className}
+      style={style}
+      onError={() => setFailed(true)}
+    />
+  );
+});
+
 const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxShape; showImages: boolean }) {
   const base: React.CSSProperties = {
     position: 'absolute',
@@ -381,11 +431,8 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
     const crop = shape.crop;
     if (!crop) {
       return (
-        <img
+        <SlideImage
           src={shape.imageUrl}
-          alt=""
-          loading="lazy"
-          draggable={false}
           className="absolute select-none"
           style={{ ...base, objectFit: 'fill', borderRadius: radius }}
         />
@@ -397,11 +444,8 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
     const kh = Math.max(1 - crop.t - crop.b, 0.01);
     return (
       <div aria-hidden className="absolute overflow-hidden" style={{ ...base, borderRadius: radius }}>
-        <img
+        <SlideImage
           src={shape.imageUrl}
-          alt=""
-          loading="lazy"
-          draggable={false}
           className="absolute select-none max-w-none"
           style={{
             left: -(crop.l * shape.w) / kw,
@@ -644,7 +688,7 @@ const Thumb = memo(function Thumb({
 
 const PptxViewer: React.FC<PptxViewerProps> = ({
   fileUrl, resumeKey, title, extractedText, jumpToPage, initialQuery, uploadDate,
-  onTextExtracted, onCreateHighlight, onAskAi, onSlideChange,
+  onTextExtracted, onCreateHighlight, onAskAi, onSlideChange, onFullscreenChange,
 }) => {
   const positionKey = resumeKey || fileUrl;
   const [deck, setDeck] = useState<PptxDeck | null>(null);
@@ -684,6 +728,12 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
   const [menu, setMenu] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [fs, setFs] = useState(false);
+  // Keep the host reader's own "wide/fullscreen" shell in sync with this
+  // viewer's Slide Show instead of letting the two run as unrelated,
+  // sometimes-conflicting fullscreen states.
+  useEffect(() => {
+    onFullscreenChange?.(fs);
+  }, [fs, onFullscreenChange]);
   /** In presentation mode the chrome fades out until the pointer moves. */
   const [fsChrome, setFsChrome] = useState(true);
   const fsChromeVisibleRef = useRef(true);
@@ -1130,6 +1180,17 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           setZoomMenu(false);
           setMenu(false);
         } else if (fs) setFs(false);
+        else return;
+        // Escape was actually handled above (something closed). Both this
+        // listener and the slide reader's own page-level Escape listener
+        // are bound to `window`, so plain stopPropagation() does nothing —
+        // stopImmediatePropagation() is required to stop the reader's
+        // handler (registered after this one mounts) from ALSO reacting to
+        // the same keystroke by independently collapsing the AI/browser
+        // side panel. The two "fullscreen" concepts (this viewer's Slide
+        // Show and the reader's Expand Reader/wide panel) used to fight
+        // over the same keystroke.
+        e.stopImmediatePropagation();
         return;
       }
       if (!deck || mode !== 'slides' || inVideo) return;
@@ -1808,7 +1869,11 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
                   {currentSlide.notes ? (
                     <p
                       data-testid="pptx-notes-text"
-                      className="cursor-text whitespace-pre-wrap text-[15px] leading-relaxed text-slate-700"
+                      // Explicit black (not a mid grey) regardless of theme: the
+                      // notes card is always a fixed cream background, so a
+                      // washed-out grey here was genuinely low-contrast and
+                      // hard to read, never a dark-mode concern.
+                      className="cursor-text whitespace-pre-wrap text-[15px] leading-relaxed text-black"
                     >
                       {currentSlide.notes}
                     </p>

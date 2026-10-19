@@ -308,6 +308,25 @@ const ExamAttemptEntry: React.FC = () => {
 
   const enterExam = async () => {
     if (!staged || !identity) return;
+    // Browsers only grant Element.requestFullscreen() during a direct user
+    // gesture — calling it later, after SecureExamination.tsx has finished
+    // its own async setup (repository opens, attempt creation, a LAN health
+    // check…), arrives long after this click's "transient activation" has
+    // expired, so the automatic fullscreen entry silently fails on the web
+    // build every time (desktop/Android never hit this at all — they use
+    // native OS fullscreen/window lockdown, not this browser API). Firing it
+    // here, as the very first synchronous thing this click does, is what
+    // actually lets web exam-takers get the same fullscreen lockdown
+    // desktop and APK users get instead of landing in a plain window.
+    try {
+      const docEl = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
+      if (!document.fullscreenElement && !(document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement) {
+        void (docEl.requestFullscreen ? docEl.requestFullscreen() : docEl.webkitRequestFullscreen?.())?.catch(() => undefined);
+      }
+    } catch {
+      // Best-effort only — SecureExamination's own "Return to Fullscreen"
+      // banner still recovers this with one more click if it didn't take.
+    }
     setBusy(true);
     setError('');
     try {

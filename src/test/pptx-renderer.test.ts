@@ -660,3 +660,73 @@ describe('pptx renderer — video shapes', () => {
     deck.dispose();
   });
 });
+
+describe('pptx renderer — picture-filled autoshapes', () => {
+  /**
+   * Real decks sometimes fill a plain autoshape (a rounded rectangle "card",
+   * for example) with a picture via <a:blipFill> instead of using a
+   * dedicated <p:pic>. Before this, the renderer only ever treated <p:pic>
+   * as an image, so this shape — and the photo inside it — simply vanished.
+   */
+  const buildFillDeck = async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<?xml version="1.0"?>
+<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr/>
+    <p:sp>
+      <p:nvSpPr><p:cNvPr id="2" name="Photo card"/><p:nvPr/></p:nvSpPr>
+      <p:spPr>
+        <a:xfrm><a:off x="914400" y="914400"/><a:ext cx="1828800" cy="1371600"/></a:xfrm>
+        <a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>
+        <a:blipFill><a:blip r:embed="rId2"/></a:blipFill>
+      </p:spPr>
+    </p:sp>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/photo1.png"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/photo1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    return (await zip.generateAsync({ type: 'blob' })) as Blob;
+  };
+
+  it('renders a blipFill-on-autoshape picture instead of dropping the shape', async () => {
+    const deck = await renderPptx(await buildFillDeck());
+    const card = deck.slides[0].shapes.find((s) => s.geom === 'roundRect');
+    expect(card).toBeDefined();
+    expect(card!.fill).toMatch(/^url\("blob:.*"\) center \/ 100% 100% no-repeat$/);
+    deck.dispose();
+  });
+
+  it('defers the fill picture for lazy decks until the slide is shown, same as a real picture', async () => {
+    const deck = await renderPptx(await buildFillDeck(), { lazyMedia: true });
+    const card = deck.slides[0].shapes.find((s) => s.geom === 'roundRect');
+    expect(card).toBeDefined();
+    expect(card!.fill).toBeUndefined();
+    await deck.ensureSlideMedia(1);
+    expect(card!.fill).toMatch(/^url\("blob:.*"\) center \/ 100% 100% no-repeat$/);
+    deck.dispose();
+  });
+});

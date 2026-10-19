@@ -119,8 +119,18 @@ export interface PptxShape {
   rot: number; // degrees
   /** prstGeom name (rect, roundRect, ellipse, …). */
   geom?: string;
-  /** CSS colour or gradient. */
+  /** CSS colour, gradient, or (for an autoshape filled with a picture) a CSS url(...) background. */
   fill?: string;
+  /**
+   * Relationship id of a picture used to FILL this shape (an autoshape with
+   * <a:blipFill>, not a dedicated <p:pic>). Filled even before the bytes are
+   * loaded so lazy decks can resolve it into `fill` later, exactly like
+   * `imageRid` does for real pictures — without this, a shape filled with a
+   * photo (a common "card" layout in real decks) would silently render with
+   * no fill at all in the lazy-loading viewer.
+   */
+  fillImageRid?: string;
+  fillImageTiled?: boolean;
   borderColor?: string;
   borderWidth?: number; // px
   text?: PptxText;
@@ -474,6 +484,19 @@ function fillCss(holder: Element | null): string | undefined {
     if (stops.length === 1) return stops[0];
   }
   return undefined;
+}
+
+/**
+ * CSS `background` value for an autoshape filled with a picture (not a
+ * dedicated <p:pic>, which real decks use too — e.g. a rounded rectangle
+ * "card" filled with a photo). PowerPoint's default (and by far the most
+ * common) picture-fill mode stretches the image to exactly cover the shape;
+ * a:tile repeats it instead. Either beats the shape silently disappearing,
+ * which is what used to happen because only <p:pic> elements were ever
+ * treated as images.
+ */
+function pictureFillCss(url: string, tiled: boolean): string {
+  return tiled ? `url("${url}") repeat` : `url("${url}") center / 100% 100% no-repeat`;
 }
 
 function parseSpacingPt(pPr: Element, tag: string): number | undefined {
@@ -1230,7 +1253,17 @@ function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
 
   const prst = child(spPr, 'a:prstGeom')?.getAttribute('prst');
   const noFill = Boolean(spPr && child(spPr, 'a:noFill'));
-  const fill = noFill ? undefined : fillCss(spPr);
+  let fill = noFill ? undefined : fillCss(spPr);
+  const blipFill = noFill || fill ? null : (spPr ? child(spPr, 'a:blipFill') : null);
+  const fillBlipRid = blipFill ? child(blipFill, 'a:blip')?.getAttribute('r:embed') ?? undefined : undefined;
+  const fillTiled = Boolean(blipFill && child(blipFill, 'a:tile'));
+  if (fillBlipRid) {
+    const url = ctx.imageUrls.get(fillBlipRid);
+    if (url) {
+      fill = pictureFillCss(url, fillTiled);
+      ctx.imageList.push(url);
+    }
+  }
   const ln = spPr ? child(spPr, 'a:ln') : null;
   const lineColor = ln ? solidColor(child(ln, 'a:solidFill')) : undefined;
   const lineW = ln?.getAttribute('w') ? emuToPx(parseInt(ln.getAttribute('w')!, 10)) : undefined;
@@ -1252,12 +1285,20 @@ function parseSp(sp: Element, ctx: ShapeCtx): PptxShape | null {
     textScale: (ctx.t.sx + ctx.t.sy) / 2,
     isTitle,
   };
+  if (fillBlipRid && !fill) {
+    // Lazy decks resolve image bytes after the shape tree is parsed —
+    // remember the pending picture fill so ensureSlideMedia() can patch
+    // `fill` in once the bytes arrive, instead of this shape (and its
+    // picture) being dropped below as an "empty" placeholder.
+    shape.fillImageRid = fillBlipRid;
+    shape.fillImageTiled = fillTiled;
+  }
   if (lineColor) {
     shape.borderColor = lineColor;
     shape.borderWidth = Math.max(1, lineW || 1);
   }
   if (text) shape.text = text;
-  if (!shape.text && !shape.fill) return null; // empty, invisible placeholder
+  if (!shape.text && !shape.fill && !shape.fillImageRid) return null; // empty, invisible placeholder
   return shape;
 }
 
@@ -1808,6 +1849,18 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
             if (videoUrl) {
               note(videoPath);
               shape.videoUrl = videoUrl;
+            }
+          }
+        }
+        if (shape.fillImageRid && !shape.fill) {
+          const fillRel = job.rels.get(shape.fillImageRid);
+          if (fillRel && fillRel.type.endsWith('/image')) {
+            const fillPath = resolveZipPath('ppt/slides', fillRel.target);
+            const fillUrl = await urlFor(fillPath, slideNumber);
+            if (fillUrl) {
+              note(fillPath);
+              shape.fill = pictureFillCss(fillUrl, Boolean(shape.fillImageTiled));
+              if (!slide.images.includes(fillUrl)) slide.images.push(fillUrl);
             }
           }
         }

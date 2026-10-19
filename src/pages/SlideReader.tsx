@@ -120,6 +120,8 @@ const SlideReader: React.FC = () => {
   /** Full text of the open material, loaded from IndexedDB on demand. */
   const [fullText, setFullText] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  /** Side-panel state captured just before a PPTX Slide Show takes over, so exiting it restores things exactly as they were instead of always landing on "wide". */
+  const panelStateBeforeSlideShowRef = useRef<{ showAIPanel: boolean; showBrowserPanel: boolean; isFullscreen: boolean } | null>(null);
   const [panelWidth, setPanelWidth] = useState(window.innerWidth > 1024 ? 400 : 320);
   const [isResizing, setIsResizing] = useState(false);
   const resizeFrameRef = useRef<number | null>(null);
@@ -529,6 +531,28 @@ const SlideReader: React.FC = () => {
     }
   };
 
+  /**
+   * Makes the reader's own "Expand Reader" (wide) state conform to the
+   * PPTX viewer's internal "Slide Show" fullscreen instead of the two
+   * running independently: starting a slide show also widens/fullscreens
+   * the reader shell, and ending it restores whatever panel layout was
+   * active beforehand (rather than always snapping to one fixed state).
+   */
+  const handlePptxFullscreenChange = (active: boolean) => {
+    if (active) {
+      panelStateBeforeSlideShowRef.current = { showAIPanel, showBrowserPanel, isFullscreen };
+      setShowAIPanel(false);
+      setShowBrowserPanel(false);
+      setIsFullscreen(true);
+    } else {
+      const prior = panelStateBeforeSlideShowRef.current;
+      panelStateBeforeSlideShowRef.current = null;
+      setIsFullscreen(prior?.isFullscreen ?? false);
+      setShowAIPanel(prior?.showAIPanel ?? false);
+      setShowBrowserPanel(prior?.showBrowserPanel ?? false);
+    }
+  };
+
   // Global Escape Key Handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -689,6 +713,7 @@ const SlideReader: React.FC = () => {
             setPageCount(total);
             setPageText(text ?? '');
           }}
+          onFullscreenChange={handlePptxFullscreenChange}
         />
       );
     }
