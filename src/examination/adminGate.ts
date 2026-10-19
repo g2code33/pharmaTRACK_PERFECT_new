@@ -6,16 +6,19 @@
  * curious student on the examination Wi-Fi is this gate. It is deliberately
  * simple and honest about what it is:
  *
- *   - The console password and the phantom PIN (the second secret that must
- *     be presented to change the password) are stored ONLY as salted SHA-256
- *     hashes on this device — never in plaintext.
+ *   - The console password, the phantom PIN (the second secret that must be
+ *     presented to change either password) and the builder password are each
+ *     stored ONLY as a salted SHA-256 hash on this device — never in
+ *     plaintext — and each has ITS OWN salt (see the note on record shape
+ *     below for why that independence matters).
  *   - Unlocking is per browser tab (sessionStorage), so a reload in the same
  *     tab stays open while a fresh tab — e.g. a student navigating to the
  *     admin route — always starts at the lock screen.
  *   - The seed values below exist so the very first launch has a working
  *     password; they live in code, which means anyone holding the source can
- *     compute them. Change both from the console on first setup — the change
- *     path re-salts and stores only the new hashes.
+ *     compute them. Change all of them from the console on first setup — the
+ *     change paths re-salt and store only the new hash for the secret being
+ *     changed.
  *   - This gates the local UI. It is not DRM: the invigilator's machine is
  *     the trusted device, the LAN authority already exposes no admin routes,
  *     and production kiosk builds compile developer tools out.
@@ -28,8 +31,9 @@ const UNLOCKED_FLAG = 'pharmatrack:admin-gate-unlocked';
 const BUILDER_UNLOCKED_FLAG = 'pharmatrack:builder-gate-unlocked';
 
 /**
- * Seed credentials configured at setup. Change both from the admin console
- * (change requires the phantom PIN) before relying on the gate.
+ * Seed credentials configured at setup. Change all of them from the admin
+ * console (changing any one requires the phantom PIN) before relying on the
+ * gate.
  */
 const DEFAULT_ADMIN_PASSWORD = 'godnogosHamEi2';
 const DEFAULT_PHANTOM_PIN = 'iseedeAdpeople';
@@ -37,15 +41,38 @@ const DEFAULT_PHANTOM_PIN = 'iseedeAdpeople';
  *  console password, so a builder leak never hands over the live console. */
 const DEFAULT_BUILDER_PASSWORD = 'admin123';
 
-/** Minimum length for a new console password. */
+/** Minimum length for a new console or builder password. */
 export const MIN_ADMIN_PASSWORD_LENGTH = 8;
 
+/**
+ * Record shape, current version: every secret carries its OWN salt.
+ *
+ * This used to be one shared `salt` for all three hashes. That made the
+ * three secrets silently entangled: changing the console password rotated
+ * the shared salt (standard practice — a password change should get a fresh
+ * salt), which recomputed passwordHash and phantomHash correctly, but there
+ * was no plaintext builder password on hand at that moment to recompute
+ * builderHash against the new salt — so it was left stale, and the stale
+ * hash would never again match ANY builder password, correct or not. The
+ * fix is structural, not a validation tweak: give each secret its own salt,
+ * so rotating one can never affect the other two's stored hash at all.
+ * loadGate() migrates old single-salt records in place.
+ */
 interface AdminGateRecord {
+  passwordSalt: string;
+  passwordHash: string;
+  phantomSalt: string;
+  phantomHash: string;
+  builderSalt: string;
+  builderHash: string;
+  updatedAt: string;
+}
+
+/** Pre-migration shape (one shared salt for all three secrets). */
+interface LegacyAdminGateRecord {
   salt: string;
   passwordHash: string;
   phantomHash: string;
-  /** Hash of the exam builder's password. Records written before the builder
-   *  lock existed lack this field; loadGate() migrates them in place. */
   builderHash?: string;
   updatedAt: string;
 }
@@ -60,29 +87,64 @@ async function hashSecret(salt: string, secret: string): Promise<string> {
   return sha256(`${salt}:pharmatrack-admin-gate:${secret}`);
 }
 
+function isCurrentShape(
+  record: AdminGateRecord | LegacyAdminGateRecord,
+): record is AdminGateRecord {
+  return typeof (record as AdminGateRecord).passwordSalt === 'string';
+}
+
 async function loadGate(): Promise<AdminGateRecord> {
-  const existing = await get<AdminGateRecord>(GATE_KEY);
-  if (existing && existing.salt && existing.passwordHash && existing.phantomHash) {
-    // Records seeded before the builder lock existed carry no builder hash:
-    // add the seed hash so the builder gate works on first visit without
-    // invalidating the console password or the phantom PIN.
-    if (!existing.builderHash) {
-      const migrated: AdminGateRecord = {
+  const existing = await get<AdminGateRecord | LegacyAdminGateRecord>(GATE_KEY);
+
+  if (existing && !isCurrentShape(existing) && existing.salt && existing.passwordHash && existing.phantomHash) {
+    // Pre-migration record: reuse the one shared salt as each secret's own
+    // salt, which keeps every already-stored hash valid (hashSecret(salt, x)
+    // is unchanged), then split them apart so future changes never cross-
+    // invalidate each other again. A record with no builderHash yet (saved
+    // before the builder lock existed) gets the seed builder password.
+    const migrated: AdminGateRecord = {
+      passwordSalt: existing.salt,
+      passwordHash: existing.passwordHash,
+      phantomSalt: existing.salt,
+      phantomHash: existing.phantomHash,
+      builderSalt: existing.salt,
+      builderHash: existing.builderHash ?? (await hashSecret(existing.salt, DEFAULT_BUILDER_PASSWORD)),
+      updatedAt: new Date().toISOString(),
+    };
+    await set(GATE_KEY, migrated);
+    return migrated;
+  }
+
+  if (existing && isCurrentShape(existing)) {
+    // Already the current shape. Still patch a missing builder salt/hash —
+    // defensive, in case a record is ever stored without one (e.g. partial
+    // writes, or an old backup restored into a new build) — so the builder
+    // gate is never permanently unanswerable without the invigilator even
+    // knowing it is broken.
+    if (!existing.builderSalt || !existing.builderHash) {
+      const builderSalt = hex(randomBytes(16));
+      const patched: AdminGateRecord = {
         ...existing,
-        builderHash: await hashSecret(existing.salt, DEFAULT_BUILDER_PASSWORD),
+        builderSalt,
+        builderHash: await hashSecret(builderSalt, DEFAULT_BUILDER_PASSWORD),
         updatedAt: new Date().toISOString(),
       };
-      await set(GATE_KEY, migrated);
-      return migrated;
+      await set(GATE_KEY, patched);
+      return patched;
     }
     return existing;
   }
-  const salt = hex(randomBytes(16));
+
+  const passwordSalt = hex(randomBytes(16));
+  const phantomSalt = hex(randomBytes(16));
+  const builderSalt = hex(randomBytes(16));
   const record: AdminGateRecord = {
-    salt,
-    passwordHash: await hashSecret(salt, DEFAULT_ADMIN_PASSWORD),
-    phantomHash: await hashSecret(salt, DEFAULT_PHANTOM_PIN),
-    builderHash: await hashSecret(salt, DEFAULT_BUILDER_PASSWORD),
+    passwordSalt,
+    passwordHash: await hashSecret(passwordSalt, DEFAULT_ADMIN_PASSWORD),
+    phantomSalt,
+    phantomHash: await hashSecret(phantomSalt, DEFAULT_PHANTOM_PIN),
+    builderSalt,
+    builderHash: await hashSecret(builderSalt, DEFAULT_BUILDER_PASSWORD),
     updatedAt: new Date().toISOString(),
   };
   await set(GATE_KEY, record);
@@ -93,14 +155,20 @@ async function loadGate(): Promise<AdminGateRecord> {
 export async function verifyAdminPassword(password: string): Promise<boolean> {
   if (!password) return false;
   const gate = await loadGate();
-  return (await hashSecret(gate.salt, password)) === gate.passwordHash;
+  return (await hashSecret(gate.passwordSalt, password)) === gate.passwordHash;
 }
 
 /** True only for the exact, non-empty builder password this device stores. */
 export async function verifyBuilderPassword(password: string): Promise<boolean> {
   if (!password) return false;
   const gate = await loadGate();
-  return !!gate.builderHash && (await hashSecret(gate.salt, password)) === gate.builderHash;
+  return (await hashSecret(gate.builderSalt, password)) === gate.builderHash;
+}
+
+/** True only for the exact, non-empty phantom PIN this device stores. */
+async function verifyPhantomPin(gate: AdminGateRecord, phantomPin: string): Promise<boolean> {
+  if (!phantomPin) return false;
+  return (await hashSecret(gate.phantomSalt, phantomPin)) === gate.phantomHash;
 }
 
 export function isAdminGateUnlocked(): boolean {
@@ -158,8 +226,9 @@ export type AdminPasswordChangeResult =
 
 /**
  * Change the console password. Requires the current password AND the phantom
- * PIN; on success the salt is rotated and only the new hashes are stored, so
- * the old password stops working immediately.
+ * PIN. Only the console password's own salt and hash are rotated — the
+ * phantom PIN and the builder password keep working completely unchanged,
+ * because they live under their own independent salts.
  */
 export async function changeAdminPassword(
   currentPassword: string,
@@ -169,15 +238,14 @@ export async function changeAdminPassword(
   if (nextPassword.trim().length < MIN_ADMIN_PASSWORD_LENGTH)
     return { ok: false, error: 'invalid-new-password' };
   const gate = await loadGate();
-  if ((await hashSecret(gate.salt, currentPassword)) !== gate.passwordHash)
+  if ((await hashSecret(gate.passwordSalt, currentPassword)) !== gate.passwordHash)
     return { ok: false, error: 'wrong-password' };
-  if ((await hashSecret(gate.salt, phantomPin)) !== gate.phantomHash)
-    return { ok: false, error: 'wrong-phantom-pin' };
-  const salt = hex(randomBytes(16));
+  if (!(await verifyPhantomPin(gate, phantomPin))) return { ok: false, error: 'wrong-phantom-pin' };
+  const passwordSalt = hex(randomBytes(16));
   const record: AdminGateRecord = {
-    salt,
-    passwordHash: await hashSecret(salt, nextPassword),
-    phantomHash: await hashSecret(salt, phantomPin),
+    ...gate,
+    passwordSalt,
+    passwordHash: await hashSecret(passwordSalt, nextPassword),
     updatedAt: new Date().toISOString(),
   };
   await set(GATE_KEY, record);
@@ -187,8 +255,8 @@ export async function changeAdminPassword(
 /**
  * Change the exam builder's password. Authorised by the CURRENT builder
  * password plus the phantom PIN — the same two-secret rule as the console
- * password. Only the builder hash is replaced: the console password and the
- * phantom PIN keep working unchanged.
+ * password. Only the builder's own salt and hash are rotated: the console
+ * password and the phantom PIN keep working unchanged.
  */
 export async function changeBuilderPassword(
   currentBuilderPassword: string,
@@ -198,13 +266,14 @@ export async function changeBuilderPassword(
   if (nextBuilderPassword.trim().length < MIN_ADMIN_PASSWORD_LENGTH)
     return { ok: false, error: 'invalid-new-password' };
   const gate = await loadGate();
-  if (!gate.builderHash || (await hashSecret(gate.salt, currentBuilderPassword)) !== gate.builderHash)
+  if ((await hashSecret(gate.builderSalt, currentBuilderPassword)) !== gate.builderHash)
     return { ok: false, error: 'wrong-password' };
-  if ((await hashSecret(gate.salt, phantomPin)) !== gate.phantomHash)
-    return { ok: false, error: 'wrong-phantom-pin' };
+  if (!(await verifyPhantomPin(gate, phantomPin))) return { ok: false, error: 'wrong-phantom-pin' };
+  const builderSalt = hex(randomBytes(16));
   const record: AdminGateRecord = {
     ...gate,
-    builderHash: await hashSecret(gate.salt, nextBuilderPassword),
+    builderSalt,
+    builderHash: await hashSecret(builderSalt, nextBuilderPassword),
     updatedAt: new Date().toISOString(),
   };
   await set(GATE_KEY, record);

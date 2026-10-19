@@ -61,6 +61,7 @@ import {
   unlockAccountAI,
   type AccountDevice,
 } from '../ai/accountSync';
+import PasswordInput from './PasswordInput';
 
 const inputCls =
   'w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#2D6A4F] focus:border-transparent outline-none text-sm text-gray-900 bg-white placeholder-gray-400';
@@ -432,9 +433,8 @@ const AccountSyncCard: React.FC = () => {
           <label className="sr-only" htmlFor="ai-vault-password">
             Account password to unlock AI secrets
           </label>
-          <input
+          <PasswordInput
             id="ai-vault-password"
-            type="password"
             value={vaultPassword}
             onChange={(event) => setVaultPassword(event.target.value)}
             placeholder="Account password to unlock secrets"

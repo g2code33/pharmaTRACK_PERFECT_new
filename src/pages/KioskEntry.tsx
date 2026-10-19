@@ -25,6 +25,7 @@ import { subscribePharmaExamLaunches, takePharmaExamLaunches } from '../examinat
 import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
 import { BROWSER_PHARMAEXAM_ACCEPT } from '../platform/fileSelection';
 import { isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
+import PasswordInput from '../components/PasswordInput';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
@@ -557,8 +558,7 @@ const KioskEntry: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             RX30 Kiosk password
-            <input
-              type="password"
+            <PasswordInput
               value={kioskPassword}
               onChange={(event) => setKioskPassword(event.target.value)}
               className="mt-1 w-full rounded-lg border px-3 py-2"
@@ -646,8 +646,7 @@ const KioskEntry: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             LAN session token
-            <input
-              type="password"
+            <PasswordInput
               value={lanToken}
               onChange={(event) => setLanToken(event.target.value)}
               data-testid="lan-token-input"
@@ -667,8 +666,7 @@ const KioskEntry: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             Exam password
-            <input
-              type="password"
+            <PasswordInput
               value={examPassword}
               onChange={(event) => setExamPassword(event.target.value)}
               className="mt-1 w-full rounded-lg border px-3 py-2"

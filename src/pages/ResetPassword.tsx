@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { getAuthenticatedUser, restoreSession, updatePassword } from '../auth/authService';
+import PasswordInput from '../components/PasswordInput';
 
 const ResetPassword: React.FC = () => {
   const navigate = useNavigate();
@@ -68,10 +69,10 @@ const ResetPassword: React.FC = () => {
           <form onSubmit={save} className="space-y-4">
             {error && <div role="alert" className="p-3 rounded-xl bg-red-50 text-red-700 text-sm flex gap-2"><AlertCircle className="w-4 h-4 shrink-0" />{error}</div>}
             <label className="block text-xs font-bold text-slate-500 uppercase">New password
-              <div className="relative mt-2"><Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" /><input type="password" minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-slate-50 rounded-xl outline-none" /></div>
+              <div className="relative mt-2"><Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" /><PasswordInput minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-slate-50 rounded-xl outline-none" /></div>
             </label>
             <label className="block text-xs font-bold text-slate-500 uppercase">Confirm password
-              <input type="password" minLength={6} required value={confirmation} onChange={(e) => setConfirmation(e.target.value)} className="w-full mt-2 px-4 py-3.5 bg-slate-50 rounded-xl outline-none" />
+              <PasswordInput minLength={6} required value={confirmation} onChange={(e) => setConfirmation(e.target.value)} className="w-full mt-2 px-4 py-3.5 bg-slate-50 rounded-xl outline-none" />
             </label>
             <button type="submit" disabled={saving} className="w-full py-3.5 bg-[#1B4332] text-white rounded-xl font-bold disabled:opacity-50">{saving ? <Loader2 className="mx-auto animate-spin" /> : 'Update password'}</button>
           </form>

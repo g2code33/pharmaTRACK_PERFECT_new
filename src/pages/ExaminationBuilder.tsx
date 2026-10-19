@@ -26,6 +26,7 @@ import {
   markBuilderGateUnlocked,
   verifyBuilderPassword,
 } from '../examination/adminGate';
+import PasswordInput from '../components/PasswordInput';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 const violationTypes = [
@@ -213,8 +214,7 @@ const ExaminationBuilder: React.FC = () => {
         >
           <label className="block text-sm font-black">
             Builder password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="current-password"
               value={gatePassword}
               onChange={(event) => setGatePassword(event.target.value)}

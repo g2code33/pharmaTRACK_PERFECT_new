@@ -38,6 +38,7 @@ import {
   type LanServerStatus,
 } from '../examination/lanServer';
 import type { ExaminationResult, ExamSession, StudentAttempt } from '../examination/types';
+import PasswordInput from '../components/PasswordInput';
 
 const activeStatuses = [
   'ACTIVE',
@@ -664,8 +665,7 @@ const ExaminationAdmin: React.FC = () => {
         >
           <label className="block text-sm font-black">
             Administrator password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="current-password"
               value={gatePassword}
               onChange={(event) => setGatePassword(event.target.value)}
@@ -933,8 +933,7 @@ const ExaminationAdmin: React.FC = () => {
           </div>
           <label className="text-sm font-bold">
             Session token for student devices
-            <input
-              type="password"
+            <PasswordInput
               readOnly
               value={lanToken}
               className="mt-1 w-full rounded-lg border px-3 py-2 font-mono"
@@ -1553,8 +1552,7 @@ const ExaminationAdmin: React.FC = () => {
         >
           <label className="text-sm font-bold">
             Current password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="current-password"
               value={changeCurrent}
               onChange={(event) => setChangeCurrent(event.target.value)}
@@ -1564,8 +1562,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             New password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="new-password"
               value={changeNext}
               onChange={(event) => setChangeNext(event.target.value)}
@@ -1575,8 +1572,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             Confirm new password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="new-password"
               value={changeConfirm}
               onChange={(event) => setChangeConfirm(event.target.value)}
@@ -1586,8 +1582,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             Phantom PIN (authorises the change)
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="off"
               value={changePhantom}
               onChange={(event) => setChangePhantom(event.target.value)}
@@ -1634,8 +1629,7 @@ const ExaminationAdmin: React.FC = () => {
         >
           <label className="text-sm font-bold">
             Current builder password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="current-password"
               value={builderCurrent}
               onChange={(event) => setBuilderCurrent(event.target.value)}
@@ -1645,8 +1639,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             New builder password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="new-password"
               value={builderNext}
               onChange={(event) => setBuilderNext(event.target.value)}
@@ -1656,8 +1649,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             Confirm new builder password
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="new-password"
               value={builderConfirm}
               onChange={(event) => setBuilderConfirm(event.target.value)}
@@ -1667,8 +1659,7 @@ const ExaminationAdmin: React.FC = () => {
           </label>
           <label className="text-sm font-bold">
             Phantom PIN (authorises the change)
-            <input
-              type="password"
+            <PasswordInput
               autoComplete="off"
               value={builderPhantom}
               onChange={(event) => setBuilderPhantom(event.target.value)}

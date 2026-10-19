@@ -188,6 +188,29 @@ describe('adminGate module', () => {
     expect(await verifyAdminPassword(SEEDED_PASSWORD)).toBe(true);
     const again = await changeAdminPassword(SEEDED_PASSWORD, 'StillWorks!9', PHANTOM_PIN);
     expect(again).toEqual({ ok: true });
+
+    // Regression: changing the console password used to rotate a salt that
+    // the builder hash was computed under, silently resetting a custom
+    // builder password back to the seed value with no warning. Each secret
+    // now carries its own salt, so this custom builder password must still
+    // be the one in force — not the seed "admin123".
+    expect(await verifyBuilderPassword('Builder!234')).toBe(true);
+    expect(await verifyBuilderPassword(SEEDED_BUILDER_PASSWORD)).toBe(false);
+  });
+
+  it('never lets an admin password change affect the builder password, in either order', async () => {
+    // Set a custom builder password first, exactly like an invigilator would.
+    expect(await changeBuilderPassword(SEEDED_BUILDER_PASSWORD, 'MyBuilderSecret1', PHANTOM_PIN)).toEqual({
+      ok: true,
+    });
+    // Then change the console password — once, twice, same phantom PIN.
+    expect(await changeAdminPassword(SEEDED_PASSWORD, 'ConsoleSecret1', PHANTOM_PIN)).toEqual({ ok: true });
+    expect(await changeAdminPassword('ConsoleSecret1', 'ConsoleSecret2', PHANTOM_PIN)).toEqual({ ok: true });
+
+    // The custom builder password from before any of those changes still
+    // works, untouched — it was never silently reset.
+    expect(await verifyBuilderPassword('MyBuilderSecret1')).toBe(true);
+    expect(await verifyAdminPassword('ConsoleSecret2')).toBe(true);
   });
 
   it('migrates records written before the builder lock existed', async () => {

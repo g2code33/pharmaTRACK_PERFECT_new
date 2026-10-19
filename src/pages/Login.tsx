@@ -14,6 +14,7 @@ import {
 import { unlockAccountAI } from '../ai/accountSync';
 import { inspectLocalWorkspaceMigration, linkLocalWorkspaceToAccount } from '../auth/migration';
 import { User, Mail, Lock, Loader2, WifiOff, Chrome, Github, ArrowLeft } from 'lucide-react';
+import PasswordInput from '../components/PasswordInput';
 
 type AuthMode = 'login' | 'signup' | 'reset';
 
@@ -230,7 +231,7 @@ const Login: React.FC = () => {
             {!isReset && (
               <label className="block text-xs font-bold text-gray-500 uppercase">
                 Password
-                <div className="relative mt-2"><Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" /><input type="password" minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 rounded-2xl outline-none" /></div>
+                <div className="relative mt-2"><Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" /><PasswordInput minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full pl-12 pr-4 py-3.5 bg-gray-50 rounded-2xl outline-none" /></div>
               </label>
             )}
             <button type="submit" disabled={isLoading || isOffline} className="w-full py-3.5 bg-[#1B4332] text-white font-bold rounded-2xl hover:bg-[#2D6A4F] transition-all disabled:opacity-50">
