@@ -32,7 +32,14 @@
 --     the functions below, each with its own auth.uid() check.
 -- ============================================================================
 
-create extension if not exists pgcrypto;
+-- Supabase projects almost always already have pgcrypto installed into the
+-- `extensions` schema (not `public`) as part of the platform's own setup.
+-- `create extension if not exists` is a no-op when that's already true, so
+-- this line alone does NOT guarantee crypt()/gen_salt() are reachable from a
+-- function whose search_path is locked to `public` for security — every
+-- function below that calls them explicitly adds `extensions` to its own
+-- search_path for exactly that reason.
+create extension if not exists pgcrypto with schema extensions;
 
 create table if not exists public.pharmatrack_kiosk_admins (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -239,7 +246,9 @@ create or replace function public.admin_reset_kiosk_student_password(
 returns public.pharmatrack_kiosk_roster_students
 language plpgsql
 security definer
-set search_path = public
+-- `extensions` is where Supabase keeps pgcrypto; crypt()/gen_salt() below
+-- are unresolvable without it ("function gen_salt(unknown) does not exist").
+set search_path = public, extensions
 as $$
 declare
   result public.pharmatrack_kiosk_roster_students;
@@ -318,7 +327,7 @@ create or replace function public.kiosk_register_student(
 returns table (student_id uuid)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   admin_row public.pharmatrack_kiosk_admins;
@@ -356,7 +365,7 @@ create or replace function public.kiosk_authenticate_student(
 returns table (student_id uuid, first_name text, level text)
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   admin_row public.pharmatrack_kiosk_admins;

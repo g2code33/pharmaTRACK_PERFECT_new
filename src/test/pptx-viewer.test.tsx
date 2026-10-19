@@ -237,6 +237,20 @@ describe('PptxViewer', () => {
     expect(screen.getByText('Emphasise the beta blocker contraindication')).toBeTruthy();
   });
 
+  it('lets the reader manually pick the notes text colour, defaulting to black, and remembers it', async () => {
+    mockFetchBlob(await buildDeck(DECK));
+    render(<PptxViewer fileUrl="local:test-9b" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    const notes = screen.getByTestId('pptx-notes-text');
+    expect(notes.style.color).toBe('rgb(0, 0, 0)');
+
+    const picker = screen.getByLabelText('Notes text colour') as HTMLInputElement;
+    fireEvent.change(picker, { target: { value: '#ff0000' } });
+    expect(screen.getByTestId('pptx-notes-text').style.color).toBe('rgb(255, 0, 0)');
+    expect(localStorage.getItem('pharmatrack:pptx-notes-color')).toBe('#ff0000');
+  });
+
   it('renders an embedded video as a playable <video> with controls and a poster, and keeps arrow keys for seeking instead of changing slides', async () => {
     const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
     const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';

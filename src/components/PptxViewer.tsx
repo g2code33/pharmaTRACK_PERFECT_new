@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight,
   Download, FileText, Image as ImageIcon, Info, Loader2, Maximize, Menu, Minimize,
-  PanelLeft, Search, StickyNote, X, ZoomIn, ZoomOut,
+  PanelLeft, Palette, Search, StickyNote, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { isSymbolBulletFont, mapSymbolFontChar, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
@@ -724,6 +724,18 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
       return true;
     }
   });
+  // Manual override for the notes text colour (the colour-wheel button next
+  // to Download). Defaults to black, but some readers want something else
+  // against the cream notes card — the choice sticks across sessions, same
+  // as the notes on/off toggle.
+  const [notesColor, setNotesColor] = useState<string>(() => {
+    try {
+      return localStorage.getItem('pharmatrack:pptx-notes-color') || '#000000';
+    } catch {
+      return '#000000';
+    }
+  });
+  const notesColorInputRef = useRef<HTMLInputElement>(null);
   const [zoomMenu, setZoomMenu] = useState(false);
   const [menu, setMenu] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -1685,6 +1697,36 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
 
         <div className="ml-auto" />
 
+        {showNotes && (
+          <div className="relative">
+            <button
+              onClick={() => notesColorInputRef.current?.click()}
+              title="Notes text colour"
+              className={iconBtn}
+            >
+              <Palette className="h-4 w-4" style={{ color: notesColor }} />
+            </button>
+            {/* The browser's own colour-wheel picker — the simplest, most
+                familiar "pick any colour" control on every platform (desktop,
+                Android, web), with zero extra UI of our own to maintain. */}
+            <input
+              ref={notesColorInputRef}
+              type="color"
+              value={notesColor}
+              onChange={(e) => {
+                setNotesColor(e.target.value);
+                try {
+                  localStorage.setItem('pharmatrack:pptx-notes-color', e.target.value);
+                } catch {
+                  /* private mode — the choice simply resets next session */
+                }
+              }}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              aria-label="Notes text colour"
+            />
+          </div>
+        )}
+
         <button onClick={download} title="Download original file" className={iconBtn}>
           <Download className="h-4 w-4" />
         </button>
@@ -1869,11 +1911,11 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
                   {currentSlide.notes ? (
                     <p
                       data-testid="pptx-notes-text"
-                      // Explicit black (not a mid grey) regardless of theme: the
-                      // notes card is always a fixed cream background, so a
-                      // washed-out grey here was genuinely low-contrast and
-                      // hard to read, never a dark-mode concern.
-                      className="cursor-text whitespace-pre-wrap text-[15px] leading-relaxed text-black"
+                      // Defaults to black (never a washed-out grey against
+                      // the fixed cream notes card) but is overridable via
+                      // the colour-wheel button next to Download.
+                      className="cursor-text whitespace-pre-wrap text-[15px] leading-relaxed"
+                      style={{ color: notesColor }}
                     >
                       {currentSlide.notes}
                     </p>
