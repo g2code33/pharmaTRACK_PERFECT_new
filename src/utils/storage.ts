@@ -501,7 +501,7 @@ const saveNativeFile = async (id: string, value: Uint8Array | string): Promise<b
     for (let offset = 0; offset < bytes.byteLength; offset += NATIVE_FILE_CHUNK_BYTES) {
       const chunk = bytes.subarray(offset, Math.min(bytes.byteLength, offset + NATIVE_FILE_CHUNK_BYTES));
       // Tauri IPC serialises byte vectors as JSON-compatible number arrays.
-      // Chunking keeps the payload size bounded for 100 MB lecture files.
+      // Chunking keeps the payload size bounded regardless of file size.
       await invokeNativeFile<void>('save_material_file_chunk', { id, bytes: Array.from(chunk) });
     }
     await invokeNativeFile<void>('save_material_file_finish', { id });

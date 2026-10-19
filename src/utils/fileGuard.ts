@@ -42,7 +42,14 @@ export interface FileVerdict {
 
 /** Bytes read from the head of the file for signature checks. */
 const SNIFF_BYTES = 32;
-export const DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
+// Lecture slide decks with embedded video/high-resolution scans routinely
+// land well north of 100 MB (a real upload was rejected at 161.8 MB) — 100
+// MB was too tight for normal course material, not a safety ceiling the app
+// actually needs. Chunked native storage and IndexedDB both handle this size
+// fine; 300 MB keeps real files working while still refusing anything that
+// is clearly not study material.
+export const DEFAULT_MAX_BYTES = 300 * 1024 * 1024;
+export const DEFAULT_MAX_MB = DEFAULT_MAX_BYTES / (1024 * 1024);
 
 function startsWith(bytes: Uint8Array, sig: number[], offset = 0): boolean {
   if (bytes.length < offset + sig.length) return false;

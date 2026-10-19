@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { ocrStatusFor, type MaterialKind, type OcrStatus, type VisualStatus } from '../utils/materialKind';
-import { inspectFile } from '../utils/fileGuard';
+import { inspectFile, DEFAULT_MAX_MB } from '../utils/fileGuard';
 import { pdfHasTextLayer, ocrPdf, ocrImage, type OcrProgress } from '../utils/ocr';
 import {
   extractPdfText, extractPptxSlideTexts, extractDocxText, extractSpreadsheetText,
@@ -75,7 +75,10 @@ interface FileUploaderProps {
   compact?: boolean;
 }
 
-const MAX_DEFAULT_MB = 100;
+// Single source of truth shared with the byte-level file guard, so the
+// number shown to the student and the number actually enforced can never
+// drift apart again.
+const MAX_DEFAULT_MB = DEFAULT_MAX_MB;
 
 const kindOf = (file: File): UploadKind => {
   const ext = file.name.toLowerCase().split('.').pop() ?? '';

@@ -25,6 +25,14 @@
       "url": "./index.html#/app-link?url=%s"
     }
   ],
+  "file_handlers": [
+    {
+      "action": "./index.html#/examinations/kiosk",
+      "accept": {
+        "application/x-pharmaexam": [".pharmaexam"]
+      }
+    }
+  ],
   "related_applications": [
     {
       "platform": "webapp",

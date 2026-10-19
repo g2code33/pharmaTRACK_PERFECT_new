@@ -19,8 +19,11 @@ import type { ExamQuestion } from '../types';
 import { ExaminationRepository } from '../examination/service';
 import {
   createPharmaExamPackage,
+  decryptPharmaExamEnvelope,
+  encryptPharmaExamEnvelope,
   generateExamSigningKeyPair,
   isDuplicateExamPackage,
+  isPharmaExamEnvelope,
   markExamPackageImported,
   packageContainsPlaintextPassword,
   validatePharmaExamPackage,
@@ -94,12 +97,15 @@ describe('.pharmaexam package', () => {
       institution: { name: 'Test Institution' },
       signingKey: await generateExamSigningKeyPair(),
     });
-    const zip = await JSZip.loadAsync(await readBlobArrayBuffer(packageData.blob));
+    const envelopeBytes = new Uint8Array(await readBlobArrayBuffer(packageData.blob));
+    expect(isPharmaExamEnvelope(envelopeBytes)).toBe(true);
+    const zip = await JSZip.loadAsync(await decryptPharmaExamEnvelope(envelopeBytes));
     zip.file(
       'questions.json',
       JSON.stringify([{ ...version.questions[0], questionText: 'TAMPERED' }]),
     );
-    const tampered = await zip.generateAsync({ type: 'blob' });
+    const tamperedZipBytes = new Uint8Array(await zip.generateAsync({ type: 'uint8array' }));
+    const tampered = await encryptPharmaExamEnvelope(tamperedZipBytes);
     const result = await validatePharmaExamPackage(tampered);
     expect(result.ok).toBe(false);
     expect(result.errors.join(' ')).toMatch(/checksum|signature|digest/i);
@@ -123,12 +129,16 @@ describe('.pharmaexam package', () => {
       institution: { name: 'Test' },
       signingKey: await generateExamSigningKeyPair(),
     });
-    const unsupportedZip = await JSZip.loadAsync(await readBlobArrayBuffer(packageData.blob));
+    const unsupportedZip = await JSZip.loadAsync(
+      await decryptPharmaExamEnvelope(new Uint8Array(await readBlobArrayBuffer(packageData.blob))),
+    );
     const manifest = JSON.parse(await unsupportedZip.file('manifest.json')!.async('string'));
     manifest.formatVersion = 999;
     unsupportedZip.file('manifest.json', JSON.stringify(manifest));
     const unsupported = await validatePharmaExamPackage(
-      await unsupportedZip.generateAsync({ type: 'blob' }),
+      await encryptPharmaExamEnvelope(
+        new Uint8Array(await unsupportedZip.generateAsync({ type: 'uint8array' })),
+      ),
     );
     expect(unsupported.ok).toBe(false);
     expect(unsupported.errors.join(' ')).toContain('Unsupported examination package version');
@@ -170,5 +180,50 @@ describe('.pharmaexam package', () => {
     expect(markExamPackageImported(next, parsed.staged!.manifest).importedPackageKeys).toHaveLength(
       1,
     );
+  });
+
+  it('ships as an encrypted envelope — not a renameable, extractable ZIP', async () => {
+    const version = await publishedVersion();
+    const packageData = await createPharmaExamPackage({
+      version,
+      institution: { name: 'Test' },
+      signingKey: await generateExamSigningKeyPair(),
+    });
+    const bytes = new Uint8Array(await readBlobArrayBuffer(packageData.blob));
+
+    expect(isPharmaExamEnvelope(bytes)).toBe(true);
+    // A ZIP (and every format JSZip/docx/pptx/odp share) starts with the
+    // four-byte local-file-header signature 0x50 0x4B 0x03 0x04 ("PK\3\4").
+    // The envelope must not start with it — that signature is exactly what
+    // let file managers and archive tools treat the old format as a ZIP.
+    expect(Array.from(bytes.slice(0, 4))).not.toEqual([0x50, 0x4b, 0x03, 0x04]);
+    // Nothing recognisable about the exam leaks into the raw bytes either.
+    const raw = new TextDecoder().decode(bytes);
+    expect(raw).not.toContain(question.questionText);
+    expect(raw).not.toContain('questions.json');
+
+    // The app can still open its own envelope end-to-end.
+    const result = await validatePharmaExamPackage(packageData.blob);
+    expect(result.ok).toBe(true);
+    expect(result.staged?.questions[0].questionText).toBe(question.questionText);
+  });
+
+  it('still opens a pre-encryption package shipped as a plain signed ZIP', async () => {
+    // Packages issued before the encrypted envelope remain openable — a
+    // student should never lose access to an exam they already received
+    // because the app was updated.
+    const version = await publishedVersion();
+    const packageData = await createPharmaExamPackage({
+      version,
+      institution: { name: 'Legacy Institution' },
+      signingKey: await generateExamSigningKeyPair(),
+    });
+    const bytes = new Uint8Array(await readBlobArrayBuffer(packageData.blob));
+    const legacyZipBytes = await decryptPharmaExamEnvelope(bytes);
+    expect(isPharmaExamEnvelope(legacyZipBytes)).toBe(false);
+
+    const result = await validatePharmaExamPackage(legacyZipBytes);
+    expect(result.ok).toBe(true);
+    expect(result.staged?.institution.name).toBe('Legacy Institution');
   });
 });

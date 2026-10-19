@@ -50,7 +50,7 @@ export async function digestJson(value: unknown): Promise<string> {
   return sha256(canonicalJson(value));
 }
 
-const PBKDF2_ITERATIONS =
+export const PBKDF2_ITERATIONS =
   typeof process !== 'undefined' && process.env?.NODE_ENV === 'test' ? 100 : 210_000;
 
 export async function derivePasswordVerifier(

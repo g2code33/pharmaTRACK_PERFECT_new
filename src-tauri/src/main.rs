@@ -822,8 +822,8 @@ fn read_pharmaexam_file(
         return Err("Only .pharmaexam files can be opened by the examination launcher.".to_string());
     }
     let metadata = fs::metadata(candidate).map_err(|error| format!("Unable to inspect examination package: {error}"))?;
-    if !metadata.is_file() || metadata.len() > 50 * 1024 * 1024 {
-        return Err("The examination package is missing, not a file, or exceeds the 50 MB limit.".to_string());
+    if !metadata.is_file() || metadata.len() > 200 * 1024 * 1024 {
+        return Err("The examination package is missing, not a file, or exceeds the 200 MB limit.".to_string());
     }
     fs::read(candidate).map_err(|error| format!("Unable to read examination package: {error}"))
 }

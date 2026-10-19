@@ -3,9 +3,11 @@ import {
   canonicalJson,
   digestJson,
   derivePasswordVerifier,
+  randomBytes,
   randomId,
   sha256,
   verifyPassword,
+  PBKDF2_ITERATIONS,
 } from './crypto';
 import { readBlobArrayBuffer } from '../utils/fileGuard';
 import type { ExamSecuritySettings, ExamVersion, ExaminationState } from './types';
@@ -13,6 +15,126 @@ import { EXAM_PACKAGE_FORMAT_VERSION } from './types';
 import { asCryptoBuffer } from './cryptoBuffer';
 
 const encoder = new TextEncoder();
+
+/**
+ * The distributed .pharmaexam file is an encrypted envelope, never a plain
+ * ZIP on disk.
+ *
+ * Earlier builds shipped the signed ZIP archive byte-for-byte as the
+ * ".pharmaexam" file. The archive signature (`PK\x03\x04`) is what every OS,
+ * file manager and generic archive tool sniffs to recognise "this is a ZIP"
+ * — so the file showed a ZIP icon, offered "Extract here", and a curious
+ * student could rename it to .zip and read every question (and in some
+ * exam setups, the answer key) in plain JSON before ever opening the app.
+ *
+ * The envelope below wraps the whole ZIP in AES-256-GCM, keyed from an
+ * app-embedded passphrase via PBKDF2 with a random per-file salt and IV.
+ * Once encrypted, the bytes no longer start with a ZIP signature at all —
+ * generic archive tools, "Extract here" menus, and OS content-sniffers all
+ * see opaque ciphertext, not a ZIP. This is honest about what it defends:
+ * it stops casual extraction and OS/file-manager misidentification, the
+ * same way the previous proprietary extension was *supposed* to but
+ * couldn't because the bytes gave it away. It is not a substitute for the
+ * exam's own digital signature and (where configured) its password — those
+ * still gate whether an attempt may actually start. Packages built before
+ * this version remain readable: the loader only decrypts when the envelope
+ * header is present, and falls back to the legacy raw-ZIP path otherwise.
+ */
+const PHARMAEXAM_ENVELOPE_MAGIC = encoder.encode('PHEX1');
+const PHARMAEXAM_ENVELOPE_VERSION = 1;
+// Not a user secret and not meant to be one — it exists so the file format
+// itself is opaque to generic tools, not to hide the key from the app that
+// ships it. See the comment above for exactly what this does and does not
+// defend against.
+const PHARMAEXAM_FORMAT_PASSPHRASE =
+  'pharmatrack.examination.envelope.v1::0f3b9a2c6e8d41f7b5a0c3d9e2f61784';
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+export function isPharmaExamEnvelope(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < PHARMAEXAM_ENVELOPE_MAGIC.byteLength) return false;
+  for (let i = 0; i < PHARMAEXAM_ENVELOPE_MAGIC.byteLength; i += 1) {
+    if (bytes[i] !== PHARMAEXAM_ENVELOPE_MAGIC[i]) return false;
+  }
+  return true;
+}
+
+async function deriveEnvelopeKey(salt: Uint8Array): Promise<CryptoKey> {
+  const material = await crypto.subtle.importKey(
+    'raw',
+    asCryptoBuffer(encoder.encode(PHARMAEXAM_FORMAT_PASSPHRASE)),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: asCryptoBuffer(salt), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    material,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/** Wraps raw ZIP bytes in the encrypted envelope. Exported for tooling and
+ *  tests that need to legitimately rebuild a package after editing its
+ *  contents (e.g. tamper-detection tests) — ordinary callers only ever go
+ *  through {@link createPharmaExamPackage}. */
+export async function encryptPharmaExamEnvelope(zipBytes: Uint8Array): Promise<Uint8Array> {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = await deriveEnvelopeKey(salt);
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: asCryptoBuffer(iv) }, key, asCryptoBuffer(zipBytes)),
+  );
+  return concatBytes(
+    PHARMAEXAM_ENVELOPE_MAGIC,
+    Uint8Array.of(PHARMAEXAM_ENVELOPE_VERSION),
+    salt,
+    iv,
+    ciphertext,
+  );
+}
+
+/** Inverse of {@link encryptPharmaExamEnvelope}; recovers the raw ZIP bytes. */
+export async function decryptPharmaExamEnvelope(envelope: Uint8Array): Promise<Uint8Array> {
+  const magicLen = PHARMAEXAM_ENVELOPE_MAGIC.byteLength;
+  const version = envelope[magicLen];
+  if (version !== PHARMAEXAM_ENVELOPE_VERSION)
+    throw new Error(`Unsupported examination package envelope version ${version}.`);
+  let offset = magicLen + 1;
+  const salt = envelope.subarray(offset, offset + 16);
+  offset += 16;
+  const iv = envelope.subarray(offset, offset + 12);
+  offset += 12;
+  const ciphertext = envelope.subarray(offset);
+  const key = await deriveEnvelopeKey(salt);
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: asCryptoBuffer(iv) },
+      key,
+      asCryptoBuffer(ciphertext),
+    );
+    return new Uint8Array(plain);
+  } catch {
+    throw new Error('This examination package is corrupted or was not created by PharmaTRACK.');
+  }
+}
+
+async function toInputBytes(input: Blob | ArrayBuffer | Uint8Array): Promise<Uint8Array> {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  return new Uint8Array(await readBlobArrayBuffer(input));
+}
 
 export interface ExamInstitutionInfo {
   name: string;
@@ -254,13 +376,15 @@ export async function createPharmaExamPackage(input: {
   const manifest: PharmaExamManifest = { ...manifestBase, integrity };
   zip.file('manifest.json', JSON.stringify(manifest));
   zip.file('integrity/integrity.json', JSON.stringify(integrity));
+  const zipBytes = new Uint8Array(await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }));
+  const envelope = await encryptPharmaExamEnvelope(zipBytes);
   return {
     manifest,
     exam: input.version,
     questions: input.version.questions,
     security,
     institution: input.institution,
-    blob: await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }),
+    blob: new Blob([asCryptoBuffer(envelope)], { type: 'application/x-pharmaexam' }),
     filename: `${
       input.version.title
         .replace(/[^a-z0-9]+/gi, '-')
@@ -277,7 +401,14 @@ export async function validatePharmaExamPackage(
   const errors: string[] = [];
   const warnings: string[] = [];
   try {
-    const zip = await JSZip.loadAsync(input);
+    const rawBytes = await toInputBytes(input);
+    // New packages are an encrypted envelope (see the comment on
+    // isPharmaExamEnvelope). Older packages shipped the signed ZIP
+    // directly and remain readable without re-issuing them.
+    const zipBytes = isPharmaExamEnvelope(rawBytes)
+      ? await decryptPharmaExamEnvelope(rawBytes)
+      : rawBytes;
+    const zip = await JSZip.loadAsync(zipBytes);
     const manifest = await jsonOf<PharmaExamManifest>(zip, 'manifest.json');
     const integrity = await jsonOf<PharmaExamIntegrity>(zip, 'integrity/integrity.json');
     if (manifest.app !== 'pharmatrack' || manifest.format !== 'pharmaexam')

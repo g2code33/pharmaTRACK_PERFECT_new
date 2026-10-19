@@ -22,6 +22,8 @@ vi.mock('idb-keyval', () => ({
 import { ExaminationRepository } from '../examination/service';
 import {
   createPharmaExamPackage,
+  decryptPharmaExamEnvelope,
+  encryptPharmaExamEnvelope,
   generateExamSigningKeyPair,
   validatePharmaExamPackage,
   verifyExamPassword,
@@ -250,14 +252,15 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
     it('rejects tampered or corrupt packages before staging', async () => {
       const { packageData } = await createTestPackage();
       const bytes = new Uint8Array(await readBlobArrayBuffer(packageData.blob));
-      const zip = await JSZip.loadAsync(bytes);
+      const zip = await JSZip.loadAsync(await decryptPharmaExamEnvelope(bytes));
 
       // Tamper with question text inside questions.json
       zip.file(
         'questions.json',
         JSON.stringify([{ ...sampleQuestions[0], questionText: 'TAMPERED EXAM QUESTION' }]),
       );
-      const tamperedBlob = await zip.generateAsync({ type: 'blob' });
+      const tamperedZipBytes = new Uint8Array(await zip.generateAsync({ type: 'uint8array' }));
+      const tamperedBlob = await encryptPharmaExamEnvelope(tamperedZipBytes);
 
       const tamperedResult = await validatePharmaExamPackage(tamperedBlob);
       expect(tamperedResult.ok).toBe(false);
