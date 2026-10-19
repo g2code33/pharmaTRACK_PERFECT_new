@@ -16,6 +16,11 @@ import PasswordInput from '../components/PasswordInput';
 import { describeError } from '../utils/errorMessage';
 import { findNewlyVisibleKioskResults } from '../examination/results';
 import { useApp } from '../context/AppContext';
+import {
+  authenticateKioskStudentViaAdmin,
+  checkKioskLoginStatus,
+  registerKioskStudentViaAdmin,
+} from '../examination/kioskRoster';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
@@ -24,6 +29,37 @@ const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500',
  * (e.g. the device refreshed), so a power blip never forces a student to
  * retype their name from scratch. Cleared the moment an attempt starts. */
 const IDENTITY_KEY = 'pharmatrack:kiosk-identity';
+
+/** The administrator's join code, remembered per device so a returning
+ * student (or the next student at the same kiosk) does not have to ask for
+ * it again — changing schools/administrators is still one click away. */
+const JOIN_CODE_KEY = 'pharmatrack:kiosk-admin-join-code';
+
+type GateStatus = 'idle' | 'checking' | 'offline' | 'not-found' | 'disabled' | 'ready';
+
+/** Turns a kiosk roster failure reason into the exact sentence a student
+ * should see — never leaking which specific field (name vs. password) was
+ * wrong, and always pointing at the one thing they can actually do about it. */
+function describeKioskGateFailure(
+  reason: 'offline' | 'not-found' | 'login-disabled' | 'name-taken' | 'invalid' | 'error',
+  message?: string,
+): string {
+  switch (reason) {
+    case 'offline':
+      return "You're offline — connect to the internet to register or log in.";
+    case 'not-found':
+      return 'That administrator join code was not recognized. Check it and try again.';
+    case 'login-disabled':
+      return 'Kiosk logins are not currently open. Ask the administrator to enable them.';
+    case 'name-taken':
+      return 'This first name is already in use. Please use your surname, middle name, or add a number to your first name.';
+    case 'invalid':
+      return 'First name, level, or RX30 Kiosk password is incorrect.';
+    case 'error':
+    default:
+      return message || 'Could not reach the administrator. Please try again.';
+  }
+}
 
 const KioskEntry: React.FC = () => {
   const navigate = useNavigate();
@@ -38,6 +74,74 @@ const KioskEntry: React.FC = () => {
   const [registeredPassword, setRegisteredPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [joinCode, setJoinCode] = useState(() => {
+    try {
+      return localStorage.getItem(JOIN_CODE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [joinCodeInput, setJoinCodeInput] = useState(joinCode);
+  const [gateStatus, setGateStatus] = useState<GateStatus>('idle');
+  const [gateChecking, setGateChecking] = useState(false);
+
+  const checkGate = async (code: string) => {
+    if (!code.trim()) {
+      setGateStatus('idle');
+      return;
+    }
+    setGateChecking(true);
+    try {
+      const status = await checkKioskLoginStatus(code.trim());
+      if (!status.ok) {
+        setGateStatus('offline');
+      } else if (!status.found) {
+        setGateStatus('not-found');
+      } else if (!status.loginEnabled) {
+        setGateStatus('disabled');
+      } else {
+        setGateStatus('ready');
+      }
+    } catch {
+      setGateStatus('offline');
+    } finally {
+      setGateChecking(false);
+    }
+  };
+
+  const connectToAdmin = async () => {
+    const code = joinCodeInput.trim().toUpperCase();
+    if (!code) return;
+    setJoinCode(code);
+    try {
+      localStorage.setItem(JOIN_CODE_KEY, code);
+    } catch {
+      /* remembering the code is a nicety, never a gate */
+    }
+    await checkGate(code);
+  };
+
+  const disconnectFromAdmin = () => {
+    setJoinCode('');
+    setJoinCodeInput('');
+    setGateStatus('idle');
+    try {
+      localStorage.removeItem(JOIN_CODE_KEY);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Check the gate on load if a code is already remembered, and keep it
+  // fresh — the administrator can switch logins on/off at any time without
+  // a student needing to reload the page to notice.
+  useEffect(() => {
+    if (!joinCode) return;
+    void checkGate(joinCode);
+    const interval = setInterval(() => void checkGate(joinCode), 20000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinCode]);
 
   useEffect(() => {
     void loadStagedPharmaExam()
@@ -113,12 +217,23 @@ const KioskEntry: React.FC = () => {
 
   const register = async () => {
     setError('');
+    if (gateStatus !== 'ready') {
+      setError('Connect to your administrator before registering — see step 2 above.');
+      return;
+    }
     setBusy(true);
     try {
+      const outcome = await registerKioskStudentViaAdmin(joinCode, firstName, level);
+      if (!outcome.ok) {
+        setError(
+          describeKioskGateFailure(outcome.reason, outcome.reason === 'error' ? outcome.message : undefined),
+        );
+        return;
+      }
       const repository = await ExaminationRepository.open();
-      const result = await repository.registerStudent(firstName, level);
-      setRegisteredPassword(result.password);
-      setKioskPassword(result.password);
+      await repository.ensureLocalStudentForCloudIdentity(outcome.studentId, firstName, level);
+      setRegisteredPassword(outcome.password);
+      setKioskPassword(outcome.password);
     } catch (reason) {
       setError(describeError(reason, 'Registration failed.'));
     } finally {
@@ -138,10 +253,30 @@ const KioskEntry: React.FC = () => {
       setError('Enter your first name, level, and RX30 kiosk password to continue.');
       return;
     }
+    if (gateStatus !== 'ready') {
+      setError('Connect to your administrator before logging in — see step 2 above.');
+      return;
+    }
     setBusy(true);
     try {
+      const outcome = await authenticateKioskStudentViaAdmin(
+        joinCode,
+        firstName.trim(),
+        level,
+        kioskPassword.trim(),
+      );
+      if (!outcome.ok) {
+        setError(
+          describeKioskGateFailure(outcome.reason, outcome.reason === 'error' ? outcome.message : undefined),
+        );
+        return;
+      }
       const repository = await ExaminationRepository.open();
-      const student = await repository.authenticateStudent(firstName.trim(), level, kioskPassword.trim());
+      const student = await repository.ensureLocalStudentForCloudIdentity(
+        outcome.studentId,
+        outcome.firstName,
+        outcome.level,
+      );
       // Logging in is the one moment the app knows for certain which
       // student is at the device — the right time to catch Quiz History up
       // with any past kiosk exam result that became visible since they last
@@ -159,7 +294,7 @@ const KioskEntry: React.FC = () => {
       } catch {
         // Never block login over a Quiz History backfill problem.
       }
-      const identity = { firstName: firstName.trim(), level, kioskPassword: kioskPassword.trim() };
+      const identity = { firstName: outcome.firstName, level: outcome.level, kioskPassword: kioskPassword.trim() };
       try {
         sessionStorage.setItem(IDENTITY_KEY, JSON.stringify(identity));
       } catch {
@@ -173,6 +308,7 @@ const KioskEntry: React.FC = () => {
     }
   };
 
+
   return (
     <div className="min-h-full max-w-4xl mx-auto space-y-6">
       <header className="rounded-2xl bg-gradient-to-r from-[#0F172A] to-[#1B4332] text-white p-6 shadow-lg">
@@ -181,8 +317,10 @@ const KioskEntry: React.FC = () => {
         </p>
         <h1 className="text-3xl font-black mt-1">Secure Examination Entry</h1>
         <p className="text-white/75 mt-2">
-          No internet account is required. Choose the signed package and log in with your RX30
-          identity — your exam's course details and password screen come next.
+          Choose the signed package, connect to your administrator, then log in with your RX30
+          identity — your exam's course details and password screen come next. Registering and
+          logging in need a connection to your administrator; once you're in, taking the exam
+          keeps working even if the connection drops.
         </p>
       </header>
 
@@ -317,7 +455,76 @@ const KioskEntry: React.FC = () => {
       </section>
 
       <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
-        <h2 className="font-black text-xl">2. Student identity</h2>
+        <h2 className="font-black text-xl">2. Connect to your administrator</h2>
+        <p className="text-sm text-slate-600">
+          Kiosk accounts are referenced through your administrator's own account — this is what
+          lets the same login work from any device, not just the one you registered on.
+          Registering and logging in both require this connection; the administrator must have
+          kiosk logins switched on.
+        </p>
+        {gateStatus === 'ready' ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-emerald-50 border border-emerald-200 p-4">
+            <div>
+              <p className="text-sm font-black text-emerald-900">
+                Connected — join code {joinCode}. Logins are open.
+              </p>
+              <p className="text-xs text-emerald-700 mt-0.5">
+                You can now register or log in below.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={disconnectFromAdmin}
+              className="text-xs font-bold text-slate-600 hover:text-slate-900 underline underline-offset-2"
+            >
+              Not your administrator? Change code
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid sm:grid-cols-[1fr_auto] gap-3">
+              <label className="text-sm font-bold">
+                Administrator join code
+                <input
+                  value={joinCodeInput}
+                  onChange={(event) => setJoinCodeInput(event.target.value.toUpperCase())}
+                  placeholder="e.g. AB12CD"
+                  maxLength={6}
+                  className="mt-1 w-full rounded-lg border px-3 py-2 font-mono tracking-widest uppercase"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={gateChecking || !joinCodeInput.trim()}
+                onClick={() => void connectToAdmin()}
+                className="self-end rounded-xl bg-slate-800 text-white px-6 py-2.5 font-black disabled:opacity-50 flex items-center gap-2"
+              >
+                {gateChecking && <Loader2 className="animate-spin w-4 h-4" />}
+                Connect
+              </button>
+            </div>
+            {gateStatus === 'offline' && (
+              <p className="rounded-lg bg-red-50 border border-red-200 text-red-800 p-3 text-sm font-semibold">
+                You're offline — connect to the internet to reach your administrator.
+              </p>
+            )}
+            {gateStatus === 'not-found' && (
+              <p className="rounded-lg bg-red-50 border border-red-200 text-red-800 p-3 text-sm font-semibold">
+                That join code was not recognized. Check it with your administrator and try again.
+              </p>
+            )}
+            {gateStatus === 'disabled' && (
+              <p className="rounded-lg bg-amber-50 border border-amber-300 text-amber-900 p-3 text-sm font-semibold">
+                Found your administrator, but kiosk logins are not open yet. Ask them to switch
+                logins on.
+              </p>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
+        <h2 className="font-black text-xl">3. Student identity</h2>
         <div className="grid sm:grid-cols-3 gap-3">
           <label className="text-sm font-bold">
             First Name
@@ -353,9 +560,10 @@ const KioskEntry: React.FC = () => {
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || gateStatus !== 'ready'}
             onClick={() => void login()}
             data-testid="kiosk-login-button"
+            title={gateStatus !== 'ready' ? 'Connect to your administrator first (step 2)' : undefined}
             className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 font-black disabled:opacity-50 flex items-center gap-2"
           >
             {busy && <Loader2 className="animate-spin w-4 h-4" />}
@@ -363,8 +571,9 @@ const KioskEntry: React.FC = () => {
           </button>
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || gateStatus !== 'ready'}
             onClick={() => void register()}
+            title={gateStatus !== 'ready' ? 'Connect to your administrator first (step 2)' : undefined}
             className="rounded-lg bg-slate-800 text-white px-4 py-2 font-bold text-sm disabled:opacity-50"
           >
             First-time registration

@@ -684,6 +684,56 @@ export class ExaminationRepository {
   }
 
   /**
+   * Mirrors a cloud-gated kiosk identity (see examination/kioskRoster.ts)
+   * into this device's local examination state, under the SAME student id
+   * the administrator's cloud roster issued — so the rest of the (entirely
+   * local/offline) examination engine, which only ever knows
+   * `ExamStudent.id`, keeps working unchanged after a student logs in on
+   * any device. The local kiosk password verifier is never used for
+   * authentication in this flow — the administrator's cloud roster already
+   * did that — so it is seeded with an unguessable random value purely to
+   * satisfy the type; it is never shown to or checked against the student.
+   */
+  async ensureLocalStudentForCloudIdentity(
+    cloudStudentId: string,
+    firstName: string,
+    level: string,
+  ): Promise<ExamStudent> {
+    const cleanName = firstName.trim();
+    const cleanLevel = normalizeLevel(level) || level.trim();
+    let student = this.state.students.find((item) => item.id === cloudStudentId);
+    if (!student) {
+      student = {
+        id: cloudStudentId,
+        firstName: cleanName,
+        level: cleanLevel,
+        kioskPasswordVerifier: await derivePasswordVerifier(randomId('local-mirror')),
+        registeredAt: new Date().toISOString(),
+        activeDeviceSessionIds: [],
+      };
+      this.state.students.push(student);
+      await this.logSecurityEvent({
+        studentId: student.id,
+        type: 'IDENTITY_REGISTERED',
+        severity: 'info',
+        details: `Kiosk identity mirrored locally for ${student.level} (administrator-referenced account).`,
+      });
+    } else {
+      student.firstName = cleanName;
+      student.level = cleanLevel;
+      student.lastAuthenticatedAt = new Date().toISOString();
+      await this.logSecurityEvent({
+        studentId: student.id,
+        type: 'IDENTITY_AUTHENTICATED',
+        severity: 'info',
+        details: 'Kiosk identity authenticated via the administrator-referenced account.',
+      });
+    }
+    await this.save();
+    return student;
+  }
+
+  /**
    * Admin override: issue a NEW RX30 kiosk password for an already
    * registered student, e.g. because they forgot the one they were given or
    * it leaked. Draws a fresh random, not-yet-issued slot exactly like

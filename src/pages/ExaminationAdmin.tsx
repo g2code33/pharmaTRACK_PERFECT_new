@@ -46,6 +46,15 @@ import {
   pushKioskResultsToCloud,
   type CloudKioskResult,
 } from '../examination/resultsCloudSync';
+import {
+  adminResetKioskStudentPassword,
+  ensureKioskAdminProfile,
+  listKioskRosterStudents,
+  regenerateKioskJoinCode,
+  setKioskLoginEnabled,
+  type KioskAdminProfile,
+  type KioskRosterStudent,
+} from '../examination/kioskRoster';
 
 const activeStatuses = [
   'ACTIVE',
@@ -83,12 +92,15 @@ const ExaminationAdmin: React.FC = () => {
   const [openEnrollment, setOpenEnrollment] = useState(true);
   const [lanImportMessage, setLanImportMessage] = useState('');
   const [reviewResultId, setReviewResultId] = useState('');
-  const [kioskResetBusyId, setKioskResetBusyId] = useState('');
-  const [kioskResetMessage, setKioskResetMessage] = useState('');
   const [allTimeTab, setAllTimeTab] = useState<'offline' | 'cloud'>('offline');
   const [cloudResults, setCloudResults] = useState<CloudKioskResult[]>([]);
   const [cloudResultsMessage, setCloudResultsMessage] = useState('');
   const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
+  const [kioskAdminProfile, setKioskAdminProfile] = useState<KioskAdminProfile | null>(null);
+  const [kioskRoster, setKioskRoster] = useState<KioskRosterStudent[]>([]);
+  const [kioskRosterMessage, setKioskRosterMessage] = useState('');
+  const [kioskRosterBusy, setKioskRosterBusy] = useState(false);
+  const [kioskRosterResetBusyId, setKioskRosterResetBusyId] = useState('');
   // Console password gate: students run the same app, so the admin console
   // renders nothing until the device's stored password is presented.
   const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
@@ -232,6 +244,15 @@ const ExaminationAdmin: React.FC = () => {
     if (gateUnlocked && !adminAuthenticated) void authenticateAdmin();
   }, [gateUnlocked, adminAuthenticated, authenticateAdmin]);
 
+  // Kiosk login settings live in the cloud under this admin's own account —
+  // load them once the console is unlocked (requires sign-in + internet;
+  // offline admins just see a clear message and everything else keeps
+  // working).
+  useEffect(() => {
+    if (gateUnlocked) void loadKioskAdminSection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gateUnlocked]);
+
   const selected = attempts.find((attempt) => attempt.id === selectedAttemptId) || null;
   const selectedStudent = repository?.snapshot.students.find(
     (student) => student.id === selected?.studentId,
@@ -274,32 +295,6 @@ const ExaminationAdmin: React.FC = () => {
   };
 
   /**
-   * Admin override for a student who forgot (or needs to invalidate) their
-   * RX30 kiosk password. Draws a fresh random password exactly like
-   * registration does and shows it once — the invigilator reads it to the
-   * student the same way the kiosk screen would have.
-   */
-  const resetKioskPassword = async (studentId: string, studentName: string) => {
-    if (!adminAuthenticated) {
-      setMessage('Authenticate this administrator device before using live controls.');
-      return;
-    }
-    const opened = repository || (await ExaminationRepository.open());
-    setKioskResetBusyId(studentId);
-    setKioskResetMessage('');
-    try {
-      const { password } = await opened.resetStudentKioskPassword(studentId);
-      setKioskResetMessage(
-        `New RX30 kiosk password for ${studentName}: ${password} — this is shown only once, share it with the student now.`,
-      );
-      await refresh();
-    } catch (error) {
-      setMessage(`Could not reset the kiosk password: ${describeError(error, 'unknown error')}`);
-    } finally {
-      setKioskResetBusyId('');
-    }
-  };
-
   /**
    * All-time kiosk results, straight from THIS device's local examination
    * state — every exam and session ever recorded here, not only the one
@@ -374,6 +369,90 @@ const ExaminationAdmin: React.FC = () => {
       setCloudResults(outcome.results);
     } catch (error) {
       setCloudResultsMessage(`Could not load cloud results: ${describeError(error, 'unknown error')}`);
+    }
+  };
+
+  /**
+   * Kiosk logins are referenced through this administrator's own account so
+   * the same student login works from any device, not just the one they
+   * registered on — loads (and creates, on first use) the join code and
+   * roster. Requires a signed-in PharmaTrack account and internet; taking an
+   * exam itself does not depend on this.
+   */
+  const loadKioskAdminSection = async () => {
+    setKioskRosterMessage('');
+    try {
+      const profileOutcome = await ensureKioskAdminProfile();
+      if (!profileOutcome.ok) {
+        setKioskRosterMessage(
+          profileOutcome.reason === 'offline'
+            ? "You're offline — sign in and connect to the internet to manage kiosk logins."
+            : 'Sign in to your PharmaTrack account to manage kiosk logins.',
+        );
+        return;
+      }
+      setKioskAdminProfile(profileOutcome.profile);
+      const rosterOutcome = await listKioskRosterStudents();
+      if (rosterOutcome.ok) setKioskRoster(rosterOutcome.students);
+    } catch (error) {
+      setKioskRosterMessage(describeError(error, 'Could not load the kiosk login settings.'));
+    }
+  };
+
+  const toggleKioskLogin = async (enabled: boolean) => {
+    setKioskRosterBusy(true);
+    setKioskRosterMessage('');
+    try {
+      const outcome = await setKioskLoginEnabled(enabled);
+      if (!outcome.ok) {
+        setKioskRosterMessage(
+          outcome.reason === 'offline'
+            ? "You're offline — reconnect to change this."
+            : 'Sign in to your PharmaTrack account to change this.',
+        );
+        return;
+      }
+      setKioskAdminProfile(outcome.profile);
+    } catch (error) {
+      setKioskRosterMessage(describeError(error, 'Could not change the kiosk login setting.'));
+    } finally {
+      setKioskRosterBusy(false);
+    }
+  };
+
+  const regenerateJoinCode = async () => {
+    if (!window.confirm('Generate a new join code? Students using the old code will need the new one.')) return;
+    setKioskRosterBusy(true);
+    setKioskRosterMessage('');
+    try {
+      const outcome = await regenerateKioskJoinCode();
+      if (outcome.ok) setKioskAdminProfile(outcome.profile);
+    } catch (error) {
+      setKioskRosterMessage(describeError(error, 'Could not generate a new join code.'));
+    } finally {
+      setKioskRosterBusy(false);
+    }
+  };
+
+  const resetKioskRosterStudentPassword = async (student: KioskRosterStudent) => {
+    setKioskRosterResetBusyId(student.id);
+    setKioskRosterMessage('');
+    try {
+      const issuedSlots = kioskRoster.map((item) => item.passwordSlot);
+      const outcome = await adminResetKioskStudentPassword(student.id, issuedSlots);
+      if (!outcome.ok) {
+        setKioskRosterMessage(
+          outcome.reason === 'offline' ? "You're offline — reconnect to reset this password." : 'Sign in again to reset this password.',
+        );
+        return;
+      }
+      setKioskRosterMessage(`New password for ${student.firstName}: ${outcome.password} (give this to them once).`);
+      const rosterOutcome = await listKioskRosterStudents();
+      if (rosterOutcome.ok) setKioskRoster(rosterOutcome.students);
+    } catch (error) {
+      setKioskRosterMessage(describeError(error, 'Could not reset that password.'));
+    } finally {
+      setKioskRosterResetBusyId('');
     }
   };
 
@@ -1185,19 +1264,123 @@ const ExaminationAdmin: React.FC = () => {
           )}
         </div>
       </section>
-      <section className="bg-white border rounded-2xl p-5 space-y-3">
+      <section className="bg-white border rounded-2xl p-5 space-y-4">
         <div>
-          <h2 className="text-xl font-black">Registered students & RX30 kiosk passwords</h2>
+          <h2 className="text-xl font-black">Kiosk login (referenced through your account)</h2>
           <p className="text-sm text-slate-500">
-            Every student who has registered on a kiosk, regardless of whether they have an
-            attempt yet. Resetting issues a brand new random password and invalidates the old one.
+            Students register and log in through YOUR PharmaTrack account, not a single fixed
+            device — sign in here on any device to control it. No LAN or Wi-Fi needed; a device
+            just needs internet and your join code. While switched off, no kiosk can register or
+            log in.
           </p>
         </div>
-        {kioskResetMessage && (
-          <p className="text-sm font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-            {kioskResetMessage}
-          </p>
+        {!kioskAdminProfile ? (
+          <div className="space-y-2">
+            {kioskRosterMessage && (
+              <p className="text-sm font-semibold text-slate-700 bg-slate-50 border rounded-lg p-3">
+                {kioskRosterMessage}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => void loadKioskAdminSection()}
+              className="rounded-lg border px-3 py-1.5 text-xs font-bold"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="rounded-xl border bg-slate-50 px-4 py-3">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Join code</p>
+                <p className="text-2xl font-black font-mono tracking-widest">{kioskAdminProfile.joinCode}</p>
+              </div>
+              <button
+                type="button"
+                disabled={kioskRosterBusy}
+                onClick={() => void regenerateJoinCode()}
+                className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-50"
+              >
+                Generate new code
+              </button>
+              <label className="flex items-center gap-2 text-sm font-bold">
+                <input
+                  type="checkbox"
+                  checked={kioskAdminProfile.loginEnabled}
+                  disabled={kioskRosterBusy}
+                  onChange={(event) => void toggleKioskLogin(event.target.checked)}
+                  className="w-5 h-5"
+                />
+                Allow kiosk logins now
+              </label>
+              <span
+                className={`text-xs font-black px-2.5 py-1 rounded-lg ${
+                  kioskAdminProfile.loginEnabled
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-slate-200 text-slate-700'
+                }`}
+              >
+                {kioskAdminProfile.loginEnabled ? 'OPEN — students can log in' : 'CLOSED — no logins allowed'}
+              </span>
+            </div>
+            {kioskRosterMessage && (
+              <p className="text-sm font-semibold text-slate-700 bg-slate-50 border rounded-lg p-3">
+                {kioskRosterMessage}
+              </p>
+            )}
+            {kioskRoster.length === 0 ? (
+              <p className="text-sm text-slate-500">No kiosk accounts registered under this code yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left border-b">
+                      <th className="p-2">Student</th>
+                      <th className="p-2">Level</th>
+                      <th className="p-2">Last login</th>
+                      <th className="p-2">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {kioskRoster.map((student) => (
+                      <tr key={student.id} className="border-b last:border-0">
+                        <td className="p-2 font-bold">{student.firstName}</td>
+                        <td className="p-2">{student.level}</td>
+                        <td className="p-2 text-slate-500">
+                          {student.lastAuthenticatedAt
+                            ? new Date(student.lastAuthenticatedAt).toLocaleString()
+                            : 'Never'}
+                        </td>
+                        <td className="p-2">
+                          <button
+                            type="button"
+                            disabled={kioskRosterResetBusyId === student.id}
+                            onClick={() => void resetKioskRosterStudentPassword(student)}
+                            className="rounded-lg border px-2.5 py-1 text-xs font-bold disabled:opacity-50"
+                          >
+                            {kioskRosterResetBusyId === student.id ? 'Resetting…' : 'Reset password'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
+      </section>
+      <section className="bg-white border rounded-2xl p-5 space-y-3">
+        <div>
+          <h2 className="text-xl font-black">This device's local student records</h2>
+          <p className="text-sm text-slate-500">
+            A local copy of every student identity this device has seen, for the exam engine's own
+            use (session tracking, attempts, results) — not the login gate itself anymore. To
+            control who can register or log in, or to reset a kiosk password, use "Kiosk login"
+            above.
+          </p>
+        </div>
         {(repository?.snapshot.students.length || 0) === 0 ? (
           <p className="text-sm text-slate-500">No students have registered yet.</p>
         ) : (
@@ -1208,7 +1391,6 @@ const ExaminationAdmin: React.FC = () => {
                   <th className="p-2">Student</th>
                   <th className="p-2">Level</th>
                   <th className="p-2">Registered</th>
-                  <th className="p-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1218,15 +1400,6 @@ const ExaminationAdmin: React.FC = () => {
                     <td className="p-2">{student.level}</td>
                     <td className="p-2 text-slate-500">
                       {new Date(student.registeredAt).toLocaleString()}
-                    </td>
-                    <td className="p-2">
-                      <button
-                        disabled={!adminAuthenticated || kioskResetBusyId === student.id}
-                        onClick={() => void resetKioskPassword(student.id, student.firstName)}
-                        className="rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-40"
-                      >
-                        {kioskResetBusyId === student.id ? 'Resetting…' : 'Reset RX30 password'}
-                      </button>
                     </td>
                   </tr>
                 ))}

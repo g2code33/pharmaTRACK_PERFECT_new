@@ -614,12 +614,16 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
       expect(await screen.findByText('Secure Examination Entry')).toBeTruthy();
       expect(screen.getByText('1. Choose .pharmaexam')).toBeTruthy();
       expect(screen.getByText(/Click to choose a .pharmaexam package/i)).toBeTruthy();
-      expect(screen.getByText('2. Student identity')).toBeTruthy();
+      expect(screen.getByText('2. Connect to your administrator')).toBeTruthy();
+      expect(screen.getByText('Administrator join code')).toBeTruthy();
+      expect(screen.getByText('3. Student identity')).toBeTruthy();
       expect(screen.getByText('First Name')).toBeTruthy();
       expect(screen.getByText('Level')).toBeTruthy();
       expect(screen.getByText('RX30 Kiosk password')).toBeTruthy();
       expect(screen.getByText('First-time registration')).toBeTruthy();
       expect(screen.getByTestId('kiosk-login-button')).toBeTruthy();
+      // Not connected to an administrator yet, so both actions start disabled.
+      expect(screen.getByTestId('kiosk-login-button')).toBeDisabled();
 
       // The LAN connection and the exam password only ever appear on the
       // course-details page reached after logging in — never on this one.
