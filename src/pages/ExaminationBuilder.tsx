@@ -181,12 +181,27 @@ const ExaminationBuilder: React.FC = () => {
 
   const unlockBuilderGate = async () => {
     setGateError('');
-    if (await verifyBuilderPassword(gatePassword)) {
-      markBuilderGateUnlocked();
-      setBuilderUnlocked(true);
-      setGatePassword('');
-    } else {
-      setGateError('That password is incorrect. The builder stays locked.');
+    setBusy(true);
+    try {
+      if (await verifyBuilderPassword(gatePassword)) {
+        markBuilderGateUnlocked();
+        setBuilderUnlocked(true);
+        setGatePassword('');
+      } else {
+        setGateError('That password is incorrect. The builder stays locked.');
+      }
+    } catch (error) {
+      // Never fail silently: without this, a thrown error (a wedged local
+      // database, an unavailable crypto API) left the button looking like it
+      // simply did nothing when clicked — the single most confusing failure
+      // mode a lock screen can have.
+      setGateError(
+        error instanceof Error
+          ? `Could not check the password: ${error.message}`
+          : 'Could not check the password. Please try again.',
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -234,7 +249,7 @@ const ExaminationBuilder: React.FC = () => {
             className="w-full rounded-lg bg-[#2D6A4F] hover:bg-[#1B4332] text-white px-4 py-2 font-black disabled:opacity-40"
             data-testid="builder-gate-unlock"
           >
-            Unlock builder
+            {busy ? 'Checking…' : 'Unlock builder'}
           </button>
           <p className="text-xs text-slate-500">
             The builder password is stored only as a salted hash on this device and is separate

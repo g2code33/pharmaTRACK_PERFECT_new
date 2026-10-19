@@ -1,40 +1,22 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { CheckCircle2, FileKey2, Loader2, MonitorCheck, ShieldAlert, Wifi } from 'lucide-react';
-import {
-  validatePharmaExamPackage,
-  verifyExamPassword,
-  type StagedPharmaExam,
-} from '../examination/package';
-import {
-  discoverLanAuthorities,
-  isNativeLanServerAvailable,
-  type LanDiscoveredAuthority,
-} from '../examination/lanServer';
+import { FileKey2, Loader2 } from 'lucide-react';
+import { validatePharmaExamPackage, type StagedPharmaExam } from '../examination/package';
 import { ExaminationRepository } from '../examination/service';
-import { LanExamClient, LocalExamAuthority, isLanEndpoint } from '../examination/network';
-import { encryptedStorageAvailable } from '../examination/secureStorage';
 import { loadStagedPharmaExam, stagePharmaExamPackage } from '../examination/packageCache';
-import { requiredCapabilitiesReady } from '../examination/kioskAdapter';
-import {
-  consumeAndroidPharmaExamLaunch,
-  createPlatformKioskAdapter,
-} from '../examination/androidAdapter';
 import { readPharmaExamLaunch } from '../examination/nativeKiosk';
 import { subscribePharmaExamLaunches, takePharmaExamLaunches } from '../examination/packageLaunch';
-import type { ExamStudent, PlatformCapabilityMatrix } from '../examination/types';
 import { BROWSER_PHARMAEXAM_ACCEPT } from '../platform/fileSelection';
-import { isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
+import { isIOSPWA, isIOSSafari } from '../platform/runtime';
 import PasswordInput from '../components/PasswordInput';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
-/** How often the student device re-scans for the authority while none has
- * answered yet. Short enough that the invigilator's "start" lands within a
- * breath, long enough that the radio is not hammered. */
-const DISCOVERY_RETRY_MS = 4000;
-
-type Check = { label: string; ok: boolean; required: boolean; detail: string };
+/** Survives a kiosk reload between logging in and starting the exam: the
+ * attempt page reads this if it was not reached via a normal navigation
+ * (e.g. the device refreshed), so a power blip never forces a student to
+ * retype their name from scratch. Cleared the moment an attempt starts. */
+const IDENTITY_KEY = 'pharmatrack:kiosk-identity';
 
 const KioskEntry: React.FC = () => {
   const navigate = useNavigate();
@@ -43,23 +25,9 @@ const KioskEntry: React.FC = () => {
   const [firstName, setFirstName] = useState('');
   const [level, setLevel] = useState('');
   const [kioskPassword, setKioskPassword] = useState('');
-  const [examPassword, setExamPassword] = useState('');
-  const [lanEndpoint, setLanEndpoint] = useState('');
-  const [lanToken, setLanToken] = useState('');
-  const [discovered, setDiscovered] = useState<LanDiscoveredAuthority[] | null>(null);
-  const [discovering, setDiscovering] = useState(false);
-  const [sessionId, setSessionId] = useState('');
   const [registeredPassword, setRegisteredPassword] = useState('');
-  const [student, setStudent] = useState<ExamStudent | null>(null);
-  const [checks, setChecks] = useState<Check[]>([]);
-  const [capabilityMatrix, setCapabilityMatrix] = useState<PlatformCapabilityMatrix | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-
-  const requiredReady = useMemo(
-    () => Boolean(staged && checks.filter((check) => check.required).every((check) => check.ok)),
-    [staged, checks],
-  );
 
   useEffect(() => {
     void loadStagedPharmaExam()
@@ -73,68 +41,6 @@ const KioskEntry: React.FC = () => {
       })
       .catch(() => undefined);
   }, []);
-
-  /**
-   * Zero-config authority discovery: broadcast on this Wi-Fi and auto-fill
-   * whatever answers. One authority → endpoint, session ID (and, with open
-   * enrollment, the session token) land in the form with no typing at all.
-   * Several → the student picks from a list. None / browser → manual entry,
-   * unchanged. The last used endpoint is remembered across launches.
-   *
-   * The scan REPEATS while nothing answers: students open the app long before
-   * the invigilator starts the authority, and the promise is "connect to the
-   * Wi-Fi, type nothing" — so the page keeps looking by itself and the
-   * authority appears the second it is started, without a refresh.
-   */
-  useEffect(() => {
-    if (!isNativeLanServerAvailable()) return;
-    let disposed = false;
-    let retryTimer: number | null = null;
-    try {
-      const remembered = window.localStorage.getItem('pharmatrack:lan-endpoint');
-      if (remembered && !disposed) setLanEndpoint(remembered);
-    } catch {
-      /* storage may be unavailable; discovery does not depend on it */
-    }
-    let foundAny = false;
-    const applyFound = (found: LanDiscoveredAuthority[]) => {
-      setDiscovered(found);
-      foundAny = found.length > 0;
-      if (found.length === 1) {
-        const match = found[0];
-        setLanEndpoint(match.endpoint);
-        setSessionId(match.sessionId);
-        if (match.openEnrollment && match.sessionToken) setLanToken(match.sessionToken);
-      } else if (found.length > 1 && !lanEndpoint) {
-        setLanEndpoint(found[0].endpoint);
-      }
-    };
-    const runScan = async (): Promise<void> => {
-      setDiscovering(true);
-      try {
-        applyFound(await discoverLanAuthorities());
-      } catch {
-        /* an unreachable authority is not fatal — the next scan retries */
-      } finally {
-        if (!disposed) setDiscovering(false);
-      }
-      if (!disposed && !foundAny) {
-        retryTimer = window.setTimeout(() => void runScan(), DISCOVERY_RETRY_MS);
-      }
-    };
-    void runScan();
-    return () => {
-      disposed = true;
-      if (retryTimer != null) window.clearTimeout(retryTimer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const pickDiscoveredAuthority = (authority: LanDiscoveredAuthority) => {
-    setLanEndpoint(authority.endpoint);
-    setSessionId(authority.sessionId);
-    if (authority.openEnrollment && authority.sessionToken) setLanToken(authority.sessionToken);
-  };
 
   const choosePackage = async (file: File | undefined) => {
     if (!file) return;
@@ -181,252 +87,37 @@ const KioskEntry: React.FC = () => {
       const repository = await ExaminationRepository.open();
       const result = await repository.registerStudent(firstName, level);
       setRegisteredPassword(result.password);
-      setStudent(result.student);
       setKioskPassword(result.password);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Registration failed.');
     }
   };
 
-  const runReadiness = async () => {
-    if (!staged) return;
-    setBusy(true);
+  /**
+   * Logging in only confirms identity — the exam itself, its course details,
+   * and the exam password all live on their own full page from here on, so
+   * this front screen stays exactly what it says: choose a package, prove
+   * who you are, nothing else.
+   */
+  const login = async () => {
     setError('');
-    const next: Check[] = [];
-    next.push({
-      label: 'Exam package valid',
-      ok: true,
-      required: true,
-      detail: `Signed Version ${staged.exam.version} verified`,
-    });
-    next.push({
-      label: 'Correct examination version',
-      ok: staged.manifest.examVersionId === staged.exam.id,
-      required: true,
-      detail:
-        staged.manifest.examVersionId === staged.exam.id
-          ? 'Manifest and exam agree'
-          : 'Manifest mismatch',
-    });
-    const storage = await encryptedStorageAvailable();
-    next.push({
-      label: 'Local encrypted storage available',
-      ok: storage,
-      required: true,
-      detail: storage
-        ? 'AES-GCM device state is available'
-        : 'Encrypted local storage is unavailable',
-    });
-    next.push({
-      label: 'Device compatibility',
-      ok: typeof crypto !== 'undefined' && Boolean(crypto.subtle) && typeof File !== 'undefined',
-      required: true,
-      detail: 'Web Crypto and file APIs detected',
-    });
-    const estimate = await (navigator.storage?.estimate
-      ? navigator.storage.estimate().catch(() => undefined)
-      : Promise.resolve(undefined));
-    next.push({
-      label: 'Sufficient storage',
-      ok: estimate?.quota == null || estimate.quota - (estimate.usage || 0) > 5 * 1024 * 1024,
-      required: true,
-      detail: estimate?.quota
-        ? `${Math.round((estimate.quota - (estimate.usage || 0)) / 1024 / 1024)} MB available`
-        : 'Storage estimate unavailable; local store accepted',
-    });
-    const adapter = await createPlatformKioskAdapter(
-      () => undefined,
-      staged.exam.security.requiredCapabilities || [],
-    );
-    const matrix = adapter.matrix;
-    setCapabilityMatrix(matrix);
-    const capabilityResult = requiredCapabilitiesReady(
-      matrix,
-      staged.exam.security.requiredCapabilities || [],
-    );
-    const capabilityRequired =
-      staged.exam.security.capabilityFailurePolicy === 'PREVENT_START' ||
-      staged.exam.security.capabilityFailurePolicy === 'REQUIRE_ADMIN_APPROVAL';
-    next.push({
-      label: 'Platform capability policy',
-      ok:
-        capabilityResult.ok ||
-        staged.exam.security.capabilityFailurePolicy === 'ALLOW_WITH_WARNING',
-      required: capabilityRequired,
-      detail: capabilityResult.ok
-        ? `${matrix.platform}: required controls detected`
-        : `${capabilityResult.unavailable.map((item) => item.label).join(', ')} unavailable; policy is ${staged.exam.security.capabilityFailurePolicy || 'ALLOW_WITH_WARNING'}`,
-    });
-    if (lanEndpoint.trim()) {
-      if (!isLanEndpoint(lanEndpoint)) {
-        next.push({
-          label: 'LAN server reachable',
-          ok: false,
-          required: true,
-          detail: 'Enter a valid local http:// or https:// LAN endpoint',
-        });
-      } else {
-        try {
-          const health = await new LanExamClient(lanEndpoint, fetch, { token: lanToken }).health();
-          next.push({
-            label: 'LAN server reachable',
-            ok: health.ok,
-            required: true,
-            detail: `${health.server.label} · epoch ${health.server.epoch}`,
-          });
-        } catch (reason) {
-          next.push({
-            label: 'LAN server reachable',
-            ok: false,
-            required: true,
-            detail: reason instanceof Error ? reason.message : 'LAN authority did not respond',
-          });
-        }
-      }
-    } else {
-      const repository = await ExaminationRepository.open();
-      const health = await new LocalExamAuthority(repository).health();
-      next.push({
-        label: 'LAN / local authority',
-        ok: health.ok,
-        required: staged.exam.security.requireLanAuthority,
-        detail:
-          'This device can act as the local examination authority when no LAN endpoint is configured',
-      });
+    if (!firstName.trim() || !level || !kioskPassword.trim()) {
+      setError('Enter your first name, level, and RX30 kiosk password to continue.');
+      return;
     }
-    const battery = await (
-      navigator as Navigator & { getBattery?: () => Promise<{ level: number }> }
-    )
-      .getBattery?.()
-      .catch(() => undefined);
-    next.push({
-      label: 'Battery / power',
-      ok: !battery || battery.level >= 0.15,
-      required: false,
-      detail: !battery ? 'Battery status unavailable' : `${Math.round(battery.level * 100)}%`,
-    });
-    next.push({
-      label: 'Required permissions',
-      ok: true,
-      required: false,
-      detail: 'No internet or cloud-account permission required',
-    });
-    setChecks(next);
-    setBusy(false);
-  };
-
-  const enterExam = async () => {
-    if (!staged || !requiredReady) return;
     setBusy(true);
-    setError('');
     try {
       const repository = await ExaminationRepository.open();
-      await repository.markPackageImported(staged.packageKey);
-      const authenticated =
-        student || (await repository.authenticateStudent(firstName, level, kioskPassword));
-      if (!(await verifyExamPassword(examPassword, staged.security)))
-        throw new Error('The examination password is incorrect.');
-      const exam = await repository.importPublishedVersion(staged.exam);
-      let session = repository.snapshot.sessions.find(
-        (item) =>
-          item.examVersionId === staged.exam.id && !['CLOSED', 'RECOVERY'].includes(item.status),
-      );
-      if (sessionId.trim())
-        session = repository.snapshot.sessions.find((item) => item.id === sessionId.trim());
-      if (!session)
-        session = await repository.createSession(
-          exam.id,
-          staged.exam.id,
-          lanEndpoint.trim() || 'local-authority',
-          lanEndpoint.trim() || undefined,
-          sessionId.trim() || undefined,
-        );
-      const deviceId = `device-${navigator.userAgent.slice(0, 24)}`;
-      let lanClient: LanExamClient | null = null;
-      let remoteConnection: Awaited<ReturnType<LanExamClient['connect']>> | null = null;
-      if (lanEndpoint.trim()) {
-        if (!lanToken.trim())
-          throw new Error('The administrator must provide the LAN session token.');
-        lanClient = new LanExamClient(lanEndpoint, fetch, {
-          token: lanToken.trim(),
-          studentId: authenticated.id,
-        });
-        remoteConnection = await lanClient.connect(session.id, deviceId, 'STUDENT', {
-          studentId: authenticated.id,
-        });
-        if (!remoteConnection.deviceSessionId)
-          throw new Error('LAN authority did not issue a device session.');
-        await repository.setSessionAuthority(
-          session.id,
-          lanEndpoint.trim(),
-          remoteConnection.sessionToken || lanToken.trim(),
-          remoteConnection.server.serverId,
-          remoteConnection.server.epoch,
-        );
-      }
-      const clientPlatform = isIOSPWA()
-        ? 'IOS_PWA'
-        : isIOSSafari()
-          ? 'IOS_SAFARI'
-          : 'web';
-      const deviceSession = await repository.createDeviceSession({
-        id: remoteConnection?.deviceSessionId,
-        deviceId,
-        role: 'STUDENT',
-        studentId: authenticated.id,
-        sessionId: session.id,
-        platform: clientPlatform,
-        capabilities: [
-          'encrypted-local-state',
-          'attempt-recovery',
-          'platform-capability-matrix',
-          'lan-authenticated',
-          'web-client',
-          ...(isIOS() ? ['ios-lifecycle-resilience', 'touch-targets-accessible'] : []),
-        ],
-      });
-      let authoritativeStartedAt = new Date().toISOString();
+      await repository.authenticateStudent(firstName.trim(), level, kioskPassword.trim());
+      const identity = { firstName: firstName.trim(), level, kioskPassword: kioskPassword.trim() };
       try {
-        const health = lanClient
-          ? await lanClient.health()
-          : await new LocalExamAuthority(repository).health();
-        authoritativeStartedAt = health.serverNowAt || health.checkedAt;
+        sessionStorage.setItem(IDENTITY_KEY, JSON.stringify(identity));
       } catch {
-        // The local encrypted timer remains available while the LAN reconnects.
+        /* resume-on-reload is a nicety, never a gate */
       }
-      const remoteAttempt = lanClient
-        ? await lanClient.createAttempt(session.id, authenticated.id, deviceSession.id)
-        : undefined;
-      const result = await repository.createAttempt(
-        session.id,
-        authenticated.id,
-        deviceSession.id,
-        authoritativeStartedAt,
-        remoteAttempt?.attempt?.id,
-      );
-      await repository.logSecurityEvent({
-        sessionId: session.id,
-        attemptId: result.attempt.id,
-        studentId: authenticated.id,
-        deviceSessionId: deviceSession.id,
-        type: 'ATTEMPT_STARTED',
-        severity: result.continued ? 'info' : 'info',
-        details: result.continued
-          ? 'Continue Exam on another supported device/session.'
-          : 'New attempt started.',
-      });
-      // Remember the authority that worked, so the next exam on this device
-      // starts one step further along the zero-config path.
-      if (lanEndpoint.trim()) {
-        try {
-          window.localStorage.setItem('pharmatrack:lan-endpoint', lanEndpoint.trim());
-        } catch {
-          /* remembering is an enhancement, never a gate */
-        }
-      }
-      navigate(`/examination/secure/${result.attempt.id}`);
+      navigate('/examinations/kiosk/attempt', { state: identity });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'The examination could not be started.');
+      setError(reason instanceof Error ? reason.message : 'Could not log in with those details.');
     } finally {
       setBusy(false);
     }
@@ -440,8 +131,8 @@ const KioskEntry: React.FC = () => {
         </p>
         <h1 className="text-3xl font-black mt-1">Secure Examination Entry</h1>
         <p className="text-white/75 mt-2">
-          No internet account is required. Choose the signed package, complete readiness checks, and
-          use your RX30 identity.
+          No internet account is required. Choose the signed package and log in with your RX30
+          identity — your exam's course details and password screen come next.
         </p>
       </header>
 
@@ -566,7 +257,17 @@ const KioskEntry: React.FC = () => {
             />
           </label>
         </div>
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void login()}
+            data-testid="kiosk-login-button"
+            className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 font-black disabled:opacity-50 flex items-center gap-2"
+          >
+            {busy && <Loader2 className="animate-spin w-4 h-4" />}
+            Login
+          </button>
           <button
             type="button"
             onClick={() => void register()}
@@ -582,201 +283,17 @@ const KioskEntry: React.FC = () => {
         </div>
         <p className="text-xs text-slate-500">
           A duplicate first name returns exactly: “This first name is already in use. Please use
-          your surname, middle name, or add a number to your first name.”
+          your surname, middle name, or add a number to your first name.” Logging in takes you to
+          your exam's course details and password screen.
         </p>
+        {error && (
+          <p className="rounded-lg bg-red-50 border border-red-200 text-red-800 p-3 text-sm font-semibold">
+            {error}
+          </p>
+        )}
       </section>
 
-      <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5 space-y-4">
-        <div className="flex items-center gap-2">
-          <Wifi className="text-[#2D6A4F]" />
-          <h2 className="font-black text-xl">3. LAN and examination password</h2>
-        </div>
-        {discovering && (
-          <p className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm font-bold text-sky-900" data-testid="discovery-status">
-            <Loader2 className="w-4 h-4 animate-spin inline mr-1" /> Looking for the examination authority on this Wi-Fi…
-          </p>
-        )}
-        {!discovering && discovered && discovered.length === 0 && (
-          <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm font-bold text-amber-900" data-testid="discovery-status">
-            No examination authority answered yet — this page keeps looking on its own and fills
-            everything in the moment the invigilator starts it. Just stay on the examination Wi-Fi
-            (or type the endpoint below if you know it).
-          </p>
-        )}
-        {discovered && discovered.length > 0 && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 space-y-2" data-testid="discovered-authorities">
-            <p className="text-sm font-black text-emerald-900">
-              {discovered.length === 1
-                ? 'Examination authority found automatically — nothing to type.'
-                : `${discovered.length} examination authorities found — pick yours:`}
-            </p>
-            {discovered.map((authority) => (
-              <button
-                key={authority.endpoint}
-                type="button"
-                onClick={() => pickDiscoveredAuthority(authority)}
-                data-testid={`discovered-authority-${authority.serverId}`}
-                className={`w-full text-left rounded-lg border px-3 py-2 text-sm font-bold transition-colors ${
-                  lanEndpoint === authority.endpoint
-                    ? 'border-emerald-500 bg-white ring-2 ring-emerald-500/30'
-                    : 'border-emerald-200 bg-white hover:bg-emerald-100'
-                }`}
-              >
-                <span className="block">{authority.endpoint}</span>
-                <span className="block text-xs font-semibold text-slate-500">
-                  Authority {authority.serverId}
-                  {authority.openEnrollment
-                    ? ' · open enrollment: the session token is filled in for you'
-                    : ' · session token still required'}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="grid sm:grid-cols-3 gap-3">
-          <label className="text-sm font-bold">
-            LAN authority endpoint
-            <input
-              value={lanEndpoint}
-              onChange={(event) => setLanEndpoint(event.target.value)}
-              data-testid="lan-endpoint-input"
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="Found automatically — or type http://192.168.1.20:8787"
-            />
-          </label>
-          <label className="text-sm font-bold">
-            LAN session token
-            <PasswordInput
-              value={lanToken}
-              onChange={(event) => setLanToken(event.target.value)}
-              data-testid="lan-token-input"
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="Provided by examination admin"
-            />
-          </label>
-          <label className="text-sm font-bold">
-            Session ID (optional)
-            <input
-              value={sessionId}
-              onChange={(event) => setSessionId(event.target.value)}
-              data-testid="session-id-input"
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-              placeholder="Filled in automatically — or as written by the admin"
-            />
-          </label>
-          <label className="text-sm font-bold">
-            Exam password
-            <PasswordInput
-              value={examPassword}
-              onChange={(event) => setExamPassword(event.target.value)}
-              className="mt-1 w-full rounded-lg border px-3 py-2"
-            />
-          </label>
-        </div>
-        <button
-          type="button"
-          disabled={!staged || busy}
-          onClick={() => void runReadiness()}
-          className="rounded-lg bg-[#2D6A4F] text-white px-4 py-2 font-bold disabled:opacity-50 flex items-center gap-2"
-        >
-          {busy ? (
-            <Loader2 className="animate-spin w-4 h-4" />
-          ) : (
-            <MonitorCheck className="w-4 h-4" />
-          )}{' '}
-          Run readiness checks
-        </button>
-      </section>
-
-      {checks.length > 0 && (
-        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
-          <h2 className="font-black text-xl mb-3">4. Readiness</h2>
-          <div className="grid sm:grid-cols-2 gap-3">
-            {checks.map((check) => (
-              <div
-                key={check.label}
-                className={`rounded-lg border p-3 flex gap-2 ${check.ok ? 'border-emerald-200 bg-emerald-50' : check.required ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}
-              >
-                <span>
-                  {check.ok ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                  ) : (
-                    <ShieldAlert className="w-5 h-5 text-red-600" />
-                  )}
-                </span>
-                <span className="text-sm">
-                  <strong>{check.label}</strong>
-                  <br />
-                  {check.detail}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {capabilityMatrix && (
-        <section className="bg-white border border-slate-200 rounded-2xl shadow-sm p-5">
-          <h2 className="font-black text-xl mb-2">Platform capability matrix</h2>
-          <p className="text-sm text-slate-500 mb-3">
-            {capabilityMatrix.platform}. Green means detected; it does not claim OS-level
-            enforcement where the platform provides no reliable API.
-          </p>
-          <div className="grid sm:grid-cols-2 gap-2">
-            {capabilityMatrix.capabilities.map((capability) => (
-              <div
-                key={capability.id}
-                className="text-xs rounded-lg border p-2 flex justify-between gap-2"
-              >
-                <span>
-                  <strong>{capability.label}</strong>
-                  <br />
-                  {capability.notes}
-                </span>
-                <span
-                  className={
-                    capability.supportLevel === 'SUPPORTED'
-                      ? 'text-emerald-700 font-bold'
-                      : capability.supportLevel === 'UNAVAILABLE'
-                        ? 'text-slate-500 font-bold'
-                        : 'text-amber-700 font-bold'
-                  }
-                >
-                  {capability.supportLevel ||
-                    (capability.supported
-                      ? capability.enforceable
-                        ? 'SUPPORTED'
-                        : 'NOT GUARANTEED'
-                      : 'UNAVAILABLE')}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {error && (
-        <p className="rounded-lg bg-red-50 border border-red-200 text-red-800 p-3 flex gap-2">
-          <ShieldAlert className="w-5 h-5 shrink-0" />
-          {error}
-        </p>
-      )}
-      {staged && !requiredReady && !busy && (
-        <p className="w-full rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900" data-testid="kiosk-readiness-hint">
-          Run the readiness checks above — Enter secure examination unlocks once the required
-          checks pass. {checks.length === 0 ? 'Checks have not been run for this package yet.' : 'At least one required check is still failing.'}
-        </p>
-      )}
       <div className="flex flex-wrap gap-3">
-        <button
-          type="button"
-          disabled={!requiredReady || busy}
-          onClick={() => void enterExam()}
-          title={requiredReady ? 'Start the locked examination' : 'Run the readiness checks first — Enter unlocks when they pass'}
-          className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 font-black disabled:opacity-40"
-        >
-          Enter secure examination
-        </button>
         <Link to="/examinations/builder" className="rounded-xl border px-6 py-3 font-bold">
           Admin builder
         </Link>

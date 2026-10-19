@@ -57,6 +57,7 @@ describe('password fields app-wide use the reveal toggle', () => {
     '../pages/ExaminationAdmin.tsx',
     '../pages/ExaminationBuilder.tsx',
     '../pages/KioskEntry.tsx',
+    '../pages/ExamAttemptEntry.tsx',
     '../pages/Login.tsx',
     '../pages/ResetPassword.tsx',
     '../components/AISettingsPanel.tsx',

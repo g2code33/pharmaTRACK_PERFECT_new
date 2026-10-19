@@ -463,12 +463,25 @@ const ExaminationAdmin: React.FC = () => {
   /** Password gate: unlock this tab's admin console. */
   const unlockAdminGate = async () => {
     setGateError('');
-    if (await verifyAdminPassword(gatePassword)) {
-      markAdminGateUnlocked();
-      setGateUnlocked(true);
-      setGatePassword('');
-    } else {
-      setGateError('Incorrect administrator password.');
+    setBusy(true);
+    try {
+      if (await verifyAdminPassword(gatePassword)) {
+        markAdminGateUnlocked();
+        setGateUnlocked(true);
+        setGatePassword('');
+      } else {
+        setGateError('Incorrect administrator password.');
+      }
+    } catch (error) {
+      // Never fail silently: a thrown error here used to leave the button
+      // looking like it simply did nothing when clicked.
+      setGateError(
+        error instanceof Error
+          ? `Could not check the password: ${error.message}`
+          : 'Could not check the password. Please try again.',
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -685,7 +698,7 @@ const ExaminationAdmin: React.FC = () => {
             className="w-full rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-black disabled:opacity-40"
             data-testid="admin-gate-unlock"
           >
-            Unlock console
+            {busy ? 'Checking…' : 'Unlock console'}
           </button>
           <p className="text-xs text-slate-500">
             The password is stored only as a salted hash on this device. Unlocking applies to

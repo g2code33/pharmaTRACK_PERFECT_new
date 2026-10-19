@@ -2,12 +2,15 @@
  * Zero-config examination entry — the "no manual work by students" contract.
  *
  *   - A student device on the examination Wi-Fi discovers the authority by
- *     broadcast: one authority → endpoint (and, with open enrollment, the
- *     session token) auto-filled with zero typing.
+ *     broadcast: one open-enrollment authority → connected with zero typing
+ *     and zero visible LAN fields — the exam password is the only thing on
+ *     screen.
+ *   - A closed-enrollment authority → the session token field appears
+ *     automatically (there is genuinely no other way to supply it), but
+ *     still nothing else.
  *   - Several authorities → a picker, one click.
- *   - Closed enrollment → the endpoint is still auto-filled; the session
- *     token stays on the invigilator's board.
- *   - Browser preview (no UDP) → manual entry, exactly as before.
+ *   - Browser preview (no UDP) → manual network fields are available from
+ *     the start, since nothing there is automatic.
  *
  * Plus the lockdown half: entering a secure exam disables selection and
  * dragging document-wide, and the devtools shortcuts are now CANCELLED, not
@@ -46,7 +49,7 @@ vi.mock('../examination/packageCache', () => ({
   stagePharmaExamPackage: async () => undefined,
 }));
 
-import KioskEntry from '../pages/KioskEntry';
+import ExamAttemptEntry from '../pages/ExamAttemptEntry';
 import { createBrowserKioskAdapter, type KioskViolation } from '../examination/kioskAdapter';
 import { enterSecureKiosk, releaseSecureKiosk } from '../examination/kioskState';
 
@@ -64,9 +67,9 @@ const authority = (over: Record<string, unknown> = {}) => ({
 
 function open() {
   render(
-    <MemoryRouter initialEntries={['/examinations/kiosk']}>
+    <MemoryRouter initialEntries={['/examinations/kiosk/attempt']}>
       <Routes>
-        <Route path="/examinations/kiosk" element={<KioskEntry />} />
+        <Route path="/examinations/kiosk/attempt" element={<ExamAttemptEntry />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -89,41 +92,38 @@ afterEach(() => {
   releaseSecureKiosk();
 });
 
-describe('authority auto-discovery on the student device', () => {
-  it('auto-fills endpoint, session ID AND session token when one open-enrollment authority answers', async () => {
+describe('authority auto-discovery on the exam-attempt page', () => {
+  it('connects automatically with NO visible LAN fields when one open-enrollment authority answers', async () => {
     discovery.found = [authority()];
     open();
 
     await waitFor(() => {
-      expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
-        'http://10.42.0.7:8787',
+      expect(screen.getByTestId('discovered-authorities').textContent).toContain(
+        'Connected to the examination network automatically',
       );
     });
-    // Open enrollment: the student types nothing at all — the session ID from
-    // the broadcast joins the admin's session, not a local look-alike.
-    expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe(
-      'token-from-broadcast',
-    );
-    expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_1');
-    expect(screen.getByTestId('discovered-authorities').textContent).toContain(
-      'found automatically',
-    );
+
+    // The only thing a student ever types here is the exam password.
+    expect(screen.getByTestId('exam-password-input')).toBeTruthy();
+    expect(screen.queryByTestId('lan-endpoint-input')).toBeNull();
+    expect(screen.queryByTestId('lan-token-input')).toBeNull();
+    expect(screen.queryByTestId('manual-network-toggle')).toBeTruthy();
   });
 
-  it('auto-fills the endpoint but never the token when enrollment is closed', async () => {
+  it('reveals the session token field automatically when enrollment is closed — the one case with no other way to supply it', async () => {
     discovery.found = [authority({ openEnrollment: false, sessionToken: undefined })];
     open();
 
     await waitFor(() => {
-      expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
-        'http://10.42.0.7:8787',
+      expect(screen.getByTestId('discovered-authorities').textContent).toContain(
+        'Ask your invigilator',
       );
     });
-    // The session token stays on the invigilator's board.
+    // Closed enrollment: the token has no automatic path, so (and only so)
+    // it appears — the endpoint still does not need typing in the normal case.
+    expect(screen.getByTestId('manual-network-fields')).toBeTruthy();
     expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe('');
-    expect(screen.getByTestId('discovered-authorities').textContent).toContain(
-      'session token still required',
-    );
+    expect(screen.queryByTestId('manual-network-toggle')).toBeNull();
   });
 
   it('shows a picker when several authorities answer and fills on click', async () => {
@@ -146,12 +146,11 @@ describe('authority auto-discovery on the student device', () => {
     });
 
     fireEvent.click(screen.getByTestId('discovered-authority-srv-2'));
-    expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
-      'http://10.42.0.9:8787',
-    );
-    // The picked authority's session is the one that gets joined.
-    expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_2');
-    // Closed enrollment on the picked authority: token untouched.
+    // Picking the closed-enrollment authority reveals the token field so it
+    // can actually be supplied.
+    await waitFor(() => {
+      expect(screen.getByTestId('lan-token-input')).toBeTruthy();
+    });
     expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe('');
   });
 
@@ -163,12 +162,14 @@ describe('authority auto-discovery on the student device', () => {
         'No examination authority answered',
       );
     });
+    // Still no LAN fields shown by default while waiting.
+    expect(screen.queryByTestId('lan-endpoint-input')).toBeNull();
   });
 
   it('keeps scanning by itself until the invigilator starts the authority', async () => {
     // The zero-typing promise covers the real classroom sequence: students
     // open the app first, the invigilator starts the authority afterwards.
-    // The page must find it WITHOUT a refresh and fill everything in.
+    // The page must find it WITHOUT a refresh.
     vi.useFakeTimers();
     try {
       discovery.found = [];
@@ -185,40 +186,45 @@ describe('authority auto-discovery on the student device', () => {
         await vi.advanceTimersByTimeAsync(4100);
       });
 
-      expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
-        'http://10.42.0.7:8787',
-      );
-      expect((screen.getByTestId('lan-token-input') as HTMLInputElement).value).toBe(
-        'token-from-broadcast',
-      );
-      expect((screen.getByTestId('session-id-input') as HTMLInputElement).value).toBe('session_1');
       expect(screen.getByTestId('discovered-authorities').textContent).toContain(
-        'found automatically',
+        'Connected to the examination network automatically',
       );
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('keeps manual entry in the browser preview (no UDP from a browser tab)', async () => {
+  it('keeps manual network fields available from the start in the browser preview (no UDP from a browser tab)', async () => {
     discovery.native = false;
     open();
     // Let any (wrongly triggered) discovery settle.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByTestId('discovered-authorities')).toBeNull();
     expect(screen.queryByTestId('discovery-status')).toBeNull();
+    expect(screen.queryByTestId('manual-network-toggle')).toBeNull();
     expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe('');
   });
 
-  it('remembers the last used endpoint for the next exam on this device', async () => {
+  it('remembers the last used endpoint for the next exam, surfaced once the manual fields are opened', async () => {
     window.localStorage.setItem('pharmatrack:lan-endpoint', 'http://10.42.0.7:8787');
     discovery.found = [];
     open();
     await waitFor(() => {
-      expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
-        'http://10.42.0.7:8787',
-      );
+      expect(screen.getByTestId('discovery-status')).toBeTruthy();
     });
+    fireEvent.click(screen.getByTestId('manual-network-toggle'));
+    expect((screen.getByTestId('lan-endpoint-input') as HTMLInputElement).value).toBe(
+      'http://10.42.0.7:8787',
+    );
+  });
+});
+
+describe('logging in without an identity or a package yet', () => {
+  it('shows a way back instead of a broken page', async () => {
+    open();
+    expect(await screen.findByTestId('attempt-no-identity')).toBeTruthy();
+    expect(await screen.findByTestId('attempt-no-package')).toBeTruthy();
+    expect((screen.getByTestId('start-exam-button') as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

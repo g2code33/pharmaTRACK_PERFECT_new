@@ -594,7 +594,7 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
       expect(screen.getAllByText(/SUBMIT EXAM|Submit Exam/).length).toBeGreaterThan(0);
     });
 
-    it('renders the Kiosk entry screen with file drop area, RX30 inputs, and readiness button', async () => {
+    it('renders the Kiosk entry screen with file drop area, RX30 inputs, and a login button — no LAN or exam-password fields on this page', async () => {
       render(
         <MemoryRouter initialEntries={['/examinations/kiosk']}>
           <AppProvider>
@@ -613,9 +613,14 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
       expect(screen.getByText('Level')).toBeTruthy();
       expect(screen.getByText('RX30 Kiosk password')).toBeTruthy();
       expect(screen.getByText('First-time registration')).toBeTruthy();
-      expect(screen.getByText('3. LAN and examination password')).toBeTruthy();
-      expect(screen.getByText('Run readiness checks')).toBeTruthy();
-      expect(screen.getByText('Enter secure examination')).toBeTruthy();
+      expect(screen.getByTestId('kiosk-login-button')).toBeTruthy();
+
+      // The LAN connection and the exam password only ever appear on the
+      // course-details page reached after logging in — never on this one.
+      expect(screen.queryByText(/LAN and examination password/)).toBeNull();
+      expect(screen.queryByText('Run readiness checks')).toBeNull();
+      expect(screen.queryByText('Enter secure examination')).toBeNull();
+      expect(screen.queryByTestId('exam-password-input')).toBeNull();
     });
   });
 });

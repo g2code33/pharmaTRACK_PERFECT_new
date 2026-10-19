@@ -48,6 +48,10 @@ const Clinical = lazyRoute('/clinical', () => import('./pages/Clinical'));
 const AiAssistant = lazyRoute('/ai', () => import('./pages/AiAssistant'));
 const ExaminationBuilder = lazyRoute('/examinations/builder', () => import('./pages/ExaminationBuilder'));
 const KioskEntry = lazyRoute('/examinations/kiosk', () => import('./pages/KioskEntry'));
+const ExamAttemptEntry = lazyRoute(
+  '/examinations/kiosk/attempt',
+  () => import('./pages/ExamAttemptEntry'),
+);
 const SecureExamination = lazyRoute('/examination/secure', () => import('./pages/SecureExamination'));
 const ExaminationAdmin = lazyRoute('/examinations/admin', () => import('./pages/ExaminationAdmin'));
 
@@ -454,6 +458,7 @@ const App = () => {
                     <Route path="/quiz" element={<Quiz />} />
                     <Route path="/examinations/builder" element={<ExaminationBuilder />} />
                     <Route path="/examinations/kiosk" element={<KioskEntry />} />
+                    <Route path="/examinations/kiosk/attempt" element={<ExamAttemptEntry />} />
                     <Route path="/examinations/admin" element={<ExaminationAdmin />} />
                     <Route path="/planner" element={<Planner />} />
                     <Route path="/learn" element={<Today />} />
