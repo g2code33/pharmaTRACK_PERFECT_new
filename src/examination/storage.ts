@@ -112,25 +112,53 @@ export function normalizeExaminationState(raw: unknown): ExaminationState {
     importedPackageKeys: arrayOrEmpty(value.importedPackageKeys),
     resultReleases: arrayOrEmpty<ExamResultReleaseRecord>(value.resultReleases),
     resultReleaseAudits: arrayOrEmpty<ResultReleaseAuditRecord>(value.resultReleaseAudits),
+    issuedKioskPasswordSlots: arrayOrEmpty<number>(value.issuedKioskPasswordSlots),
   };
 }
 
+// `ExaminationRepository.open()` deliberately re-reads from storage on every
+// call instead of sharing one singleton (several tests rely on that to
+// simulate "another device" reading the same persisted store). That is
+// exactly right when the underlying store works — but on a device where the
+// local database is unreliable (a wedged IndexedDB connection is a known
+// failure mode on some platforms; see utils/idbStore.ts), a read failure
+// right after a successful-looking registration would otherwise make the
+// student that was just registered vanish the moment the kiosk opens a new
+// repository instance to log in, even though nothing was actually wrong
+// with what the student typed. Keeping the last known-good state in memory
+// means that, for the lifetime of this page, register-then-login keeps
+// working even when the persistent store cannot be read or written at all
+// — only surviving an actual page reload still requires real storage.
+let memoryStateCache: ExaminationState | null = null;
+
 export async function loadExaminationState(): Promise<ExaminationState> {
   try {
-    return normalizeExaminationState(
+    const loaded = normalizeExaminationState(
       await loadEncryptedJson<ExaminationState>(EXAMINATION_STATE_KEY),
     );
+    memoryStateCache = loaded;
+    return loaded;
   } catch (error) {
-    // Recovery code must return an empty in-memory state rather than crashing
-    // the academic app when IndexedDB is unavailable.
+    // Recovery code must return a usable in-memory state rather than
+    // crashing the academic app when IndexedDB is unavailable. Falling back
+    // to the last state this page session actually saw (instead of always
+    // an empty one) is what keeps a registration made moments earlier from
+    // silently disappearing when the next screen re-opens the repository.
     console.error('Examination storage could not be read:', error);
-    return emptyExaminationState();
+    return memoryStateCache
+      ? normalizeExaminationState(memoryStateCache)
+      : emptyExaminationState();
   }
 }
 
 export async function saveExaminationState(state: ExaminationState): Promise<boolean> {
+  const normalized = normalizeExaminationState(state);
+  // Mirror into memory BEFORE attempting the real write: a student record
+  // that was just added must be visible to the very next read in this page
+  // session even if the persistent write below fails outright.
+  memoryStateCache = normalized;
   try {
-    await saveEncryptedJson(EXAMINATION_STATE_KEY, normalizeExaminationState(state));
+    await saveEncryptedJson(EXAMINATION_STATE_KEY, normalized);
     return true;
   } catch (error) {
     console.error('Examination storage could not be written:', error);
@@ -139,6 +167,7 @@ export async function saveExaminationState(state: ExaminationState): Promise<boo
 }
 
 export async function clearExaminationState(): Promise<boolean> {
+  memoryStateCache = null;
   try {
     await idb.del(EXAMINATION_STATE_KEY);
     return true;

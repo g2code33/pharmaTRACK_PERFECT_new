@@ -302,14 +302,17 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
   });
 
   describe('4. Student Registration & Authentication (RX30 Identity)', () => {
-    it('registers students with sequential RX30 identities and authenticates correctly', async () => {
+    it('registers students with random RX30 identities and authenticates correctly', async () => {
       const repository = await ExaminationRepository.open();
 
       const student1 = await repository.registerStudent('Abena', 'Level 300');
       const student2 = await repository.registerStudent('Kwame', 'Level 300');
 
-      expect(student1.password).toBe('RX30a');
-      expect(student2.password).toBe('RX30b');
+      // Random draw (not "1st student gets a, 2nd gets b") so a password
+      // can never be guessed from registration order.
+      expect(student1.password).toMatch(/^RX30[a-z]$/);
+      expect(student2.password).toMatch(/^RX30[a-z]$/);
+      expect(student1.password).not.toBe(student2.password);
 
       // Duplicate first name must be rejected with the exact required phrasing
       await expect(repository.registerStudent('Abena', 'Level 300')).rejects.toThrow(
@@ -317,7 +320,7 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
       );
 
       // Correct authentication
-      const auth = await repository.authenticateStudent('Abena', 'Level 300', 'RX30a');
+      const auth = await repository.authenticateStudent('Abena', 'Level 300', student1.password);
       expect(auth.id).toBe(student1.student.id);
 
       // Wrong password rejected

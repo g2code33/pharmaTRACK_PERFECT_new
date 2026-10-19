@@ -741,6 +741,11 @@ export interface ExaminationState {
   importedPackageKeys: string[];
   resultReleases: ExamResultReleaseRecord[];
   resultReleaseAudits: ResultReleaseAuditRecord[];
+  // Which RX30 kiosk-password slots have already been handed out. Only the
+  // slot NUMBER is kept — never the password itself — so a random,
+  // non-attributable slot can be drawn for every new registration without
+  // ever repeating one that is already in use by another student.
+  issuedKioskPasswordSlots: number[];
 }
 
 export interface ExamBuilderDraft {
@@ -809,5 +814,6 @@ export function emptyExaminationState(): ExaminationState {
     importedPackageKeys: [],
     resultReleases: [],
     resultReleaseAudits: [],
+    issuedKioskPasswordSlots: [],
   };
 }

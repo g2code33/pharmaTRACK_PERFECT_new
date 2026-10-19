@@ -19,6 +19,7 @@ vi.mock('idb-keyval', () => ({
 import { ExaminationRepository, validateExamVersion } from '../examination/service';
 import {
   derivePasswordVerifier,
+  randomUnusedKioskPassword,
   sequentialKioskPassword,
   verifyPassword,
 } from '../examination/crypto';
@@ -206,12 +207,15 @@ describe('secure examination foundation', () => {
     expect(repository.snapshot.attempts[0].localRevision).toBe(2);
   });
 
-  it('registers sequential RX30 passwords without storing plaintext and authenticates on another device', async () => {
+  it('registers random, non-sequential RX30 passwords without storing plaintext and authenticates on another device', async () => {
     const repository = await ExaminationRepository.open();
     const first = await repository.registerStudent('Blessing', 'Level 300');
     const second = await repository.registerStudent('Jojo', 'Level 300');
-    expect(first.password).toBe('RX30a');
-    expect(second.password).toBe('RX30b');
+    // Random draw, not "1st student gets a, 2nd gets b" — only shape
+    // (single-letter RX30 password) and uniqueness are guaranteed.
+    expect(first.password).toMatch(/^RX30[a-z]$/);
+    expect(second.password).toMatch(/^RX30[a-z]$/);
+    expect(first.password).not.toBe(second.password);
     expect(repository.snapshot.students[0]).not.toHaveProperty('password');
     expect(repository.snapshot.students[0].kioskPasswordVerifier.verifier).not.toBe(first.password);
     await expect(repository.registerStudent('blessing', 'Level 300')).rejects.toThrow(
@@ -223,8 +227,11 @@ describe('secure examination foundation', () => {
       first.password,
     );
     expect(authenticated.id).toBe(first.student.id);
+    // A guaranteed-wrong password (the real one plus extra characters can
+    // never equal it) — passwords are now drawn randomly, so a hardcoded
+    // guess like 'RX30b' could occasionally collide with the real one.
     await expect(
-      repository.authenticateStudent('Blessing', 'Level 300', 'RX30b'),
+      repository.authenticateStudent('Blessing', 'Level 300', `${first.password}-wrong`),
     ).rejects.toThrow();
   });
 
@@ -235,6 +242,31 @@ describe('secure examination foundation', () => {
     expect(sequentialKioskPassword(27)).toBe('RX30ab');
     expect(sequentialKioskPassword(51)).toBe('RX30az');
     expect(sequentialKioskPassword(52)).toBe('RX30ba');
+  });
+
+  it('randomizes kiosk passwords but exhausts every single-letter slot before issuing a two-letter one', () => {
+    const issued: number[] = [];
+    const passwords = new Set<string>();
+    for (let i = 0; i < 26; i += 1) {
+      const { password, slot } = randomUnusedKioskPassword(issued);
+      expect(password).toMatch(/^RX30[a-z]$/);
+      expect(passwords.has(password)).toBe(false);
+      passwords.add(password);
+      issued.push(slot);
+    }
+    // All 26 single-letter slots are now used; the very next draw must be
+    // two letters, never a repeat, and never skip ahead to three letters.
+    const overflow = randomUnusedKioskPassword(issued);
+    expect(overflow.password).toMatch(/^RX30[a-z]{2}$/);
+
+    // Drawing many passwords never repeats a slot already marked as used.
+    const used: number[] = [];
+    for (let i = 0; i < 200; i += 1) {
+      const draw = randomUnusedKioskPassword(used);
+      expect(used).not.toContain(draw.slot);
+      used.push(draw.slot);
+    }
+    expect(new Set(used).size).toBe(200);
   });
 
   it('uses a salted KDF verifier and distinguishes the password', async () => {

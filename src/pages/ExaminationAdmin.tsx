@@ -39,6 +39,7 @@ import {
 } from '../examination/lanServer';
 import type { ExaminationResult, ExamSession, StudentAttempt } from '../examination/types';
 import PasswordInput from '../components/PasswordInput';
+import { describeError } from '../utils/errorMessage';
 
 const activeStatuses = [
   'ACTIVE',
@@ -76,6 +77,8 @@ const ExaminationAdmin: React.FC = () => {
   const [openEnrollment, setOpenEnrollment] = useState(true);
   const [lanImportMessage, setLanImportMessage] = useState('');
   const [reviewResultId, setReviewResultId] = useState('');
+  const [kioskResetBusyId, setKioskResetBusyId] = useState('');
+  const [kioskResetMessage, setKioskResetMessage] = useState('');
   // Console password gate: students run the same app, so the admin console
   // renders nothing until the device's stored password is presented.
   const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
@@ -258,6 +261,33 @@ const ExaminationAdmin: React.FC = () => {
         type: 'ADD_QUIZ_HISTORY',
         payload: examinationResultToQuizHistory(result, version),
       });
+  };
+
+  /**
+   * Admin override for a student who forgot (or needs to invalidate) their
+   * RX30 kiosk password. Draws a fresh random password exactly like
+   * registration does and shows it once — the invigilator reads it to the
+   * student the same way the kiosk screen would have.
+   */
+  const resetKioskPassword = async (studentId: string, studentName: string) => {
+    if (!adminAuthenticated) {
+      setMessage('Authenticate this administrator device before using live controls.');
+      return;
+    }
+    const opened = repository || (await ExaminationRepository.open());
+    setKioskResetBusyId(studentId);
+    setKioskResetMessage('');
+    try {
+      const { password } = await opened.resetStudentKioskPassword(studentId);
+      setKioskResetMessage(
+        `New RX30 kiosk password for ${studentName}: ${password} — this is shown only once, share it with the student now.`,
+      );
+      await refresh();
+    } catch (error) {
+      setMessage(`Could not reset the kiosk password: ${describeError(error, 'unknown error')}`);
+    } finally {
+      setKioskResetBusyId('');
+    }
   };
 
   const action = async (attempt: StudentAttempt, kind: Action) => {
@@ -475,11 +505,7 @@ const ExaminationAdmin: React.FC = () => {
     } catch (error) {
       // Never fail silently: a thrown error here used to leave the button
       // looking like it simply did nothing when clicked.
-      setGateError(
-        error instanceof Error
-          ? `Could not check the password: ${error.message}`
-          : 'Could not check the password. Please try again.',
-      );
+      setGateError(`Could not check the password: ${describeError(error, 'unknown error')}`);
     } finally {
       setBusy(false);
     }
@@ -1071,6 +1097,56 @@ const ExaminationAdmin: React.FC = () => {
             </div>
           )}
         </div>
+      </section>
+      <section className="bg-white border rounded-2xl p-5 space-y-3">
+        <div>
+          <h2 className="text-xl font-black">Registered students & RX30 kiosk passwords</h2>
+          <p className="text-sm text-slate-500">
+            Every student who has registered on a kiosk, regardless of whether they have an
+            attempt yet. Resetting issues a brand new random password and invalidates the old one.
+          </p>
+        </div>
+        {kioskResetMessage && (
+          <p className="text-sm font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+            {kioskResetMessage}
+          </p>
+        )}
+        {(repository?.snapshot.students.length || 0) === 0 ? (
+          <p className="text-sm text-slate-500">No students have registered yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="p-2">Student</th>
+                  <th className="p-2">Level</th>
+                  <th className="p-2">Registered</th>
+                  <th className="p-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {repository?.snapshot.students.map((student) => (
+                  <tr key={student.id} className="border-b last:border-0">
+                    <td className="p-2 font-bold">{student.firstName}</td>
+                    <td className="p-2">{student.level}</td>
+                    <td className="p-2 text-slate-500">
+                      {new Date(student.registeredAt).toLocaleString()}
+                    </td>
+                    <td className="p-2">
+                      <button
+                        disabled={!adminAuthenticated || kioskResetBusyId === student.id}
+                        onClick={() => void resetKioskPassword(student.id, student.firstName)}
+                        className="rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-40"
+                      >
+                        {kioskResetBusyId === student.id ? 'Resetting…' : 'Reset RX30 password'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
       <section className="bg-white border rounded-2xl p-5 space-y-4">
         <div className="flex flex-wrap justify-between items-center gap-3">

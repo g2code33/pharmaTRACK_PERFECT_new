@@ -93,8 +93,39 @@ function isCurrentShape(
   return typeof (record as AdminGateRecord).passwordSalt === 'string';
 }
 
+/**
+ * Writes a gate record back to storage, but never lets a failed write stop
+ * the record from being used for THIS call's password check.
+ *
+ * Every branch below computes `record`'s hash fresh, in memory, before
+ * trying to save it — so the password typed a moment ago can still be
+ * verified correctly even on a device whose local database cannot be
+ * written to right now. Only persisting a CHANGE for next time is what a
+ * broken store takes away; the ability to unlock with the password that was
+ * already in effect must not depend on that write succeeding.
+ */
+async function persistGate(record: AdminGateRecord): Promise<AdminGateRecord> {
+  try {
+    await set(GATE_KEY, record);
+  } catch (error) {
+    console.error('Admin gate record could not be saved locally:', error);
+  }
+  return record;
+}
+
 async function loadGate(): Promise<AdminGateRecord> {
-  const existing = await get<AdminGateRecord | LegacyAdminGateRecord>(GATE_KEY);
+  let existing: AdminGateRecord | LegacyAdminGateRecord | undefined;
+  try {
+    existing = await get<AdminGateRecord | LegacyAdminGateRecord>(GATE_KEY);
+  } catch (error) {
+    // A read failure is treated exactly like "no record yet": the gate
+    // falls back to the seed credentials below so the console/builder can
+    // still be unlocked with the documented default password, instead of
+    // the whole password check throwing and leaving the lock screen stuck
+    // on a generic "could not check the password" error.
+    console.error('Admin gate record could not be read locally:', error);
+    existing = undefined;
+  }
 
   if (existing && !isCurrentShape(existing) && existing.salt && existing.passwordHash && existing.phantomHash) {
     // Pre-migration record: reuse the one shared salt as each secret's own
@@ -111,8 +142,7 @@ async function loadGate(): Promise<AdminGateRecord> {
       builderHash: existing.builderHash ?? (await hashSecret(existing.salt, DEFAULT_BUILDER_PASSWORD)),
       updatedAt: new Date().toISOString(),
     };
-    await set(GATE_KEY, migrated);
-    return migrated;
+    return persistGate(migrated);
   }
 
   if (existing && isCurrentShape(existing)) {
@@ -129,8 +159,7 @@ async function loadGate(): Promise<AdminGateRecord> {
         builderHash: await hashSecret(builderSalt, DEFAULT_BUILDER_PASSWORD),
         updatedAt: new Date().toISOString(),
       };
-      await set(GATE_KEY, patched);
-      return patched;
+      return persistGate(patched);
     }
     return existing;
   }
@@ -147,8 +176,7 @@ async function loadGate(): Promise<AdminGateRecord> {
     builderHash: await hashSecret(builderSalt, DEFAULT_BUILDER_PASSWORD),
     updatedAt: new Date().toISOString(),
   };
-  await set(GATE_KEY, record);
-  return record;
+  return persistGate(record);
 }
 
 /** True only for the exact, non-empty password this device stores a hash of. */

@@ -42,12 +42,13 @@ const question = (id: string): ExamQuestion => ({
 beforeEach(() => idbStore.clear());
 
 describe('Kiosk examination workflow', () => {
-  it('registers sequential RX30 identities, owns the timer by attempt, and restores across devices', async () => {
+  it('registers random RX30 identities, owns the timer by attempt, and restores across devices', async () => {
     const repository = await ExaminationRepository.open();
     const first = await repository.registerStudent('Ama', 'Level 100');
     const second = await repository.registerStudent('Kojo', 'Level 100');
-    expect(first.password).toBe('RX30a');
-    expect(second.password).toBe('RX30b');
+    expect(first.password).toMatch(/^RX30[a-z]$/);
+    expect(second.password).toMatch(/^RX30[a-z]$/);
+    expect(first.password).not.toBe(second.password);
     await expect(repository.registerStudent('Ama', 'Level 100')).rejects.toThrow(
       'This first name is already in use',
     );

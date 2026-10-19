@@ -5,7 +5,7 @@ import {
   digestJson,
   normalizeLevel,
   randomId,
-  sequentialKioskPassword,
+  randomUnusedKioskPassword,
   verifyPassword,
 } from './crypto';
 import { loadExaminationState, saveExaminationState } from './storage';
@@ -658,7 +658,11 @@ export class ExaminationRepository {
         'This first name is already in use. Please use your surname, middle name, or add a number to your first name.',
       );
     }
-    const password = sequentialKioskPassword(this.state.students.length);
+    // A RANDOM, not-yet-issued slot — not the next one in line — so no one
+    // can guess a classmate's RX30 password from their place in the
+    // registration queue. Every single-letter slot is still handed out
+    // before any two-letter one, so passwords stay short.
+    const { password, slot } = randomUnusedKioskPassword(this.state.issuedKioskPasswordSlots);
     const student: ExamStudent = {
       id: randomId('student'),
       firstName: cleanName,
@@ -668,12 +672,36 @@ export class ExaminationRepository {
       activeDeviceSessionIds: [],
     };
     this.state.students.push(student);
+    this.state.issuedKioskPasswordSlots.push(slot);
     await this.save();
     await this.logSecurityEvent({
       studentId: student.id,
       type: 'IDENTITY_REGISTERED',
       severity: 'info',
       details: `Kiosk identity registered for ${student.level}.`,
+    });
+    return { student, password };
+  }
+
+  /**
+   * Admin override: issue a NEW RX30 kiosk password for an already
+   * registered student, e.g. because they forgot the one they were given or
+   * it leaked. Draws a fresh random, not-yet-issued slot exactly like
+   * registration does, then replaces only that student's stored verifier —
+   * every other student's password keeps working unchanged.
+   */
+  async resetStudentKioskPassword(studentId: string): Promise<{ student: ExamStudent; password: string }> {
+    const student = this.state.students.find((item) => item.id === studentId);
+    if (!student) throw new Error('That student could not be found.');
+    const { password, slot } = randomUnusedKioskPassword(this.state.issuedKioskPasswordSlots);
+    student.kioskPasswordVerifier = await derivePasswordVerifier(password);
+    this.state.issuedKioskPasswordSlots.push(slot);
+    await this.save();
+    await this.logSecurityEvent({
+      studentId: student.id,
+      type: 'IDENTITY_REGISTERED',
+      severity: 'warning',
+      details: 'RX30 kiosk password reset by the administrator.',
     });
     return { student, password };
   }

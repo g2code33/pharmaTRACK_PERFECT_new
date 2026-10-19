@@ -27,6 +27,7 @@ import {
   verifyBuilderPassword,
 } from '../examination/adminGate';
 import PasswordInput from '../components/PasswordInput';
+import { describeError } from '../utils/errorMessage';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 const violationTypes = [
@@ -195,11 +196,7 @@ const ExaminationBuilder: React.FC = () => {
       // database, an unavailable crypto API) left the button looking like it
       // simply did nothing when clicked — the single most confusing failure
       // mode a lock screen can have.
-      setGateError(
-        error instanceof Error
-          ? `Could not check the password: ${error.message}`
-          : 'Could not check the password. Please try again.',
-      );
+      setGateError(`Could not check the password: ${describeError(error, 'unknown error')}`);
     } finally {
       setBusy(false);
     }
