@@ -14,6 +14,8 @@ import { BROWSER_PHARMAEXAM_ACCEPT } from '../platform/fileSelection';
 import { isIOSPWA, isIOSSafari } from '../platform/runtime';
 import PasswordInput from '../components/PasswordInput';
 import { describeError } from '../utils/errorMessage';
+import { findNewlyVisibleKioskResults } from '../examination/results';
+import { useApp } from '../context/AppContext';
 
 const levels = ['Level 100', 'Level 200', 'Level 300', 'Level 400', 'Level 500', 'Level 600'];
 
@@ -25,6 +27,7 @@ const IDENTITY_KEY = 'pharmatrack:kiosk-identity';
 
 const KioskEntry: React.FC = () => {
   const navigate = useNavigate();
+  const { state: appState, dispatch } = useApp();
   const [staged, setStaged] = useState<StagedPharmaExam | null>(null);
   const [packageMessage, setPackageMessage] = useState('');
   const [packageFileName, setPackageFileName] = useState('');
@@ -138,7 +141,24 @@ const KioskEntry: React.FC = () => {
     setBusy(true);
     try {
       const repository = await ExaminationRepository.open();
-      await repository.authenticateStudent(firstName.trim(), level, kioskPassword.trim());
+      const student = await repository.authenticateStudent(firstName.trim(), level, kioskPassword.trim());
+      // Logging in is the one moment the app knows for certain which
+      // student is at the device — the right time to catch Quiz History up
+      // with any past kiosk exam result that became visible since they last
+      // checked (e.g. the administrator released it after submission).
+      try {
+        const existingIds = new Set(
+          appState.quizHistory
+            .map((item) => item.examinationResultId)
+            .filter((id): id is string => Boolean(id)),
+        );
+        const newlyVisible = findNewlyVisibleKioskResults(repository, student.id, existingIds);
+        for (const entry of newlyVisible) {
+          dispatch({ type: 'ADD_QUIZ_HISTORY', payload: entry });
+        }
+      } catch {
+        // Never block login over a Quiz History backfill problem.
+      }
       const identity = { firstName: firstName.trim(), level, kioskPassword: kioskPassword.trim() };
       try {
         sessionStorage.setItem(IDENTITY_KEY, JSON.stringify(identity));

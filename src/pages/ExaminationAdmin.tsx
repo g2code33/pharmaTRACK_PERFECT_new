@@ -40,6 +40,12 @@ import {
 import type { ExaminationResult, ExamSession, StudentAttempt } from '../examination/types';
 import PasswordInput from '../components/PasswordInput';
 import { describeError } from '../utils/errorMessage';
+import {
+  buildKioskResultSyncItems,
+  fetchCloudKioskResults,
+  pushKioskResultsToCloud,
+  type CloudKioskResult,
+} from '../examination/resultsCloudSync';
 
 const activeStatuses = [
   'ACTIVE',
@@ -79,6 +85,10 @@ const ExaminationAdmin: React.FC = () => {
   const [reviewResultId, setReviewResultId] = useState('');
   const [kioskResetBusyId, setKioskResetBusyId] = useState('');
   const [kioskResetMessage, setKioskResetMessage] = useState('');
+  const [allTimeTab, setAllTimeTab] = useState<'offline' | 'cloud'>('offline');
+  const [cloudResults, setCloudResults] = useState<CloudKioskResult[]>([]);
+  const [cloudResultsMessage, setCloudResultsMessage] = useState('');
+  const [cloudSyncBusy, setCloudSyncBusy] = useState(false);
   // Console password gate: students run the same app, so the admin console
   // renders nothing until the device's stored password is presented.
   const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
@@ -287,6 +297,83 @@ const ExaminationAdmin: React.FC = () => {
       setMessage(`Could not reset the kiosk password: ${describeError(error, 'unknown error')}`);
     } finally {
       setKioskResetBusyId('');
+    }
+  };
+
+  /**
+   * All-time kiosk results, straight from THIS device's local examination
+   * state — every exam and session ever recorded here, not only the one
+   * currently selected above. Always available, no internet required.
+   */
+  const allTimeOfflineResults = useMemo(() => {
+    const snapshot = repository?.snapshot;
+    if (!snapshot) return [];
+    return snapshot.results
+      .map((result) => {
+        const student = snapshot.students.find((item) => item.id === result.studentId);
+        const version = snapshot.versions.find((item) => item.id === result.examVersionId);
+        if (!student || !version) return null;
+        return {
+          resultKey: result.id,
+          studentFirstName: student.firstName,
+          studentLevel: student.level,
+          examTitle: version.title,
+          scorePercentage: result.percentage,
+          submittedAt: result.submittedAt,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  }, [repository]);
+
+  /** Pushes every local result to this administrator's own cloud log. */
+  const syncResultsToCloud = async () => {
+    if (!repository) return;
+    setCloudSyncBusy(true);
+    setCloudResultsMessage('');
+    try {
+      const items = buildKioskResultSyncItems(
+        repository.snapshot.results,
+        repository.snapshot.students,
+        repository.snapshot.versions,
+      );
+      const outcome = await pushKioskResultsToCloud(items, adminDevice);
+      if (!outcome.ok) {
+        setCloudResultsMessage(
+          outcome.reason === 'offline'
+            ? "You're offline right now — results stay safely on this device until you're back online."
+            : 'Sign in to your PharmaTrack account to sync results to the cloud.',
+        );
+        return;
+      }
+      setCloudResultsMessage(
+        `Synced ${outcome.synced} result(s) to the cloud${outcome.failed ? `, ${outcome.failed} failed` : ''}.`,
+      );
+      await loadCloudResults();
+    } catch (error) {
+      setCloudResultsMessage(`Could not sync results: ${describeError(error, 'unknown error')}`);
+    } finally {
+      setCloudSyncBusy(false);
+    }
+  };
+
+  /** Reads back every result this administrator's account has ever synced. */
+  const loadCloudResults = async () => {
+    setCloudResultsMessage('');
+    try {
+      const outcome = await fetchCloudKioskResults();
+      if (!outcome.ok) {
+        setCloudResultsMessage(
+          outcome.reason === 'offline'
+            ? "You're offline right now."
+            : 'Sign in to your PharmaTrack account to view the cloud results log.',
+        );
+        setCloudResults([]);
+        return;
+      }
+      setCloudResults(outcome.results);
+    } catch (error) {
+      setCloudResultsMessage(`Could not load cloud results: ${describeError(error, 'unknown error')}`);
     }
   };
 
@@ -1147,6 +1234,89 @@ const ExaminationAdmin: React.FC = () => {
             </table>
           </div>
         )}
+      </section>
+      <section className="bg-white border rounded-2xl p-5 space-y-3">
+        <div>
+          <h2 className="text-xl font-black">All-time kiosk exam results</h2>
+          <p className="text-sm text-slate-500">
+            Every kiosk exam ever recorded, not just the session selected above. "This device" is
+            always available offline; "Cloud" is an optional, explicit sync to your own
+            PharmaTrack account so results can be checked from anywhere.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setAllTimeTab('offline')}
+            className={`rounded-lg px-3 py-1.5 text-xs font-black ${allTimeTab === 'offline' ? 'bg-slate-800 text-white' : 'border'}`}
+          >
+            This device (offline)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAllTimeTab('cloud');
+              void loadCloudResults();
+            }}
+            className={`rounded-lg px-3 py-1.5 text-xs font-black ${allTimeTab === 'cloud' ? 'bg-slate-800 text-white' : 'border'}`}
+          >
+            Cloud (all devices)
+          </button>
+          {allTimeTab === 'cloud' && (
+            <button
+              type="button"
+              disabled={cloudSyncBusy || !repository}
+              onClick={() => void syncResultsToCloud()}
+              className="rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-40"
+            >
+              {cloudSyncBusy ? 'Syncing…' : 'Sync this device now'}
+            </button>
+          )}
+        </div>
+        {allTimeTab === 'cloud' && cloudResultsMessage && (
+          <p className="text-sm font-semibold text-slate-700 bg-slate-50 border rounded-lg p-3">
+            {cloudResultsMessage}
+          </p>
+        )}
+        {(() => {
+          const rows = allTimeTab === 'offline' ? allTimeOfflineResults : cloudResults;
+          if (rows.length === 0)
+            return (
+              <p className="text-sm text-slate-500">
+                {allTimeTab === 'offline'
+                  ? 'No kiosk exam results recorded on this device yet.'
+                  : 'No results synced to the cloud yet.'}
+              </p>
+            );
+          return (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b">
+                    <th className="p-2">Student</th>
+                    <th className="p-2">Level</th>
+                    <th className="p-2">Exam</th>
+                    <th className="p-2">Score</th>
+                    <th className="p-2">Date & time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.resultKey} className="border-b last:border-0">
+                      <td className="p-2 font-bold">{row.studentFirstName}</td>
+                      <td className="p-2">{row.studentLevel}</td>
+                      <td className="p-2">{row.examTitle}</td>
+                      <td className="p-2">{Math.round(row.scorePercentage)}%</td>
+                      <td className="p-2 text-slate-500">
+                        {new Date(row.submittedAt).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
       </section>
       <section className="bg-white border rounded-2xl p-5 space-y-4">
         <div className="flex flex-wrap justify-between items-center gap-3">

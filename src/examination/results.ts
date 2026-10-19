@@ -116,3 +116,53 @@ export function examinationResultToQuizHistory(
     examinationVersionId: result.examVersionId,
   };
 }
+
+/**
+ * Minimal surface a backfill function needs from a repository — just enough
+ * to avoid importing the whole `ExaminationRepository` class into every
+ * caller and to make this trivially testable.
+ */
+export interface VisibleResultSource {
+  snapshot: Pick<ExaminationState, 'attempts' | 'versions'>;
+  getStudentVisibleResult(attemptId: string, studentId?: string): { visible: boolean };
+  getExaminationResult(attemptId: string): ExaminationResult | undefined;
+}
+
+/**
+ * Catches a student's Quiz History up with every kiosk exam result that has
+ * become visible to them since the last time it was checked.
+ *
+ * A result can finish an exam but stay hidden for a while on purpose (the
+ * "release results only when the administrator says so" policy) — the
+ * attempt page only tries to record the result ONCE, at the moment of
+ * submission, so if it was not visible yet at that exact instant it would
+ * otherwise never make it into Quiz History at all, even after the
+ * administrator releases it. Logging back in (the one moment the app knows
+ * for certain which student is sitting at the device) is the natural place
+ * to re-check every one of that student's submitted attempts and backfill
+ * anything newly visible.
+ */
+export function findNewlyVisibleKioskResults(
+  repository: VisibleResultSource,
+  studentId: string,
+  alreadyRecordedResultIds: ReadonlySet<string>,
+): QuizHistory[] {
+  const additions: QuizHistory[] = [];
+  const attempts = repository.snapshot.attempts.filter((attempt) => attempt.studentId === studentId);
+  for (const attempt of attempts) {
+    let visibility: { visible: boolean };
+    try {
+      visibility = repository.getStudentVisibleResult(attempt.id, studentId);
+    } catch {
+      continue;
+    }
+    if (!visibility.visible) continue;
+    const result = repository.getExaminationResult(attempt.id);
+    if (!result || alreadyRecordedResultIds.has(result.id)) continue;
+    const version = repository.snapshot.versions.find((item) => item.id === attempt.examVersionId);
+    if (!version) continue;
+    additions.push(examinationResultToQuizHistory(result, version));
+  }
+  return additions;
+}
+
