@@ -237,6 +237,60 @@ describe('PptxViewer', () => {
     expect(screen.getByText('Emphasise the beta blocker contraindication')).toBeTruthy();
   });
 
+  it('renders an embedded video as a playable <video> with controls and a poster, and keeps arrow keys for seeking instead of changing slides', async () => {
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    const IMG_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+    const VIDEO_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/video';
+
+    const zip = new JSZip();
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/poster1.png"/>
+         <Relationship Id="rId3" Type="${VIDEO_REL}" Target="../media/clip1.mp4"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/poster1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    zip.file('ppt/media/clip1.mp4', new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]));
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+
+    render(<PptxViewer fileUrl="local:test-video" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    const video = await waitFor(() => {
+      const el = screen.getByTestId('pptx-stage').querySelector('video');
+      expect(el).toBeTruthy();
+      return el as HTMLVideoElement;
+    });
+    expect(video.hasAttribute('controls')).toBe(true);
+    expect(video.getAttribute('poster')).toMatch(/^blob:/);
+    expect(video.getAttribute('src')).toMatch(/^blob:/);
+
+    // Arrow keys fired while the video itself has focus must seek the clip,
+    // not flip to the next slide — the global slide-navigation shortcuts
+    // defer to the browser's native video controls instead of fighting them.
+    fireEvent.keyDown(video, { key: 'ArrowRight' });
+    expect(pageInput().value).toBe('1');
+  });
+
   it('enters fullscreen and exits with Escape', async () => {
     mockFetchBlob(await buildDeck(DECK));
     render(<PptxViewer fileUrl="local:test-10" />);
@@ -250,6 +304,22 @@ describe('PptxViewer', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(root().className).not.toContain('fixed');
+  });
+
+  it('switches to "Fit to Screen" on entering the slide show, so the whole slide (and notes) always fits', async () => {
+    mockFetchBlob(await buildDeck(DECK));
+    render(<PptxViewer fileUrl="local:test-10b" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+
+    // Default reading-view zoom is "Fit Width".
+    expect(screen.getByTitle('Zoom').textContent).toContain('Fit Width');
+
+    fireEvent.click(screen.getByTitle('Fullscreen presentation mode'));
+    expect(screen.getByTitle('Zoom').textContent).toContain('Fit to Screen');
+
+    // Exiting the slide show does not fight the student's own zoom choice.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.getByTitle('Zoom').textContent).toContain('Fit to Screen');
   });
 
   it('shows the error fallback with Download / View Extracted Text / Retry', async () => {

@@ -107,7 +107,7 @@ export interface PptxTable {
   cells: PptxTableCell[][];
 }
 
-export type PptxShapeType = 'text' | 'image' | 'table' | 'chart' | 'line';
+export type PptxShapeType = 'text' | 'image' | 'video' | 'table' | 'chart' | 'line';
 
 export interface PptxShape {
   id: number;
@@ -129,6 +129,16 @@ export interface PptxShape {
   imageRid?: string;
   /** a:srcRect cropping of the source image, as 0..1 fractions of each edge. */
   crop?: { l: number; t: number; r: number; b: number };
+  /**
+   * Playable clip for a `type: 'video'` shape (object URL into the embedded
+   * media part). `imageUrl` on a video shape is the poster frame PowerPoint
+   * stores alongside it, used both as the `<video poster>` and as the
+   * fallback when the clip itself is a *linked* (not embedded) file that
+   * cannot be resolved offline.
+   */
+  videoUrl?: string;
+  /** Relationship id of the embedded/linked video. Filled even before resolution. */
+  videoRid?: string;
   table?: PptxTable;
   /** Font scale inherited from an enclosing group. */
   textScale: number;
@@ -1182,6 +1192,8 @@ function parseTable(gf: Element, t: T): PptxShape {
 interface ShapeCtx {
   t: T;
   imageUrls: Map<string, string>;
+  /** Resolved object URLs for embedded video/audio clips, keyed by relationship id. */
+  videoUrls: Map<string, string>;
   layout: LayoutInfo | null;
   sw: number;
   sh: number;
@@ -1254,12 +1266,27 @@ function parsePic(pic: Element, ctx: ShapeCtx): PptxShape {
   const box = applyT(ctx.t, parseXfrm(spPr));
   const blipFill = child(pic, 'p:blipFill');
   const blip = blipFill ? child(blipFill, 'a:blip') : null;
-  const rid = blip?.getAttribute('r:embed');
+  // Most pictures are embedded (r:embed); a minority (pasted-as-link, or
+  // some third-party exporters) address the same relationship map via
+  // r:link instead — either way the id still resolves through ctx.imageUrls,
+  // which indexes *every* image relationship regardless of which attribute
+  // referenced it.
+  const rid = blip?.getAttribute('r:embed') || blip?.getAttribute('r:link') || undefined;
   const url = rid ? ctx.imageUrls.get(rid) : undefined;
   if (url) ctx.imageList.push(url);
+
+  // Video (and audio) placeholders: PowerPoint keeps the poster frame as the
+  // ordinary blipFill picture above, and points at the actual clip via the
+  // legacy <a:videoFile r:link="…"/> (used even for clips embedded inside
+  // the package, not just truly linked ones) or the newer PowerPoint-2010+
+  // <p14:media r:embed="…"/> extension.
+  const videoEl = pic.getElementsByTagName('a:videoFile')[0] ?? pic.getElementsByTagName('p14:media')[0];
+  const videoRid = videoEl?.getAttribute('r:link') || videoEl?.getAttribute('r:embed') || undefined;
+  const videoUrl = videoRid ? ctx.videoUrls.get(videoRid) : undefined;
+
   const shape: PptxShape = {
     id: ctx.nextId(),
-    type: 'image',
+    type: videoRid ? 'video' : 'image',
     x: box.x,
     y: box.y,
     w: Math.max(box.w, 0),
@@ -1268,6 +1295,8 @@ function parsePic(pic: Element, ctx: ShapeCtx): PptxShape {
     geom: child(spPr, 'a:prstGeom')?.getAttribute('prst') || 'rect',
     imageUrl: url,
     imageRid: rid || undefined,
+    videoUrl,
+    videoRid,
     textScale: 1,
     isTitle: false,
   };
@@ -1511,16 +1540,19 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
     // (callers that omit lazyMedia — and the unit tests — still get URLs
     // immediately). Lazy decks defer to ensureSlideMedia.
     const imageUrls = new Map<string, string>();
+    const videoUrls = new Map<string, string>();
     if (!lazyMedia) {
       for (const [rid, rel] of rels) {
-        if (!rel.type.endsWith('/image')) continue;
+        const isImage = rel.type.endsWith('/image');
+        const isClip = rel.type.endsWith('/video') || rel.type.endsWith('/audio') || rel.type.endsWith('/media');
+        if (!isImage && !isClip) continue;
         const path = resolveZipPath('ppt/slides', rel.target);
         const media = zip.file(path);
         if (!media) continue;
         try {
           const url = await urlFor(path, i + 1);
           if (url) {
-            imageUrls.set(rid, url);
+            (isImage ? imageUrls : videoUrls).set(rid, url);
             const list = slideLoadedPaths.get(i + 1) ?? [];
             if (!list.includes(path)) { list.push(path); slideLoadedPaths.set(i + 1, list); }
           }
@@ -1566,6 +1598,7 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
     const ctx: ShapeCtx = {
       t: IDENTITY,
       imageUrls,
+      videoUrls,
       layout,
       sw: slideWidth,
       sh: slideHeight,
@@ -1764,6 +1797,20 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
         }
       }
       for (const shape of slide.shapes) {
+        if (shape.videoRid && !shape.videoUrl) {
+          const videoRel = job.rels.get(shape.videoRid);
+          if (
+            videoRel &&
+            (videoRel.type.endsWith('/video') || videoRel.type.endsWith('/audio') || videoRel.type.endsWith('/media'))
+          ) {
+            const videoPath = resolveZipPath('ppt/slides', videoRel.target);
+            const videoUrl = await urlFor(videoPath, slideNumber);
+            if (videoUrl) {
+              note(videoPath);
+              shape.videoUrl = videoUrl;
+            }
+          }
+        }
         if (!shape.imageRid || shape.imageUrl) continue;
         const rel = job.rels.get(shape.imageRid);
         if (!rel || !rel.type.endsWith('/image')) continue;

@@ -476,3 +476,187 @@ describe('pptx renderer \u2014 bullet glyphs and notes scoping', () => {
     deck.dispose();
   });
 });
+
+describe('pptx renderer — video shapes', () => {
+  const VIDEO_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/video';
+  const MEDIA_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/media';
+
+  const buildVideoDeck = async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<?xml version="1.0"?>
+<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr/>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/poster1.png"/>
+         <Relationship Id="rId3" Type="${VIDEO_REL}" Target="../media/clip1.mp4"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/poster1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    zip.file('ppt/media/clip1.mp4', new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]));
+    return (await zip.generateAsync({ type: 'blob' })) as Blob;
+  };
+
+  it('recognises a:videoFile pictures as playable video shapes, poster included', async () => {
+    const deck = await renderPptx(await buildVideoDeck());
+    const video = deck.slides[0].shapes.find((s) => s.type === 'video');
+    expect(video).toBeDefined();
+    expect(video!.videoUrl).toMatch(/^blob:/);
+    expect(video!.imageUrl).toMatch(/^blob:/); // poster frame, same as a normal picture
+    expect(video!.w).toBeCloseTo(384, 6);
+    expect(video!.h).toBeCloseTo(288, 6);
+    deck.dispose();
+  });
+
+  it('defers video resolution for lazy decks until the slide is shown, same as images', async () => {
+    const deck = await renderPptx(await buildVideoDeck(), { lazyMedia: true });
+    const video = deck.slides[0].shapes.find((s) => s.type === 'video');
+    expect(video).toBeDefined();
+    expect(video!.videoUrl).toBeUndefined();
+    expect(video!.imageUrl).toBeUndefined();
+    await deck.ensureSlideMedia(1);
+    expect(video!.videoUrl).toMatch(/^blob:/);
+    expect(video!.imageUrl).toMatch(/^blob:/);
+    deck.dispose();
+  });
+
+  it('also recognises the PowerPoint-2010+ p14:media embed form', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<?xml version="1.0"?>
+<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr/>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr>
+          <p:extLst><p:ext uri="{DAA4B4D4-6D71-4841-9C94-3DE7FCFB9230}">
+            <p14:media xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main" r:embed="rId3"/>
+          </p:ext></p:extLst>
+        </p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/poster1.png"/>
+         <Relationship Id="rId3" Type="${MEDIA_REL}" Target="../media/clip1.mp4"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/poster1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    zip.file('ppt/media/clip1.mp4', new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]));
+    const deck = await renderPptx((await zip.generateAsync({ type: 'blob' })) as Blob);
+    const video = deck.slides[0].shapes.find((s) => s.type === 'video');
+    expect(video).toBeDefined();
+    expect(video!.videoUrl).toMatch(/^blob:/);
+    deck.dispose();
+  });
+
+  it('falls back to the poster frame when the clip itself cannot be resolved (linked, not embedded)', async () => {
+    const zip = new JSZip();
+    zip.file(
+      'ppt/presentation.xml',
+      `<?xml version="1.0"?>
+<p:presentation xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst>
+  <p:sldSz cx="9144000" cy="6858000"/>
+</p:presentation>`,
+    );
+    zip.file(
+      'ppt/_rels/presentation.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId1" Type="${SLIDE_REL}" Target="slides/slide1.xml"/>
+       </Relationships>`,
+    );
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:nvPr/></p:nvGrpSpPr>
+    <p:grpSpPr/>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    // rId3 points at a relationship whose target is simply never present in
+    // the package — the "linked, not embedded" case this renderer cannot
+    // fetch (no network access to an external file by design).
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/poster1.png"/>
+         <Relationship Id="rId3" Type="${VIDEO_REL}" TargetMode="External" Target="file:///C:/videos/clip1.mp4"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/poster1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    const deck = await renderPptx((await zip.generateAsync({ type: 'blob' })) as Blob);
+    const video = deck.slides[0].shapes.find((s) => s.type === 'video');
+    expect(video).toBeDefined();
+    expect(video!.videoUrl).toBeUndefined();
+    expect(video!.imageUrl).toMatch(/^blob:/);
+    deck.dispose();
+  });
+});

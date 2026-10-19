@@ -336,6 +336,43 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
     transform: shape.rot ? `rotate(${shape.rot}deg)` : undefined,
   };
 
+  if (shape.type === 'video') {
+    if (!showImages || shape.w <= 0 || shape.h <= 0) return null;
+    // A linked (not embedded) clip may not resolve offline — fall back to
+    // the poster frame PowerPoint always stores alongside the placeholder
+    // rather than showing nothing.
+    if (!shape.videoUrl) {
+      if (!shape.imageUrl) return null;
+      return (
+        <img
+          src={shape.imageUrl}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="absolute select-none"
+          style={{ ...base, objectFit: 'contain', background: '#000' }}
+        />
+      );
+    }
+    return (
+      <video
+        data-pptx-video
+        src={shape.videoUrl}
+        poster={shape.imageUrl}
+        controls
+        preload="metadata"
+        playsInline
+        tabIndex={0}
+        title="Click to play. Space to pause/resume, arrow keys to seek, once focused."
+        className="absolute bg-black"
+        style={{ ...base, objectFit: 'contain' }}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      />
+    );
+  }
+
   if (shape.type === 'image') {
     if (!shape.imageUrl || !showImages || shape.w <= 0 || shape.h <= 0) return null;
     // Pictures can be framed by any preset geometry (ellipse, roundRect, …).
@@ -782,6 +819,35 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     return () => { cancelled = true; };
   }, [deck, slide, onSlideChange]);
 
+  // Quietly warm the neighbouring slides' pictures (and clips) right after
+  // the one on screen. Lazy decks only decode a slide's media when it is
+  // actually viewed, which used to mean a visible pop-in delay every single
+  // time a student pressed "next" while reading. Pre-decoding into the same
+  // object-URL cache `ensureSlideMedia` already uses means that by the time
+  // they get there it is already resolved, so the next slide's images (and
+  // video posters) are there immediately instead of after a beat. This never
+  // blocks or flashes the currently-shown slide — it does not bump
+  // mediaEpoch, so it cannot re-render anything that is not already on screen.
+  useEffect(() => {
+    if (!deck) return;
+    let cancelled = false;
+    const prefetch = async (n: number) => {
+      if (cancelled || n < 1 || n > deck.slideCount) return;
+      await deck.getSlide(n).catch(() => null);
+      if (cancelled) return;
+      await deck.ensureSlideMedia(n).catch(() => undefined);
+    };
+    // Defer one tick so the current slide's own media always wins the race.
+    const id = window.setTimeout(() => {
+      void prefetch(slide + 1);
+      void prefetch(slide - 1);
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [deck, slide]);
+
   /* ---------------- navigation ---------------- */
   const go = useCallback(
     (n: number) => {
@@ -958,6 +1024,24 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     };
   }, [deck, mode]);
 
+  /*
+   * Entering the fullscreen "slide show" used to leave whatever zoom mode
+   * the normal reading view happened to be in — almost always the default
+   * "Fit Width" — untouched. Fit Width only sizes the slide against the
+   * container's *width*, so on a widescreen monitor the slide (plus the
+   * notes pane, if open) regularly ran taller than the screen, fighting
+   * with the fullscreen "show the whole slide" expectation. Switching to
+   * "Fit to Screen" the moment presentation mode starts makes the two
+   * conform to each other: the full slide (and notes, if shown) always
+   * fits the screen with nothing clipped, exactly like PowerPoint's own
+   * Slide Show view. The reading view's own zoom choice is left alone when
+   * exiting fullscreen again.
+   */
+  useEffect(() => {
+    if (fs) setZoom((z) => (z.mode === 'fit' ? z : { mode: 'fit', value: 1 }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fs]);
+
   /* Presentation mode: chrome fades away, any pointer movement brings it back. */
   useEffect(() => {
     if (!fs) {
@@ -1012,6 +1096,11 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      // A focused <video> handles its own keyboard shortcuts natively
+      // (Space play/pause, Left/Right seek, Up/Down volume) — slide
+      // navigation must stay out of the way instead of stealing the same
+      // keys to flip slides.
+      const inVideo = target?.tagName === 'VIDEO';
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         setFindOpen(true);
@@ -1043,7 +1132,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
         } else if (fs) setFs(false);
         return;
       }
-      if (!deck || mode !== 'slides') return;
+      if (!deck || mode !== 'slides' || inVideo) return;
       if (e.key === 'ArrowRight' || e.key === 'PageDown') {
         e.preventDefault();
         go(slide + 1);
@@ -1671,8 +1760,19 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
           className={`pptx-viewer-scroll relative flex-1 overflow-auto ${fs ? 'bg-gray-950' : 'bg-slate-800'}`}
           data-testid="pptx-stage"
         >
-          <div className="flex min-h-full min-w-full items-center justify-center p-4">
-            <div className="flex flex-col items-center">
+          {/*
+            No `items-center`/`justify-center` on this scrollable flex
+            container: centring the cross axis on an *overflowing* flex
+            container clips the far edge and makes it permanently
+            unreachable by scrolling in every browser (a well-known flexbox
+            quirk). `margin: auto` on the child instead centres it exactly
+            the same way while it fits, but falls back to normal, fully
+            scrollable box flow the moment the slide (plus the notes pane
+            below it) is taller than the viewport — which is exactly what
+            was silently swallowing the notes pane at larger zoom levels.
+          */}
+          <div className="flex min-h-full min-w-full p-4">
+            <div className="m-auto flex flex-col items-center">
               <div
                 style={{ width: deck.slideWidth * scale, height: deck.slideHeight * scale }}
                 className="relative"

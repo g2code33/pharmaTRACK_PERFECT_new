@@ -1,6 +1,6 @@
 [package]
 name = "pharmatrack"
-version = "1.4.19"
+version = "1.4.20"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

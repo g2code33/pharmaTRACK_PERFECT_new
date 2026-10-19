@@ -335,7 +335,10 @@ function shapeBaseStyle(shape: PptxShape, overflowHidden = false): string {
 
 function shapeHtml(shape: PptxShape, media: Map<string, string>): string {
   const radius = borderRadiusFor(shape);
-  if (shape.type === 'image') {
+  // A video shape's poster frame is itself a regular embedded image, so it
+  // renders exactly like a picture in the static PDF export (the export has
+  // no concept of a playable clip).
+  if (shape.type === 'image' || shape.type === 'video') {
     const src = mediaUrl(shape.imageUrl, media);
     if (!src || shape.w <= 0 || shape.h <= 0) return '';
     if (!shape.crop) {
@@ -607,7 +610,7 @@ function drawSearchableTextLayer(page: PDFPage, slide: PptxSlide, fonts: Convers
 
 async function drawShape(pdf: PDFDocument, page: PDFPage, shape: PptxShape, fonts: ConversionFonts, pageHeight: number) {
   const y = toPdfY(pageHeight, shape.y, shape.h);
-  if (shape.type === 'image') {
+  if (shape.type === 'image' || shape.type === 'video') {
     if (!shape.imageUrl || shape.w <= 0 || shape.h <= 0) return;
     const img = await embedImage(pdf, shape.imageUrl).catch(() => null);
     if (!img) return;
