@@ -65,7 +65,7 @@ async function createRawDeviceKey(): Promise<CryptoKey> {
   return importRawKey(raw);
 }
 
-async function deviceKey(): Promise<CryptoKey> {
+async function resolveDeviceKey(): Promise<CryptoKey> {
   const existing = await idb.get<StoredDeviceKey>(EXAM_DEVICE_KEY);
   if (isCryptoKey(existing)) {
     // Legacy WebCrypto CryptoKeys can be read on some engines. Keep using it
@@ -81,6 +81,41 @@ async function deviceKey(): Promise<CryptoKey> {
   }
   return createRawDeviceKey();
 }
+
+// `deviceKey()` used to re-read (and, on a brand-new device, re-CREATE) the
+// key on every single call with NO coordination at all. The very first
+// moments after opening the app fire off several storage reads/writes
+// almost simultaneously (the kiosk's staged-package restore, examination
+// state load, a device session write, ...). On a device with no key yet,
+// two of those calls could each see "no key exists" and each generate and
+// save their OWN random key — whichever save wins last becomes the only key
+// from then on, silently leaving anything already encrypted under the
+// loser's key undecryptable forever. That is a textbook match for "first
+// time registration doesn't work right" and "an old registration can't log
+// in anymore": the record was written correctly, just under a key nothing
+// can produce again.
+//
+// The fix is to serialize calls through a chain (the same pattern
+// `ExaminationRepository.writeChain` already uses for exam state writes),
+// NOT to permanently cache the resolved key. Every call still does a real
+// read — cheap, side-effect-free, and correctly notices if the underlying
+// key record ever legitimately changes (e.g. a device whose storage was
+// cleared while the page kept running) — but only one resolution is ever
+// "in flight" at a time, so two callers racing to create a first-ever key
+// are forced to run one after another: the second one's read will see the
+// key the first one just created instead of also creating its own.
+let deviceKeyChain: Promise<unknown> = Promise.resolve();
+
+function deviceKey(): Promise<CryptoKey> {
+  const next = deviceKeyChain
+    // A previous caller's failure must not permanently block every later
+    // call — only that one call should see the error.
+    .catch(() => undefined)
+    .then(() => resolveDeviceKey());
+  deviceKeyChain = next.catch(() => undefined);
+  return next;
+}
+
 
 export async function saveEncryptedJson<T>(key: string, value: T): Promise<void> {
   const iv = randomBytes(12);
