@@ -58,6 +58,13 @@ const SecureExamination: React.FC = () => {
   );
   const [fullscreenActive, setFullscreenActive] = useState(true);
   const [navigationBusy, setNavigationBusy] = useState(false);
+  // Post-submission admin unlock gate: once true, the release effect below
+  // is allowed to actually tear down the kiosk lock. Starts false on every
+  // mount, including a reload while "awaiting admin exit" — only the
+  // password check below can set it.
+  const [exitAuthorized, setExitAuthorized] = useState(false);
+  const [unlockBusy, setUnlockBusy] = useState(false);
+  const [unlockError, setUnlockError] = useState('');
   const adapterRef = useRef<KioskAdapter | null>(null);
   const cleanupKioskRef = useRef<(() => void) | null>(null);
   const blockedNavigationCleanupRef = useRef<(() => void) | null>(null);
@@ -209,6 +216,17 @@ const SecureExamination: React.FC = () => {
       );
       setMessage('');
       if (saved.status === 'SUBMITTED' || saved.status === 'KIOSK_RELEASED' || saved.status === 'CLOSED') {
+        // A reload here (e.g. the device restarted while the post-submission
+        // admin-password gate was still pending) does not go through the
+        // normal entry setup below, but the native/Android release call
+        // still needs a live adapter instance to act on — the Rust/Android
+        // side's locked state is a platform-level singleton that outlives
+        // this page's own lifecycle, so re-wrapping it here is enough; no
+        // enterSecureMode()/install() re-entry is needed for an attempt that
+        // is already terminal.
+        if (!adapterRef.current) {
+          adapterRef.current = await createPlatformKioskAdapter(() => {});
+        }
         setSubmitted(true);
         return;
       }
@@ -361,6 +379,14 @@ const SecureExamination: React.FC = () => {
 
   useEffect(() => {
     if (!submitted) return;
+    // The admin can require their own exit authorization even after a valid
+    // submission. Until it is supplied (this round or an earlier one in the
+    // same browser session), the lock must stay engaged — no auto-release.
+    const manualExitPolicy =
+      attempt?.settingsSnapshot?.security.manualExitPolicy ?? 'ADMIN_AUTH_REQUIRED';
+    if (manualExitPolicy === 'ADMIN_AUTH_REQUIRED' && !exitAuthorized) {
+      return;
+    }
     void (async () => {
       if (repository && attempt) {
         try {
@@ -378,7 +404,37 @@ const SecureExamination: React.FC = () => {
       cleanupKioskRef.current?.();
       cleanupKioskRef.current = null;
     })();
-  }, [submitted, repository, attempt]);
+  }, [submitted, repository, attempt, exitAuthorized]);
+
+  /** The only way out of a post-submission, admin-gated lock: the password
+   *  staged into this exam package's own `adminExitPasswordVerifier`. It is
+   *  per-file by construction (verified against the staged package loaded
+   *  for this attempt), never a global/app-wide secret. */
+  const unlockDeviceWithAdminPassword = async () => {
+    if (unlockBusy) return;
+    setUnlockBusy(true);
+    setUnlockError('');
+    try {
+      const supplied = window.prompt(
+        'Enter the examination administrator exit authorization to unlock this device.',
+      );
+      if (!supplied) return;
+      const stagedPackage = await loadStagedPharmaExam();
+      const authorized = Boolean(
+        stagedPackage && (await verifyAdminExitPassword(supplied, stagedPackage.security)),
+      );
+      if (!authorized) {
+        // Kept local to this notice (not the full-page `message` takeover)
+        // so a mistyped password can be retried immediately — the device
+        // stays exactly as locked as it was before the attempt either way.
+        setUnlockError('Administrator authorization was rejected. This device remains locked.');
+        return;
+      }
+      setExitAuthorized(true);
+    } finally {
+      setUnlockBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!repository || !attempt || submitted) return;
@@ -688,6 +744,14 @@ const SecureExamination: React.FC = () => {
     }
 
     const isVisible = Boolean(studentResult?.visible);
+    const manualExitPolicy =
+      attempt?.settingsSnapshot?.security.manualExitPolicy ?? 'ADMIN_AUTH_REQUIRED';
+    // Tied to the durably persisted release, not the transient "password was
+    // accepted" flag — if the actual releaseKiosk() write fails (storage
+    // hiccup, offline device), the UI must stay on the locked notice rather
+    // than claim an unlock that was never made durable.
+    const requiresAdminExitAuth =
+      manualExitPolicy === 'ADMIN_AUTH_REQUIRED' && attempt?.kioskLifecycle !== 'RELEASED';
 
     return (
       <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6">
@@ -804,16 +868,48 @@ const SecureExamination: React.FC = () => {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => {
-              releaseSecureKiosk();
-              navigate('/quiz');
-            }}
-            className="mt-4 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black transition-colors"
-          >
-            Return to Quiz
-          </button>
+          {requiresAdminExitAuth ? (
+            <div
+              className="mt-4 p-4 rounded-2xl bg-amber-50 border border-amber-200 text-left"
+              data-testid="post-submission-lock-notice"
+            >
+              <div className="flex items-center gap-2 text-amber-800 font-black">
+                <LockKeyhole className="w-5 h-5 shrink-0" />
+                This device is still locked
+              </div>
+              <p className="mt-1.5 text-sm text-amber-700">
+                Your administrator required their own authorization to release this device, even
+                after submission. Hand the device to them, or enter the administrator exit
+                password they provided for this examination file.
+              </p>
+              <button
+                type="button"
+                onClick={() => void unlockDeviceWithAdminPassword()}
+                disabled={unlockBusy}
+                data-testid="unlock-with-admin-password"
+                className="mt-3 w-full px-6 py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-black transition-colors"
+              >
+                {unlockBusy ? 'Verifying…' : 'Enter administrator password to unlock'}
+              </button>
+              {unlockError && (
+                <p className="mt-2 text-sm text-rose-700" data-testid="unlock-error">
+                  {unlockError}
+                </p>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                releaseSecureKiosk();
+                navigate('/quiz');
+              }}
+              data-testid="return-to-quiz"
+              className="mt-4 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black transition-colors"
+            >
+              Return to Quiz
+            </button>
+          )}
         </div>
       </div>
     );

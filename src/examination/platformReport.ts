@@ -165,7 +165,7 @@ export const PLATFORM_SECURITY_CONTROLS: SecurityControlRating[] = [
       'iPhone PWA': 'UNAVAILABLE',
     },
     rationale: {
-      'PC Native': 'Window always-on-top and focus re-assertion pull window forward; global Alt+Tab/Win keys not blocked.',
+      'PC Native': 'Windows: a low-level keyboard hook suppresses the Windows key and Alt+Tab while a secure exam is active, in addition to always-on-top/focus re-assertion. Linux and macOS have no equivalent hook and rely on focus re-assertion only. Ctrl+Alt+Del is reserved by Windows below every hook and cannot be blocked by any application.',
       'Android Native': 'Android Lock-Task mode disables the Home button and Recents/Overview app switcher.',
       'Web': 'Browser sandbox cannot intercept Alt+Tab or OS task switching.',
       'iPhone PWA': 'iOS swipe gestures and app switcher cannot be intercepted by web apps.',
@@ -197,7 +197,7 @@ export const PLATFORM_SECURITY_CONTROLS: SecurityControlRating[] = [
       'iPhone PWA': 'UNAVAILABLE',
     },
     rationale: {
-      'PC Native': 'In-window shortcuts blocked; OS shortcuts (Ctrl+Alt+Del, Windows key) require dedicated OS kiosk shell.',
+      'PC Native': 'In-window shortcuts blocked everywhere. Windows additionally suppresses the Windows key, Alt+Tab, Alt+Esc, Ctrl+Esc and PrintScreen via a low-level keyboard hook. Ctrl+Alt+Del and Ctrl+Shift+Esc are OS-reserved on Windows and cannot be blocked by any application; Linux/macOS have no equivalent hook and need a dedicated OS kiosk shell for full coverage.',
       'Android Native': 'Lock-Task mode blocks hardware buttons (Volume, Power menu, Overview).',
       'Web': 'Operating system global shortcuts bypass web browser event loops.',
       'iPhone PWA': 'Hardware buttons (Volume, Power) are reserved for iOS.',

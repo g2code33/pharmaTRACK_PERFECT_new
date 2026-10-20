@@ -311,7 +311,185 @@ fn native_capabilities() -> Vec<NativeCapability> {
             required: false,
             notes: "PC desktop task lockdown is not claimed. Managed operating-system policy is required for that guarantee.".into(),
         },
+        app_switch_capability(),
+        keyboard_shortcut_capability(),
     ]
+}
+
+#[cfg(target_os = "windows")]
+fn app_switch_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-app-switch-restriction".into(),
+        label: "Application switch restriction".into(),
+        support_level: "PARTIAL".into(),
+        supported: true,
+        enforceable: true,
+        detected: true,
+        required: false,
+        notes: "A low-level keyboard hook suppresses the Windows key and Alt+Tab while secure mode is active, keeping focus on the exam window. The OS Secure Attention Sequence (Ctrl+Alt+Del) is reserved by Windows below every hook and cannot be blocked by this or any other application.".into(),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn app_switch_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-app-switch-restriction".into(),
+        label: "Application switch restriction".into(),
+        support_level: "NOT_GUARANTEED".into(),
+        supported: false,
+        enforceable: false,
+        detected: true,
+        required: false,
+        notes: "This platform does not install a system-wide switch-suppression hook. Native focus-loss monitoring still detects and audits an attempt to leave the exam window.".into(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn keyboard_shortcut_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-keyboard-shortcut-restriction".into(),
+        label: "OS keyboard shortcut restriction".into(),
+        support_level: "PARTIAL".into(),
+        supported: true,
+        enforceable: true,
+        detected: true,
+        required: false,
+        notes: "A low-level keyboard hook swallows the Windows key, Alt+Tab, Alt+Esc, Ctrl+Esc and PrintScreen while secure mode is active. Ctrl+Alt+Del and Ctrl+Shift+Esc are Windows-reserved sequences that no application, including this one, is able to intercept or suppress.".into(),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn keyboard_shortcut_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-keyboard-shortcut-restriction".into(),
+        label: "OS keyboard shortcut restriction".into(),
+        support_level: "NOT_GUARANTEED".into(),
+        supported: false,
+        enforceable: false,
+        detected: true,
+        required: false,
+        notes: "This platform does not install a system-wide keyboard shortcut suppression hook. OS-level shortcuts remain available to the user.".into(),
+    }
+}
+
+// Process-wide low-level keyboard hook used to suppress the OS application
+// switcher and screenshot key while a secure examination is active. This
+// stays scoped to a small module with a matching no-op stub on every other
+// platform so call sites never need `#[cfg]` of their own.
+//
+// Raw user32.dll FFI is declared by hand here instead of depending on the
+// `windows` crate: the struct layout and virtual-key / message constants
+// used below are part of the stable, documented Win32 ABI (unchanged since
+// Windows 2000), so redeclaring them locally removes any dependency-version
+// or feature-flag risk for a change that can only be verified by CI, never
+// run locally against a real Windows machine.
+#[cfg(target_os = "windows")]
+mod keyboard_lockdown {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    const WH_KEYBOARD_LL: i32 = 13;
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_KEYUP: u32 = 0x0101;
+    const WM_SYSKEYDOWN: u32 = 0x0104;
+    const WM_SYSKEYUP: u32 = 0x0105;
+    const LLKHF_ALTDOWN: u32 = 0x0000_0020;
+    const VK_LWIN: u32 = 0x5B;
+    const VK_RWIN: u32 = 0x5C;
+    const VK_TAB: u32 = 0x09;
+    const VK_ESCAPE: u32 = 0x1B;
+    const VK_SNAPSHOT: u32 = 0x2C;
+    const VK_CONTROL: i32 = 0x11;
+
+    // Mirrors the documented KBDLLHOOKSTRUCT layout exactly; declared
+    // locally rather than imported so the field types are never in question.
+    #[repr(C)]
+    struct KbdLlHookStruct {
+        vk_code: u32,
+        scan_code: u32,
+        flags: u32,
+        time: u32,
+        dw_extra_info: usize,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetWindowsHookExW(
+            id_hook: i32,
+            lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize,
+            hmod: isize,
+            dw_thread_id: u32,
+        ) -> isize;
+        fn UnhookWindowsHookEx(hhk: isize) -> i32;
+        fn CallNextHookEx(hhk: isize, n_code: i32, w_param: usize, l_param: isize) -> isize;
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+    }
+
+    static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
+
+    unsafe extern "system" fn hook_proc(code: i32, wparam: usize, lparam: isize) -> isize {
+        if code >= 0 {
+            let message = wparam as u32;
+            let is_key_event = matches!(
+                message,
+                WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP
+            );
+            if is_key_event {
+                let kb = &*(lparam as *const KbdLlHookStruct);
+                let vk = kb.vk_code;
+                let alt_down = kb.flags & LLKHF_ALTDOWN != 0;
+                let ctrl_down = (GetAsyncKeyState(VK_CONTROL) as u16) & 0x8000 != 0;
+                // Deliberately NOT included: Ctrl+Alt+Del and Ctrl+Shift+Esc.
+                // Windows handles the Secure Attention Sequence below every
+                // installed hook; no process, including this one, can see or
+                // suppress it.
+                let blocked = vk == VK_LWIN
+                    || vk == VK_RWIN
+                    || (vk == VK_TAB && alt_down)
+                    || (vk == VK_ESCAPE && (alt_down || ctrl_down))
+                    || vk == VK_SNAPSHOT;
+                if blocked {
+                    return 1;
+                }
+            }
+        }
+        CallNextHookEx(0, code, wparam, lparam)
+    }
+
+    /// Installs the global low-level keyboard hook for the lifetime of a
+    /// secure examination. Idempotent: calling this while a hook is already
+    /// installed is a no-op. Fails safe: if installation fails for any
+    /// reason, the rest of secure mode still proceeds without it.
+    pub fn install() {
+        if HOOK_HANDLE.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        let handle = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, hook_proc, 0, 0) };
+        if handle != 0 {
+            HOOK_HANDLE.store(handle, Ordering::SeqCst);
+        } else {
+            eprintln!(
+                "Secure examination keyboard lockdown hook could not be installed; \
+                 Windows-key and Alt+Tab suppression is unavailable for this session."
+            );
+        }
+    }
+
+    /// Removes the hook installed by `install`, if any. Safe to call even
+    /// when no hook is currently installed.
+    pub fn uninstall() {
+        let handle = HOOK_HANDLE.swap(0, Ordering::SeqCst);
+        if handle != 0 {
+            unsafe {
+                UnhookWindowsHookEx(handle);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod keyboard_lockdown {
+    pub fn install() {}
+    pub fn uninstall() {}
 }
 
 fn apply_secure_window_controls(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -419,6 +597,7 @@ fn enter_secure_exam_mode(
     }
 
     apply_secure_window_controls(&window)?;
+    keyboard_lockdown::install();
     let session_token = create_session_token()?;
     let mut active = state
         .active
@@ -458,6 +637,7 @@ fn exit_secure_exam_mode(
     if current.session_token != session_token {
         return Err("Secure examination restoration authorization was rejected.".to_string());
     }
+    keyboard_lockdown::uninstall();
     restore_window_controls(&window)?;
     *active = None;
     Ok(())
@@ -1223,6 +1403,48 @@ mod tests {
             .expect("capture capability");
         assert_eq!(capture.support_level, "NOT_GUARANTEED");
         assert!(!capture.enforceable);
+    }
+
+    #[test]
+    fn app_switch_and_keyboard_shortcut_capabilities_are_reported() {
+        let capabilities = native_capabilities();
+        let app_switch = capabilities
+            .iter()
+            .find(|capability| capability.id == "os-app-switch-restriction")
+            .expect("app switch capability");
+        let shortcuts = capabilities
+            .iter()
+            .find(|capability| capability.id == "os-keyboard-shortcut-restriction")
+            .expect("keyboard shortcut capability");
+
+        // This suite always compiles and runs on a non-Windows CI runner, so
+        // both capabilities must honestly report the unenforced fallback
+        // here; the Windows-only enforced path is exercised separately by
+        // the Windows desktop build job, which can only prove compilation
+        // (there is no Windows runtime test environment available).
+        if cfg!(target_os = "windows") {
+            assert_eq!(app_switch.support_level, "PARTIAL");
+            assert!(app_switch.enforceable);
+            assert_eq!(shortcuts.support_level, "PARTIAL");
+            assert!(shortcuts.enforceable);
+        } else {
+            assert_eq!(app_switch.support_level, "NOT_GUARANTEED");
+            assert!(!app_switch.enforceable);
+            assert_eq!(shortcuts.support_level, "NOT_GUARANTEED");
+            assert!(!shortcuts.enforceable);
+        }
+    }
+
+    #[test]
+    fn keyboard_lockdown_install_and_uninstall_are_safe_on_every_platform() {
+        // On non-Windows targets these are no-ops; on Windows this proves
+        // install/uninstall/uninstall-without-install do not panic. Actual
+        // key-suppression behavior cannot be exercised outside a real
+        // Windows session with an active message loop.
+        keyboard_lockdown::install();
+        keyboard_lockdown::install();
+        keyboard_lockdown::uninstall();
+        keyboard_lockdown::uninstall();
     }
 }
 

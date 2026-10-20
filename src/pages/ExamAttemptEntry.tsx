@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   ChevronDown,
   FileKey2,
+  Lock,
   Loader2,
   MonitorCheck,
   ShieldAlert,
@@ -118,6 +119,7 @@ const ExamAttemptEntry: React.FC = () => {
   const [student, setStudent] = useState<ExamStudent | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmLockOpen, setConfirmLockOpen] = useState(false);
 
   const closedEnrollmentDiscovered = useMemo(
     () => (discovered || []).some((item) => !item.openEnrollment),
@@ -195,6 +197,21 @@ const ExamAttemptEntry: React.FC = () => {
 
   const runReadiness = async (currentStaged: StagedPharmaExam) => {
     setBusy(true);
+    // Everything below is wrapped in try/finally on purpose: an exam package
+    // whose device/network/capability checks throw partway through (a
+    // transient API quirk, an unsupported browser feature, …) must still
+    // release `busy` — otherwise "Enter secure examination" stays disabled
+    // forever with no way for the student to recover short of a reload. The
+    // getBattery() fix below is exactly the kind of mistake this guards
+    // against happening again elsewhere in this function.
+    try {
+      return await computeReadinessChecks(currentStaged);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const computeReadinessChecks = async (currentStaged: StagedPharmaExam) => {
     const next: Check[] = [];
     next.push({
       label: 'Exam package valid',
@@ -297,11 +314,19 @@ const ExamAttemptEntry: React.FC = () => {
           'This device can act as the local examination authority when no network is found',
       });
     }
+    // getBattery?.() short-circuits to `undefined` (not a Promise) on every
+    // browser that lacks the Battery Status API — Safari and Firefox never
+    // implemented it, and Chromium itself restricts/omits it in several
+    // contexts. Chaining `.catch(...)` straight onto that without its own
+    // `?.` throws "Cannot read properties of undefined (reading 'catch')",
+    // which aborted this whole readiness pass before it reached the
+    // `setBusy(false)` below — "Enter secure examination" stayed disabled
+    // forever on exactly those browsers. Guard the `.catch()` too.
     const battery = await (
       navigator as Navigator & { getBattery?: () => Promise<{ level: number }> }
     )
       .getBattery?.()
-      .catch(() => undefined);
+      ?.catch(() => undefined);
     next.push({
       label: 'Battery / power',
       ok: !battery || battery.level >= 0.15,
@@ -309,7 +334,6 @@ const ExamAttemptEntry: React.FC = () => {
       detail: !battery ? 'Battery status unavailable' : `${Math.round(battery.level * 100)}%`,
     });
     setChecks(next);
-    setBusy(false);
     return next;
   };
 
@@ -693,10 +717,11 @@ const ExamAttemptEntry: React.FC = () => {
           </p>
         )}
 
+        <span data-testid="debug-state" data-staged={String(!!staged)} data-identity={String(!!identity)} data-password={examPassword} data-busy={String(busy)} />
         <button
           type="button"
           disabled={!staged || !identity || !examPassword || busy}
-          onClick={() => void enterExam()}
+          onClick={() => setConfirmLockOpen(true)}
           data-testid="start-exam-button"
           className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 font-black disabled:opacity-40 flex items-center justify-center gap-2"
         >
@@ -704,6 +729,53 @@ const ExamAttemptEntry: React.FC = () => {
           Enter secure examination
         </button>
       </section>
+
+      {confirmLockOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/70 flex items-center justify-center p-4"
+          data-testid="confirm-lock-dialog"
+        >
+          <div className="max-w-md w-full bg-white rounded-2xl p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-2 text-slate-900">
+              <Lock className="w-6 h-6 text-emerald-600 shrink-0" />
+              <h2 className="text-lg font-black">This device is about to lock</h2>
+            </div>
+            <p className="mt-3 text-sm text-slate-600">
+              Close every other open window and application now. Once you accept, this device
+              immediately enters secure examination mode: normal navigation, app switching, and
+              most keyboard shortcuts are blocked until you submit.
+            </p>
+            {staged?.security.settings.manualExitPolicy === 'ADMIN_AUTH_REQUIRED' && (
+              <p className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                Your administrator has set this examination to require their authorization to
+                unlock this device — including after you submit. Only they can release the lock.
+              </p>
+            )}
+            <div className="mt-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmLockOpen(false)}
+                data-testid="confirm-lock-cancel"
+                className="px-4 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmLockOpen(false);
+                  void enterExam();
+                }}
+                data-testid="confirm-lock-accept"
+                className="px-5 py-2.5 rounded-xl font-black bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-2"
+              >
+                <Lock className="w-4 h-4" />
+                Accept &amp; lock this device
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
