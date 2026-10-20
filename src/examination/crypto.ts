@@ -1,6 +1,7 @@
 /** Offline cryptographic helpers for examination identity and packages. */
 
 import { asCryptoBuffer } from './cryptoBuffer';
+import type { PasswordVerifier } from './types';
 
 const textEncoder = () => new TextEncoder();
 
@@ -56,12 +57,7 @@ export const PBKDF2_ITERATIONS =
 export async function derivePasswordVerifier(
   password: string,
   salt = bytesToBase64(randomBytes(16)),
-): Promise<{
-  algorithm: 'PBKDF2-SHA-256';
-  iterations: number;
-  salt: string;
-  verifier: string;
-}> {
+): Promise<PasswordVerifier> {
   const material = await crypto.subtle.importKey(
     'raw',
     asCryptoBuffer(textEncoder().encode(password)),
@@ -89,12 +85,7 @@ export async function derivePasswordVerifier(
 
 export async function verifyPassword(
   password: string,
-  verifier: {
-    algorithm: 'PBKDF2-SHA-256';
-    iterations: number;
-    salt: string;
-    verifier: string;
-  },
+  verifier: PasswordVerifier,
 ): Promise<boolean> {
   if (verifier.algorithm !== 'PBKDF2-SHA-256') return false;
   const material = await crypto.subtle.importKey(

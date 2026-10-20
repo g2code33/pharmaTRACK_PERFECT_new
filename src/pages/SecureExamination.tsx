@@ -21,6 +21,8 @@ import { remainingMilliseconds } from '../examination/timer';
 import { createPlatformKioskAdapter } from '../examination/androidAdapter';
 import { verifyAdminExitPassword } from '../examination/package';
 import { loadStagedPharmaExam } from '../examination/packageCache';
+import { verifyPassword } from '../examination/crypto';
+import { secureWindowPrompt } from '../platform/securePrompt';
 import type { KioskAdapter } from '../examination/kioskAdapter';
 import type { ExamQuestionSnapshot, StudentAttempt } from '../examination/types';
 import {
@@ -37,6 +39,35 @@ import {
 } from '../examination/kioskRoster';
 import { submitOrQueueKioskExamResult } from '../examination/kioskResultOutbox';
 
+/**
+ * Checks a supplied separate-administrator early-exit password against
+ * every source that can legitimately hold it.
+ *
+ * The verifier is checked against the attempt's own immutable
+ * `settingsSnapshot` first — it was copied from the published exam version
+ * the moment this specific attempt started, so it is correct regardless of
+ * how the student reached the device (a `.pharmaexam` file, a LAN/cloud
+ * join code, or a reused kiosk) and is immune to the device's local
+ * "currently staged package" cache being overwritten or cleared by later
+ * activity (a different exam staged on the same device, a package
+ * re-publish, etc.) after this attempt began.
+ *
+ * Older `.pharmaexam` files published before the exit verifier lived on the
+ * exam version only ever embedded it in the package itself, so that is
+ * still checked as a fallback for backward compatibility.
+ */
+async function verifyAdminExitAuthorization(
+  supplied: string | null | undefined,
+  attempt: StudentAttempt,
+): Promise<boolean> {
+  if (!supplied) return false;
+  const versionVerifier = attempt.settingsSnapshot?.security?.adminExitPasswordVerifier;
+  if (versionVerifier && (await verifyPassword(supplied, versionVerifier))) return true;
+  const stagedPackage = await loadStagedPharmaExam();
+  if (stagedPackage && (await verifyAdminExitPassword(supplied, stagedPackage.security))) return true;
+  return false;
+}
+
 const SecureExamination: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
@@ -49,6 +80,13 @@ const SecureExamination: React.FC = () => {
   const [savedQuestions, setSavedQuestions] = useState<Set<string>>(new Set());
   const [seconds, setSeconds] = useState(0);
   const [message, setMessage] = useState('Loading encrypted attempt…');
+  // True only for notices raised once an attempt is already active (an
+  // early-exit rejection, a disabled-exit notice, a submission hiccup) —
+  // never for the mount-time failures above, where there is genuinely no
+  // quiz state to return to. Lets a student who backed out of (or was
+  // rejected from) an exit attempt get back to answering instead of being
+  // stuck on a dead-end card, without ever weakening the lock itself.
+  const [messageReturnable, setMessageReturnable] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [saveState, setSaveState] = useState<'SAVED' | 'SAVING…' | 'Save problem — retrying'>(
     'SAVED',
@@ -193,15 +231,18 @@ const SecureExamination: React.FC = () => {
       const saved = opened.snapshot.attempts.find((item) => item.id === attemptId);
       if (!saved) {
         setMessage('This attempt could not be recovered safely.');
+        setMessageReturnable(false);
         return;
       }
       const version = opened.snapshot.versions.find((item) => item.id === saved.examVersionId);
       if (!version) {
         setMessage('The immutable examination version is unavailable.');
+        setMessageReturnable(false);
         return;
       }
       if (saved.status === 'LOCKED') {
         setMessage('This attempt is locked. An authorized administrator must unlock it.');
+        setMessageReturnable(false);
         return;
       }
       if (cancelled) return;
@@ -215,6 +256,7 @@ const SecureExamination: React.FC = () => {
         Object.fromEntries(version.questions.map((question) => [question.id, question])),
       );
       setMessage('');
+      setMessageReturnable(false);
       if (saved.status === 'SUBMITTED' || saved.status === 'KIOSK_RELEASED' || saved.status === 'CLOSED') {
         // A reload here (e.g. the device restarted while the post-submission
         // admin-password gate was still pending) does not go through the
@@ -288,18 +330,17 @@ const SecureExamination: React.FC = () => {
           void opened.requestManualEarlyExit(saved.id).then(async (policy) => {
             if (policy === 'DISALLOW_EARLY_EXIT') {
               setMessage('Early exit is disabled for this examination. Use SUBMIT EXAM or wait for expiry.');
+              setMessageReturnable(true);
               return;
             }
             let authorized = policy === 'ALLOW_FREE_EXIT';
             if (policy === 'ADMIN_AUTH_REQUIRED') {
-              const supplied = window.prompt('Enter the separate examination administrator exit authorization.');
-              const stagedPackage = await loadStagedPharmaExam();
-              authorized = Boolean(
-                supplied && stagedPackage && (await verifyAdminExitPassword(supplied, stagedPackage.security)),
-              );
+              const supplied = await secureWindowPrompt('Enter the separate examination administrator exit authorization.');
+              authorized = await verifyAdminExitAuthorization(supplied, saved);
             }
             if (!authorized) {
               setMessage('Separate examination administrator authorization was rejected. RX30 cannot authorize early exit.');
+              setMessageReturnable(true);
               return;
             }
             try {
@@ -315,6 +356,7 @@ const SecureExamination: React.FC = () => {
               await finalizeSubmissionRef.current?.(true, 'MANUAL');
             } catch (error) {
               setMessage(error instanceof Error ? error.message : 'Administrator early-exit authorization failed.');
+              setMessageReturnable(true);
             }
           });
           return;
@@ -415,14 +457,11 @@ const SecureExamination: React.FC = () => {
     setUnlockBusy(true);
     setUnlockError('');
     try {
-      const supplied = window.prompt(
+      const supplied = await secureWindowPrompt(
         'Enter the examination administrator exit authorization to unlock this device.',
       );
-      if (!supplied) return;
-      const stagedPackage = await loadStagedPharmaExam();
-      const authorized = Boolean(
-        stagedPackage && (await verifyAdminExitPassword(supplied, stagedPackage.security)),
-      );
+      if (!supplied || !attempt) return;
+      const authorized = await verifyAdminExitAuthorization(supplied, attempt);
       if (!authorized) {
         // Kept local to this notice (not the full-page `message` takeover)
         // so a mistyped password can be retried immediately — the device
@@ -711,6 +750,7 @@ const SecureExamination: React.FC = () => {
       setSubmitted(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The examination could not be finalized safely.');
+      setMessageReturnable(true);
     } finally {
       finalizingRef.current = false;
       setNavigationBusy(false);
@@ -728,6 +768,19 @@ const SecureExamination: React.FC = () => {
           <LockKeyhole className="w-12 h-12 mx-auto mb-4 text-[#2D6A4F]" />
           <h1 className="text-2xl font-black text-slate-900">Secure examination</h1>
           <p className="mt-3 text-slate-600">{message}</p>
+          {messageReturnable && attempt && current && (
+            <button
+              type="button"
+              data-testid="return-to-quiz"
+              onClick={() => {
+                setMessage('');
+                setMessageReturnable(false);
+              }}
+              className="mt-6 w-full px-6 py-3 bg-[#2D6A4F] hover:bg-[#245a41] text-white rounded-xl font-black transition-colors"
+            >
+              Return to quiz
+            </button>
+          )}
         </div>
       </div>
     );

@@ -20,6 +20,7 @@ import {
 } from '../examination/service';
 import { parseExamQuestionJson, reorderQuestionIds } from '../examination/builder';
 import { createPharmaExamPackage, generateExamSigningKeyPair } from '../examination/package';
+import { derivePasswordVerifier } from '../examination/crypto';
 import {
   isBuilderGateUnlocked,
   lockBuilderGate,
@@ -114,6 +115,23 @@ const ExaminationBuilder: React.FC = () => {
     setBusy(true);
     setStatus('Validating questions and creating an immutable version…');
     try {
+      // The administrator early-exit authorization must survive on the
+      // published exam version itself (not only inside a downloadable
+      // `.pharmaexam` file) so it still works for students who reach the
+      // device through a LAN/cloud join code rather than a file upload —
+      // every attempt snapshots the version's security settings at start,
+      // so this verifier travels with the attempt regardless of how the
+      // device was set up.
+      let adminExitPassword: string | undefined;
+      let adminExitPasswordVerifier: Awaited<ReturnType<typeof derivePasswordVerifier>> | undefined;
+      if (draft.security.manualExitPolicy === 'ADMIN_AUTH_REQUIRED') {
+        adminExitPassword =
+          window.prompt('Set the separate examination administrator early-exit authorization. RX30 is not accepted here.') ||
+          undefined;
+        if (!adminExitPassword)
+          throw new Error('A separate administrator early-exit authorization is required by this policy.');
+        adminExitPasswordVerifier = await derivePasswordVerifier(adminExitPassword);
+      }
       const repository = await ExaminationRepository.open();
       const exam = await repository.createExam(draft.title);
       const questions = draft.questionIds
@@ -129,7 +147,10 @@ const ExaminationBuilder: React.FC = () => {
         instructions: draft.instructions,
         scoring: draft.scoring,
         availability: draft.availability,
-        security: draft.security,
+        security: {
+          ...draft.security,
+          ...(adminExitPasswordVerifier ? { adminExitPasswordVerifier } : {}),
+        },
         navigation: draft.navigation,
         maxAttempts: draft.maxAttempts,
         marksByQuestion: draft.marksByQuestion,
@@ -146,14 +167,6 @@ const ExaminationBuilder: React.FC = () => {
           undefined;
         if (!examPassword)
           throw new Error('An examination password is required by the selected security policy.');
-      }
-      let adminExitPassword: string | undefined;
-      if (draft.security.manualExitPolicy === 'ADMIN_AUTH_REQUIRED') {
-        adminExitPassword =
-          window.prompt('Set the separate examination administrator early-exit authorization. RX30 is not accepted here.') ||
-          undefined;
-        if (!adminExitPassword)
-          throw new Error('A separate administrator early-exit authorization is required by this policy.');
       }
       const packaged = await createPharmaExamPackage({
         version: published,

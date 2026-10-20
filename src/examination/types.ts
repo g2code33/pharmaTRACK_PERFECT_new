@@ -234,6 +234,14 @@ export interface ExamSecuritySettings {
   restrictAppSwitching?: boolean;
   restrictApplicationExit?: boolean;
   manualExitPolicy?: ManualExitPolicy;
+  /** Verifier for the separate examination-administrator early-exit
+   * credential. Carried on the published exam version (and therefore on
+   * every attempt's immutable settingsSnapshot) so authorization works the
+   * same way no matter how the student reached the device — a `.pharmaexam`
+   * file, a LAN authority join code, or a cloud-authenticated kiosk login.
+   * A `.pharmaexam` package may also carry its own copy for file-only
+   * distribution before this field existed; both are checked at exit time. */
+  adminExitPasswordVerifier?: PasswordVerifier;
   requiredCapabilities?: string[];
   violationPolicies?: ViolationPolicyMap;
   /** Security policy version is captured with every attempt. */

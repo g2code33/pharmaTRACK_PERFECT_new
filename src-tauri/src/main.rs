@@ -330,7 +330,21 @@ fn app_switch_capability() -> NativeCapability {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn app_switch_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-app-switch-restriction".into(),
+        label: "Application switch restriction".into(),
+        support_level: "PARTIAL".into(),
+        supported: true,
+        enforceable: true,
+        detected: true,
+        required: false,
+        notes: "On X11 sessions a global keyboard grab directs every keystroke to the exam window, so the window manager's own Alt+Tab / Super-key switcher never receives them while secure mode is active. Wayland sessions have no portable equivalent (by design) and fall back to window-manager-cooperative fullscreen, always-on-top, and focus re-assertion only.".into(),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn app_switch_capability() -> NativeCapability {
     NativeCapability {
         id: "os-app-switch-restriction".into(),
@@ -358,7 +372,21 @@ fn keyboard_shortcut_capability() -> NativeCapability {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn keyboard_shortcut_capability() -> NativeCapability {
+    NativeCapability {
+        id: "os-keyboard-shortcut-restriction".into(),
+        label: "OS keyboard shortcut restriction".into(),
+        support_level: "PARTIAL".into(),
+        supported: true,
+        enforceable: true,
+        detected: true,
+        required: false,
+        notes: "On X11 sessions an XGrabKeyboard call routes every keystroke in the session to the exam window for as long as secure mode is active; nothing else, including the window manager, receives them. This has no effect under a pure-Wayland session, where no application can install a system-wide keyboard grab.".into(),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 fn keyboard_shortcut_capability() -> NativeCapability {
     NativeCapability {
         id: "os-keyboard-shortcut-restriction".into(),
@@ -486,10 +514,142 @@ mod keyboard_lockdown {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+// A true global keyboard grab (the X11 analogue of the Windows low-level
+// keyboard hook above) that directs every keystroke on the session to this
+// window while a secure examination is active, preventing the window
+// manager's own Alt+Tab / Super-key switcher — and every other
+// application — from ever seeing those keys. The mouse is deliberately
+// never grabbed, so on-screen recovery (Submit, administrator unlock)
+// always stays reachable even if something goes wrong.
+//
+// Raw libX11 FFI is declared by hand here, matching the Windows module's
+// approach above and for the same reason: the handful of functions and
+// constants used below are part of the stable, documented core Xlib ABI
+// (unchanged for decades), so this carries no dependency-version or
+// feature-flag risk for native code that can only be verified by CI, never
+// run locally against a real X11 session in this environment.
+//
+// Wayland compositors do not expose any portable equivalent of a global
+// keyboard grab — by design, for the same reason every kiosk-lockdown tool
+// (Safe Exam Browser included) documents Wayland as a reduced-guarantee
+// environment. `XOpenDisplay` simply returns null there, so this installs
+// nothing and secure mode continues on the window-manager-cooperative
+// fullscreen/focus/always-on-top controls already in place.
+#[cfg(target_os = "linux")]
+mod keyboard_lockdown {
+    use std::ffi::c_void;
+    use std::os::raw::{c_int, c_ulong};
+    use std::ptr;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    type XDisplay = c_void;
+    type XWindow = c_ulong;
+    type XTime = c_ulong;
+    type XBool = c_int;
+
+    const GRAB_MODE_ASYNC: c_int = 1;
+    const CURRENT_TIME: XTime = 0;
+    const GRAB_SUCCESS: c_int = 0;
+
+    #[link(name = "X11")]
+    extern "C" {
+        fn XOpenDisplay(display_name: *const i8) -> *mut XDisplay;
+        fn XCloseDisplay(display: *mut XDisplay) -> c_int;
+        fn XDefaultRootWindow(display: *mut XDisplay) -> XWindow;
+        fn XGrabKeyboard(
+            display: *mut XDisplay,
+            grab_window: XWindow,
+            owner_events: XBool,
+            pointer_mode: c_int,
+            keyboard_mode: c_int,
+            time: XTime,
+        ) -> c_int;
+        fn XUngrabKeyboard(display: *mut XDisplay, time: XTime) -> c_int;
+        fn XFlush(display: *mut XDisplay) -> c_int;
+    }
+
+    static GRAB_DISPLAY: AtomicPtr<XDisplay> = AtomicPtr::new(ptr::null_mut());
+
+    /// Installs the global X11 keyboard grab for the lifetime of a secure
+    /// examination. Idempotent: calling this while a grab is already held is
+    /// a no-op. Fails safe: if a display cannot be opened (Wayland, or no
+    /// display at all) or the grab is refused for any reason, the rest of
+    /// secure mode still proceeds without it — exactly like the Windows hook.
+    pub fn install() {
+        if !GRAB_DISPLAY.load(Ordering::SeqCst).is_null() {
+            return;
+        }
+        unsafe {
+            let display = XOpenDisplay(ptr::null());
+            if display.is_null() {
+                eprintln!(
+                    "Secure examination keyboard lockdown could not open an X11 display \
+                     (expected under Wayland); OS-level keyboard shortcut suppression is \
+                     unavailable for this session."
+                );
+                return;
+            }
+            let root = XDefaultRootWindow(display);
+            let result =
+                XGrabKeyboard(display, root, 1, GRAB_MODE_ASYNC, GRAB_MODE_ASYNC, CURRENT_TIME);
+            if result != GRAB_SUCCESS {
+                eprintln!(
+                    "Secure examination keyboard lockdown could not grab the keyboard \
+                     (X11 grab result {result}); OS-level keyboard shortcut suppression is \
+                     unavailable for this session."
+                );
+                XCloseDisplay(display);
+                return;
+            }
+            XFlush(display);
+            GRAB_DISPLAY.store(display, Ordering::SeqCst);
+        }
+    }
+
+    /// Releases the grab installed by `install`, if any. Safe to call even
+    /// when no grab is currently held. X11 also releases any grab
+    /// automatically if this process's connection to the display server
+    /// ever closes unexpectedly (a crash), so a stuck grab cannot outlive
+    /// the application itself.
+    pub fn uninstall() {
+        let display = GRAB_DISPLAY.swap(ptr::null_mut(), Ordering::SeqCst);
+        if !display.is_null() {
+            unsafe {
+                XUngrabKeyboard(display, CURRENT_TIME);
+                XFlush(display);
+                XCloseDisplay(display);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 mod keyboard_lockdown {
     pub fn install() {}
     pub fn uninstall() {}
+}
+
+/// Set while a deliberate, app-initiated native dialog (`window.prompt` /
+/// `confirm`) is on screen during a secure examination. The native dialog is
+/// itself a separate top-level window that briefly takes OS input focus away
+/// from the main window — a `Focused(false)` the app caused on purpose, not
+/// a hostile attempt to leave. Without this flag the focus-loss handler
+/// below would immediately fight the dialog for focus (re-asserting
+/// fullscreen/always-on-top/focus on the main window), which can at best
+/// flicker and at worst prevent the dialog from reliably receiving the
+/// keystrokes the student is typing into it. The lock itself is unaffected
+/// either way: `CloseRequested` stays blocked and the dialog is still a
+/// child of the same locked-down window.
+static SUPPRESS_FOCUS_REASSERTION: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn begin_native_dialog() {
+    SUPPRESS_FOCUS_REASSERTION.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn end_native_dialog() {
+    SUPPRESS_FOCUS_REASSERTION.store(false, Ordering::SeqCst);
 }
 
 fn apply_secure_window_controls(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -502,6 +662,10 @@ fn apply_secure_window_controls(window: &tauri::WebviewWindow) -> Result<(), Str
     window
         .set_always_on_top(true)
         .map_err(|error| error.to_string())?;
+    // Removes the window from the taskbar / app switcher list on desktops
+    // that honor the hint (most Linux window managers and Windows), one more
+    // layer making it harder to reach anything else while locked.
+    let _ = window.set_skip_taskbar(true);
     window.set_focus().map_err(|error| error.to_string())?;
     let _ = window.close_devtools();
     Ok(())
@@ -519,6 +683,8 @@ fn restore_window_controls(window: &tauri::WebviewWindow) -> Result<(), String> 
     window.set_minimizable(true).map_err(|error| error.to_string())?;
     window.set_maximizable(true).map_err(|error| error.to_string())?;
     window.set_closable(true).map_err(|error| error.to_string())?;
+    let _ = window.set_skip_taskbar(false);
+    SUPPRESS_FOCUS_REASSERTION.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1417,12 +1583,17 @@ mod tests {
             .find(|capability| capability.id == "os-keyboard-shortcut-restriction")
             .expect("keyboard shortcut capability");
 
-        // This suite always compiles and runs on a non-Windows CI runner, so
-        // both capabilities must honestly report the unenforced fallback
-        // here; the Windows-only enforced path is exercised separately by
-        // the Windows desktop build job, which can only prove compilation
-        // (there is no Windows runtime test environment available).
+        // This suite runs on both the Linux and Windows CI runners (see
+        // unit-tests.yml / desktop-rust-check.yml), so all three reporting
+        // branches are exercised for real by `cargo test` here — only the
+        // actual runtime enforcement (the keyboard hook/grab firing) still
+        // cannot be exercised without a live desktop session.
         if cfg!(target_os = "windows") {
+            assert_eq!(app_switch.support_level, "PARTIAL");
+            assert!(app_switch.enforceable);
+            assert_eq!(shortcuts.support_level, "PARTIAL");
+            assert!(shortcuts.enforceable);
+        } else if cfg!(target_os = "linux") {
             assert_eq!(app_switch.support_level, "PARTIAL");
             assert!(app_switch.enforceable);
             assert_eq!(shortcuts.support_level, "PARTIAL");
@@ -1481,14 +1652,22 @@ fn main() {
                     );
                 }
                 WindowEvent::Focused(false) => {
-                    let _ = window.set_always_on_top(true);
-                    let _ = window.set_fullscreen(true);
-                    let _ = window.set_focus();
-                    emit_native_event(
-                        &window.app_handle(),
-                        "focus_lost",
-                        "Native secure examination window lost focus; focus re-assertion was dispatched.",
-                    );
+                    if SUPPRESS_FOCUS_REASSERTION.load(Ordering::SeqCst) {
+                        emit_native_event(
+                            &window.app_handle(),
+                            "focus_lost",
+                            "Native secure examination window lost focus to its own dialog; focus re-assertion was withheld.",
+                        );
+                    } else {
+                        let _ = window.set_always_on_top(true);
+                        let _ = window.set_fullscreen(true);
+                        let _ = window.set_focus();
+                        emit_native_event(
+                            &window.app_handle(),
+                            "focus_lost",
+                            "Native secure examination window lost focus; focus re-assertion was dispatched.",
+                        );
+                    }
                 }
                 WindowEvent::Focused(true) => emit_native_event(
                     &window.app_handle(),
@@ -1585,6 +1764,8 @@ fn main() {
             open_external_url,
             enter_secure_exam_mode,
             exit_secure_exam_mode,
+            begin_native_dialog,
+            end_native_dialog,
             embed_website,
             hide_website,
             update_website,

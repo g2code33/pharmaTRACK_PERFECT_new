@@ -41,6 +41,7 @@ import {
   validatePharmaExamPackage,
 } from '../examination/package';
 import { stagePharmaExamPackage, clearStagedPharmaExam } from '../examination/packageCache';
+import { derivePasswordVerifier } from '../examination/crypto';
 import { KIOSK_CAPABILITY_IDS } from '../examination/kioskAdapter';
 import type { ExamQuestion } from '../types';
 import { AppProvider } from '../context/AppContext';
@@ -195,6 +196,76 @@ describe('post-submission admin-password exit gate', () => {
     );
 
     expect(await screen.findByText(/Examination (Submitted|Results)/)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId('return-to-quiz')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('post-submission-lock-notice')).toBeNull();
+  });
+
+  it('verifies the admin exit password from the attempt itself when no .pharmaexam file was ever staged on this device (a join-code-only kiosk login)', async () => {
+    // No createPharmaExamPackage / stagePharmaExamPackage call anywhere in
+    // this test — this reproduces a student who reached the device entirely
+    // through a LAN/cloud join code, exactly like the real kiosk login flow
+    // (KioskEntry -> authenticateKioskStudentViaAdmin), never uploading a
+    // package file. Before this fix, the admin exit password verifier only
+    // ever lived inside a staged package, so this device could never be
+    // unlocked no matter what password was supplied.
+    const repository = await ExaminationRepository.open();
+    const exam = await repository.createExam('Join-Code Pharmacology Examination');
+    const version = await repository.createVersion(exam.id, sampleQuestions, {
+      title: 'Join-Code Pharmacology Examination',
+      assessmentType: 'KIOSK_EXAM',
+      availability: { durationMinutes: 60 },
+      security: {
+        kioskMode: true,
+        manualExitPolicy: 'ADMIN_AUTH_REQUIRED',
+        capabilityFailurePolicy: 'ALLOW_WITH_WARNING',
+        requiredCapabilities: [KIOSK_CAPABILITY_IDS.navigation],
+        adminExitPasswordVerifier: await derivePasswordVerifier('Version-Scoped-Admin-Secret-9'),
+      },
+      navigation: { allowPrevious: true, showQuestionNumbers: true },
+    });
+    const published = await repository.publishVersion(exam.id, version.id);
+
+    const student = await repository.registerStudent('Ama', 'Level 300');
+    const session = await repository.createSession(published.examId, published.id);
+    const device = await repository.createDeviceSession({
+      deviceId: 'kiosk-join-code-device',
+      role: 'STUDENT',
+      studentId: student.student.id,
+      sessionId: session.id,
+      platform: 'web',
+      capabilities: ['encrypted-local-state'],
+    });
+    const started = await repository.createAttempt(session.id, student.student.id, device.id);
+    await repository.submitAttempt(started.attempt.id, false, device.id, 'MANUAL');
+
+    window.prompt = vi.fn();
+
+    render(
+      <MemoryRouter initialEntries={[`/examination/secure/${started.attempt.id}`]}>
+        <AppProvider>
+          <Routes>
+            <Route path="/examination/secure/:attemptId" element={<SecureExamination />} />
+          </Routes>
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Examination (Submitted|Results)/)).toBeTruthy();
+    expect(screen.getByTestId('post-submission-lock-notice')).toBeTruthy();
+
+    // Wrong password still fails, same as the file-based flow.
+    (window.prompt as ReturnType<typeof vi.fn>).mockReturnValueOnce('not-the-password');
+    fireEvent.click(screen.getByTestId('unlock-with-admin-password'));
+    await waitFor(() => {
+      expect(screen.getByTestId('unlock-error')).toBeTruthy();
+    });
+
+    // The correct, version-scoped password unlocks even though no package
+    // file was ever staged on this device.
+    (window.prompt as ReturnType<typeof vi.fn>).mockReturnValueOnce('Version-Scoped-Admin-Secret-9');
+    fireEvent.click(screen.getByTestId('unlock-with-admin-password'));
     await waitFor(() => {
       expect(screen.getByTestId('return-to-quiz')).toBeTruthy();
     });
