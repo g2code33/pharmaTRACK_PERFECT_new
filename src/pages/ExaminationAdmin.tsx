@@ -49,10 +49,12 @@ import {
 import {
   adminResetKioskStudentPassword,
   ensureKioskAdminProfile,
+  listKioskLiveAttempts,
   listKioskRosterStudents,
   regenerateKioskJoinCode,
   setKioskLoginEnabled,
   type KioskAdminProfile,
+  type KioskLiveAttempt,
   type KioskRosterStudent,
 } from '../examination/kioskRoster';
 
@@ -101,6 +103,11 @@ const ExaminationAdmin: React.FC = () => {
   const [kioskRosterMessage, setKioskRosterMessage] = useState('');
   const [kioskRosterBusy, setKioskRosterBusy] = useState(false);
   const [kioskRosterResetBusyId, setKioskRosterResetBusyId] = useState('');
+  // Live kiosk activity reported straight from student devices to the
+  // cloud — unlike the LAN-authority tiles above, this works even when a
+  // student's device is on a completely different network from this one.
+  const [liveKioskAttempts, setLiveKioskAttempts] = useState<KioskLiveAttempt[]>([]);
+  const [liveKioskMessage, setLiveKioskMessage] = useState('');
   // Console password gate: students run the same app, so the admin console
   // renders nothing until the device's stored password is presented.
   const [gateUnlocked, setGateUnlocked] = useState(isAdminGateUnlocked());
@@ -253,6 +260,17 @@ const ExaminationAdmin: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gateUnlocked]);
 
+  // Live kiosk activity is polled independently of (and more often than)
+  // the kiosk roster/profile load above, so "a student just started" shows
+  // up quickly over the internet, not only when something else refreshes it.
+  useEffect(() => {
+    if (!gateUnlocked) return;
+    void loadLiveKioskAttempts();
+    const timer = window.setInterval(() => void loadLiveKioskAttempts(), 8000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gateUnlocked]);
+
   const selected = attempts.find((attempt) => attempt.id === selectedAttemptId) || null;
   const selectedStudent = repository?.snapshot.students.find(
     (student) => student.id === selected?.studentId,
@@ -396,6 +414,28 @@ const ExaminationAdmin: React.FC = () => {
       if (rosterOutcome.ok) setKioskRoster(rosterOutcome.students);
     } catch (error) {
       setKioskRosterMessage(describeError(error, 'Could not load the kiosk login settings.'));
+      return;
+    }
+    void loadLiveKioskAttempts();
+  };
+
+  /**
+   * In-progress kiosk attempts reported live, straight from each student's
+   * own device, over the internet — this is what lets the control center
+   * show real activity even when a student is connected over mobile data or
+   * a different network entirely, with no LAN authority involved at all.
+   * Silently does nothing when offline or signed out; the LAN-based tiles
+   * elsewhere on this page keep working regardless.
+   */
+  const loadLiveKioskAttempts = async () => {
+    try {
+      const outcome = await listKioskLiveAttempts();
+      if (outcome.ok) {
+        setLiveKioskAttempts(outcome.attempts);
+        setLiveKioskMessage('');
+      }
+    } catch (error) {
+      setLiveKioskMessage(describeError(error, 'Could not load live kiosk activity.'));
     }
   };
 
@@ -1009,6 +1049,68 @@ const ExaminationAdmin: React.FC = () => {
           </div>
         ))}
       </section>
+
+      <section className="bg-white border rounded-2xl p-5 space-y-3" data-testid="live-kiosk-activity">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-black flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-emerald-600" /> Live kiosk activity (any network)
+            </h2>
+            <p className="text-xs text-slate-500">
+              Reported straight from each student's own device to the cloud — this shows an exam
+              in progress even when that device is on mobile data or a different network than this
+              one, not only when it shares this device's Wi-Fi/LAN.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadLiveKioskAttempts()}
+            className="rounded-lg border px-3 py-1.5 text-xs font-bold flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </button>
+        </div>
+        {liveKioskMessage && (
+          <p className="text-sm font-semibold text-slate-700 bg-slate-50 border rounded-lg p-3">
+            {liveKioskMessage}
+          </p>
+        )}
+        {liveKioskAttempts.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            No live kiosk activity right now. Once a student starts a kiosk exam referenced
+            through your account, their progress appears here within a few seconds.
+          </p>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {liveKioskAttempts.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-black text-slate-900">{item.studentFirstName}</p>
+                  <span className="rounded-full bg-emerald-600 text-white text-[10px] font-black uppercase px-2 py-0.5">
+                    In progress
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">{item.studentLevel}</p>
+                <p className="text-sm font-bold text-slate-800 mt-2 truncate" title={item.examTitle}>
+                  {item.examTitle}
+                </p>
+                <p className="text-xs text-slate-600 mt-1">
+                  Question {item.currentQuestion}
+                  {item.totalQuestions ? ` of ${item.totalQuestions}` : ''}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  Last seen {new Date(item.lastSeenAt).toLocaleTimeString()}
+                  {item.deviceLabel ? ` · ${item.deviceLabel}` : ''}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="grid lg:grid-cols-3 gap-3">
         <InfoCard
           icon={<Database />}
@@ -1458,35 +1560,65 @@ const ExaminationAdmin: React.FC = () => {
               <p className="text-sm text-slate-500">
                 {allTimeTab === 'offline'
                   ? 'No kiosk exam results recorded on this device yet.'
-                  : 'No results synced to the cloud yet.'}
+                  : 'No results synced to the cloud yet. Results pushed directly from a kiosk device appear here automatically — no manual sync needed for those.'}
               </p>
             );
+          // Grouped by exam FILE so each exam has its own clear list of
+          // student scores, instead of one long undifferentiated table.
+          // examKey (present on cloud rows reported directly by a kiosk
+          // device) is the stable per-file key; falls back to the exam
+          // title for older rows synced before that key existed.
+          const groups = new Map<string, { title: string; rows: typeof rows }>();
+          for (const row of rows) {
+            const groupKey = (('examKey' in row && row.examKey) || row.examTitle || 'Examination') as string;
+            const existing = groups.get(groupKey);
+            if (existing) existing.rows.push(row);
+            else groups.set(groupKey, { title: row.examTitle || 'Examination', rows: [row] });
+          }
+          const orderedGroups = Array.from(groups.values()).sort(
+            (a, b) =>
+              new Date(b.rows[0]?.submittedAt || 0).getTime() -
+              new Date(a.rows[0]?.submittedAt || 0).getTime(),
+          );
           return (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left border-b">
-                    <th className="p-2">Student</th>
-                    <th className="p-2">Level</th>
-                    <th className="p-2">Exam</th>
-                    <th className="p-2">Score</th>
-                    <th className="p-2">Date & time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr key={row.resultKey} className="border-b last:border-0">
-                      <td className="p-2 font-bold">{row.studentFirstName}</td>
-                      <td className="p-2">{row.studentLevel}</td>
-                      <td className="p-2">{row.examTitle}</td>
-                      <td className="p-2">{Math.round(row.scorePercentage)}%</td>
-                      <td className="p-2 text-slate-500">
-                        {new Date(row.submittedAt).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-5">
+              {orderedGroups.map((group) => (
+                <div key={group.title} className="rounded-xl border overflow-hidden">
+                  <div className="bg-slate-50 border-b px-3 py-2 flex items-center justify-between gap-2">
+                    <p className="font-black text-sm text-slate-900">{group.title}</p>
+                    <span className="text-xs font-bold text-slate-500">
+                      {group.rows.length} student record{group.rows.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="text-left border-b">
+                          <th className="p-2">Student</th>
+                          <th className="p-2">Level</th>
+                          <th className="p-2">Score</th>
+                          <th className="p-2">Date & time</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {group.rows
+                          .slice()
+                          .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
+                          .map((row) => (
+                            <tr key={row.resultKey} className="border-b last:border-0">
+                              <td className="p-2 font-bold">{row.studentFirstName}</td>
+                              <td className="p-2">{row.studentLevel}</td>
+                              <td className="p-2">{Math.round(row.scorePercentage)}%</td>
+                              <td className="p-2 text-slate-500">
+                                {new Date(row.submittedAt).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
             </div>
           );
         })()}

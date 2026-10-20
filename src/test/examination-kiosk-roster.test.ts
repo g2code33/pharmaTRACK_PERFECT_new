@@ -29,11 +29,17 @@ import {
   adminResetKioskStudentPassword,
   authenticateKioskStudentViaAdmin,
   checkKioskLoginStatus,
+  clearKioskAttemptProgress,
   ensureKioskAdminProfile,
+  getStoredKioskJoinCode,
+  KIOSK_JOIN_CODE_STORAGE_KEY,
+  listKioskLiveAttempts,
   listKioskRosterStudents,
   regenerateKioskJoinCode,
   registerKioskStudentViaAdmin,
+  reportKioskAttemptHeartbeat,
   setKioskLoginEnabled,
+  submitKioskExamResultToAdmin,
 } from '../examination/kioskRoster';
 
 const originalOnLine = navigator.onLine;
@@ -271,5 +277,190 @@ describe('kiosk roster — kiosk side (anonymous, join code only)', () => {
     });
     const outcome = await authenticateKioskStudentViaAdmin('AB12CD', 'Efua', 'Level 300', 'RX30a');
     expect(outcome).toEqual({ ok: false, reason: 'login-disabled' });
+  });
+});
+
+describe('kiosk live activity + direct result reporting (works over any network, no LAN)', () => {
+  afterEach(() => {
+    try {
+      localStorage.removeItem(KIOSK_JOIN_CODE_STORAGE_KEY);
+    } catch {
+      /* jsdom always has localStorage; guarded only for parity with the source. */
+    }
+  });
+
+  it('reads the stored join code the kiosk device remembers', () => {
+    expect(getStoredKioskJoinCode()).toBe('');
+    localStorage.setItem(KIOSK_JOIN_CODE_STORAGE_KEY, 'AB12CD');
+    expect(getStoredKioskJoinCode()).toBe('AB12CD');
+  });
+
+  it('sends a heartbeat with the join code, student id, and progress', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: null });
+    await reportKioskAttemptHeartbeat({
+      joinCode: 'AB12CD',
+      studentId: 's1',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      currentQuestion: 3,
+      totalQuestions: 10,
+      deviceLabel: 'kiosk-1',
+    });
+    expect(rpcMock).toHaveBeenCalledWith('kiosk_heartbeat_attempt', {
+      p_join_code: 'AB12CD',
+      p_student_id: 's1',
+      p_exam_key: 'exam-1',
+      p_exam_title: 'Finals',
+      p_current_question: 3,
+      p_total_questions: 10,
+      p_device_label: 'kiosk-1',
+    });
+  });
+
+  it('never calls Supabase for a heartbeat while offline or with no join code', async () => {
+    setOnline(false);
+    await reportKioskAttemptHeartbeat({
+      joinCode: 'AB12CD',
+      studentId: 's1',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      currentQuestion: 1,
+      totalQuestions: 5,
+    });
+    setOnline(true);
+    await reportKioskAttemptHeartbeat({
+      joinCode: '',
+      studentId: 's1',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      currentQuestion: 1,
+      totalQuestions: 5,
+    });
+    expect(rpcMock).not.toHaveBeenCalled();
+  });
+
+  it('never throws when the heartbeat RPC itself fails', async () => {
+    rpcMock.mockRejectedValue(new Error('network blip'));
+    await expect(
+      reportKioskAttemptHeartbeat({
+        joinCode: 'AB12CD',
+        studentId: 's1',
+        examKey: 'exam-1',
+        examTitle: 'Finals',
+        currentQuestion: 1,
+        totalQuestions: 5,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('clears live progress for a finished/abandoned attempt', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: null });
+    await clearKioskAttemptProgress('AB12CD', 's1', 'exam-1');
+    expect(rpcMock).toHaveBeenCalledWith('kiosk_clear_attempt_progress', {
+      p_join_code: 'AB12CD',
+      p_student_id: 's1',
+      p_exam_key: 'exam-1',
+    });
+  });
+
+  it('submits the final score straight to the cloud, independent of any LAN authority', async () => {
+    rpcMock.mockResolvedValue({ data: {}, error: null });
+    const outcome = await submitKioskExamResultToAdmin({
+      joinCode: 'AB12CD',
+      studentId: 's1',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      scorePercentage: 87.5,
+      submittedAt: '2026-10-20T12:00:00.000Z',
+      deviceLabel: 'kiosk-1',
+    });
+    expect(outcome).toEqual({ ok: true });
+    expect(rpcMock).toHaveBeenCalledWith('kiosk_submit_exam_result', {
+      p_join_code: 'AB12CD',
+      p_student_id: 's1',
+      p_exam_key: 'exam-1',
+      p_exam_title: 'Finals',
+      p_score_percentage: 87.5,
+      p_submitted_at: '2026-10-20T12:00:00.000Z',
+      p_device_label: 'kiosk-1',
+    });
+  });
+
+  it('reports offline instead of silently dropping a finished exam score', async () => {
+    setOnline(false);
+    const outcome = await submitKioskExamResultToAdmin({
+      joinCode: 'AB12CD',
+      studentId: 's1',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      scorePercentage: 50,
+      submittedAt: '2026-10-20T12:00:00.000Z',
+    });
+    expect(outcome).toEqual({ ok: false, reason: 'offline' });
+    expect(rpcMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a submit RPC error instead of pretending it succeeded', async () => {
+    rpcMock.mockResolvedValue({ data: null, error: { message: 'That student is not registered under this administrator.' } });
+    const outcome = await submitKioskExamResultToAdmin({
+      joinCode: 'AB12CD',
+      studentId: 'forged-id',
+      examKey: 'exam-1',
+      examTitle: 'Finals',
+      scorePercentage: 50,
+      submittedAt: '2026-10-20T12:00:00.000Z',
+    });
+    expect(outcome).toEqual({
+      ok: false,
+      reason: 'error',
+      message: 'That student is not registered under this administrator.',
+    });
+  });
+
+  it("lists the admin's live kiosk attempts, mapped from the RPC's snake_case rows", async () => {
+    getAuthenticatedUserMock.mockResolvedValue({ id: 'admin-1' });
+    rpcMock.mockResolvedValue({
+      data: [
+        {
+          id: 'row-1',
+          student_id: 's1',
+          student_first_name: 'Efua',
+          student_level: 'Level 300',
+          exam_key: 'exam-1',
+          exam_title: 'Finals',
+          current_question: 4,
+          total_questions: 10,
+          started_at: '2026-10-20T11:00:00.000Z',
+          last_seen_at: '2026-10-20T11:05:00.000Z',
+          device_label: 'kiosk-1',
+        },
+      ],
+      error: null,
+    });
+    const outcome = await listKioskLiveAttempts();
+    expect(outcome).toEqual({
+      ok: true,
+      attempts: [
+        {
+          id: 'row-1',
+          studentId: 's1',
+          studentFirstName: 'Efua',
+          studentLevel: 'Level 300',
+          examKey: 'exam-1',
+          examTitle: 'Finals',
+          currentQuestion: 4,
+          totalQuestions: 10,
+          startedAt: '2026-10-20T11:00:00.000Z',
+          lastSeenAt: '2026-10-20T11:05:00.000Z',
+          deviceLabel: 'kiosk-1',
+        },
+      ],
+    });
+    expect(rpcMock).toHaveBeenCalledWith('list_kiosk_live_attempts');
+  });
+
+  it('refuses to list live attempts while signed out', async () => {
+    getAuthenticatedUserMock.mockResolvedValue(null);
+    expect(await listKioskLiveAttempts()).toEqual({ ok: false, reason: 'signed-out' });
   });
 });

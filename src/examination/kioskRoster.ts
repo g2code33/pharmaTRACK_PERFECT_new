@@ -23,6 +23,15 @@ import { randomUnusedKioskPassword } from './crypto';
 
 export type CloudAccessFailure = Extract<AuthGateResult, { ok: false }>;
 
+/**
+ * The single source of truth for where the kiosk device remembers which
+ * administrator join code it is connected to (set by KioskEntry.tsx at
+ * login/registration time). Exported so any other kiosk-side module — e.g.
+ * the exam-taking screen reporting live progress/results straight to the
+ * cloud — reads the exact same value without duplicating the literal key.
+ */
+export const KIOSK_JOIN_CODE_STORAGE_KEY = 'pharmatrack:kiosk-admin-join-code';
+
 export interface KioskAdminProfile {
   joinCode: string;
   loginEnabled: boolean;
@@ -252,5 +261,153 @@ export async function authenticateKioskStudentViaAdmin(
     studentId,
     firstName: String(row?.first_name ?? firstName),
     level: String(row?.level ?? level),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Kiosk-side LIVE ACTIVITY + RESULT reporting — direct to the cloud,
+// independent of any LAN authority connection to the admin's device. This is
+// what lets the Examination Control Center see an exam in progress, and
+// receive its final score, even when the student's device is on a totally
+// different network (mobile data, a different building, home Wi-Fi, etc.).
+// Every call here is best-effort and silently a no-op when offline or the
+// join code is missing — it must never block or interrupt the exam itself,
+// which keeps working fully offline regardless of whether any of this
+// succeeds (see supabase/kiosk-exam-activity.sql).
+// ---------------------------------------------------------------------------
+
+/** Reads the join code the kiosk device is currently connected to, if any. */
+export function getStoredKioskJoinCode(): string {
+  try {
+    return (typeof localStorage !== 'undefined' && localStorage.getItem(KIOSK_JOIN_CODE_STORAGE_KEY)) || '';
+  } catch {
+    return '';
+  }
+}
+
+/** Best-effort "this student is on question X of Y" heartbeat. Never throws. */
+export async function reportKioskAttemptHeartbeat(params: {
+  joinCode: string;
+  studentId: string;
+  examKey: string;
+  examTitle: string;
+  currentQuestion: number;
+  totalQuestions: number;
+  deviceLabel?: string;
+}): Promise<void> {
+  if (!params.joinCode || !params.studentId || isOffline()) return;
+  try {
+    await supabase.rpc('kiosk_heartbeat_attempt', {
+      p_join_code: params.joinCode,
+      p_student_id: params.studentId,
+      p_exam_key: params.examKey,
+      p_exam_title: params.examTitle,
+      p_current_question: params.currentQuestion,
+      p_total_questions: params.totalQuestions,
+      p_device_label: params.deviceLabel ?? null,
+    });
+  } catch {
+    // Live visibility is a convenience, not the system of record — never
+    // let a flaky connection interrupt the exam itself.
+  }
+}
+
+/** Best-effort "this attempt is no longer in progress" clear. Never throws. */
+export async function clearKioskAttemptProgress(
+  joinCode: string,
+  studentId: string,
+  examKey: string,
+): Promise<void> {
+  if (!joinCode || !studentId || isOffline()) return;
+  try {
+    await supabase.rpc('kiosk_clear_attempt_progress', {
+      p_join_code: joinCode,
+      p_student_id: studentId,
+      p_exam_key: examKey,
+    });
+  } catch {
+    // Best-effort only; a stale live row simply ages out on its own.
+  }
+}
+
+export type SubmitKioskResultOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'offline' | 'missing-identity' }
+  | { ok: false; reason: 'error'; message: string };
+
+/**
+ * Pushes the final score straight from the kiosk device to the cloud, so the
+ * administrator receives it even if their device never shared a LAN with
+ * this student's device. Distinct from pushKioskResultsToCloud() in
+ * resultsCloudSync.ts (which relays an ADMIN's own already-local results) —
+ * this is the kiosk device reporting its own result directly.
+ */
+export async function submitKioskExamResultToAdmin(params: {
+  joinCode: string;
+  studentId: string;
+  examKey: string;
+  examTitle: string;
+  scorePercentage: number;
+  submittedAt: string;
+  deviceLabel?: string;
+}): Promise<SubmitKioskResultOutcome> {
+  if (!params.joinCode || !params.studentId) return { ok: false, reason: 'missing-identity' };
+  if (isOffline()) return { ok: false, reason: 'offline' };
+  const { error } = await supabase.rpc('kiosk_submit_exam_result', {
+    p_join_code: params.joinCode,
+    p_student_id: params.studentId,
+    p_exam_key: params.examKey,
+    p_exam_title: params.examTitle,
+    p_score_percentage: Math.max(0, Math.min(100, params.scorePercentage)),
+    p_submitted_at: params.submittedAt,
+    p_device_label: params.deviceLabel ?? null,
+  });
+  if (error) return { ok: false, reason: 'error', message: error.message || 'Could not report this result.' };
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Administrator side — live attempts reported directly by kiosk devices,
+// over the internet, independent of LAN proximity.
+// ---------------------------------------------------------------------------
+
+export interface KioskLiveAttempt {
+  id: string;
+  studentId: string;
+  studentFirstName: string;
+  studentLevel: string;
+  examKey: string;
+  examTitle: string;
+  currentQuestion: number;
+  totalQuestions: number;
+  startedAt: string;
+  lastSeenAt: string;
+  deviceLabel: string | null;
+}
+
+export type LiveAttemptsOutcome = { ok: true; attempts: KioskLiveAttempt[] } | CloudAccessFailure;
+
+/** All of this admin's in-progress kiosk attempts, reported live from any network. */
+export async function listKioskLiveAttempts(): Promise<LiveAttemptsOutcome> {
+  const access = await checkCloudAccess();
+  if (!access.ok) return access;
+  const { data, error } = await supabase.rpc('list_kiosk_live_attempts');
+  if (error) throw new Error(error.message || 'Could not load live kiosk activity.');
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  return {
+    ok: true,
+    attempts: rows.map((row) => ({
+      id: String(row.id ?? ''),
+      studentId: String(row.student_id ?? ''),
+      studentFirstName: String(row.student_first_name ?? ''),
+      studentLevel: String(row.student_level ?? ''),
+      examKey: String(row.exam_key ?? ''),
+      examTitle: String(row.exam_title ?? ''),
+      currentQuestion: Number(row.current_question ?? 0),
+      totalQuestions: Number(row.total_questions ?? 0),
+      startedAt: String(row.started_at ?? ''),
+      lastSeenAt: String(row.last_seen_at ?? ''),
+      deviceLabel: (row.device_label as string | null) ?? null,
+    })),
   };
 }

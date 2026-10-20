@@ -28,6 +28,13 @@ export interface CloudKioskResult {
   studentFirstName: string;
   studentLevel: string;
   examTitle: string;
+  /**
+   * Stable per-exam-file grouping key. Populated for results pushed by a
+   * kiosk device directly (supabase/kiosk-exam-activity.sql); empty for
+   * older rows relayed through an admin's own device before that key
+   * existed. The UI falls back to grouping by examTitle when empty.
+   */
+  examKey?: string;
   scorePercentage: number;
   submittedAt: string;
   deviceLabel?: string | null;
@@ -112,6 +119,7 @@ export async function fetchCloudKioskResults(): Promise<FetchKioskResultsOutcome
       studentFirstName: String(row.student_first_name ?? ''),
       studentLevel: String(row.student_level ?? ''),
       examTitle: String(row.exam_title ?? ''),
+      examKey: String(row.exam_key ?? ''),
       scorePercentage: Number(row.score_percentage ?? 0),
       submittedAt: String(row.submitted_at ?? ''),
       deviceLabel: (row.device_label as string | null) ?? null,

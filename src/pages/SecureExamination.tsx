@@ -30,6 +30,12 @@ import {
   releaseSecureKiosk,
 } from '../examination/kioskState';
 import { isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
+import {
+  clearKioskAttemptProgress,
+  getStoredKioskJoinCode,
+  reportKioskAttemptHeartbeat,
+  submitKioskExamResultToAdmin,
+} from '../examination/kioskRoster';
 
 const SecureExamination: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -102,6 +108,38 @@ const SecureExamination: React.FC = () => {
       });
     } catch {
       // If visibility policy prevents result retrieval, do not populate quiz history
+    }
+  };
+
+  /**
+   * Reports the final score straight to the cloud so the administrator
+   * receives it reliably, even when this device never shared a LAN with the
+   * admin's device during the exam. Best-effort only: it must never block or
+   * fail a submission that is already durable in encrypted local storage —
+   * the offline result remains authoritative regardless of whether this
+   * succeeds.
+   */
+  const reportKioskResultToCloud = (closed: StudentAttempt) => {
+    if (!repository) return;
+    const joinCode = getStoredKioskJoinCode();
+    if (!joinCode) return;
+    try {
+      const result = repository.getExaminationResult(closed.id);
+      const version = repository.snapshot.versions.find((item) => item.id === closed.examVersionId);
+      if (!result) return;
+      const examKey = version?.examId || closed.examVersionId;
+      const examTitle = version?.title || 'Examination';
+      void submitKioskExamResultToAdmin({
+        joinCode,
+        studentId: closed.studentId,
+        examKey,
+        examTitle,
+        scorePercentage: result.percentage,
+        submittedAt: result.submittedAt || new Date().toISOString(),
+      });
+      void clearKioskAttemptProgress(joinCode, closed.studentId, examKey);
+    } catch {
+      // Cloud reporting is a convenience, not the system of record.
     }
   };
 
@@ -464,6 +502,36 @@ const SecureExamination: React.FC = () => {
     () => attempt?.questionOrder.map((id) => questions[id]).filter(Boolean) || [],
     [attempt, questions],
   );
+
+  // Best-effort live progress heartbeat straight to the cloud, so the
+  // administrator's Examination Control Center can see this attempt is
+  // underway even when this device is on a completely different network
+  // from the admin's device (e.g. a phone on mobile data). Only fires when
+  // this attempt's identity was referenced through an admin's kiosk roster
+  // (cloud student id + a remembered join code) — never required for the
+  // exam itself, which stays fully functional offline regardless.
+  useEffect(() => {
+    if (!repository || !attempt || submitted) return;
+    const joinCode = getStoredKioskJoinCode();
+    if (!joinCode) return;
+    const version = repository.snapshot.versions.find((item) => item.id === attempt.examVersionId);
+    const examKey = version?.examId || attempt.examVersionId;
+    const examTitle = version?.title || 'Examination';
+    const sendHeartbeat = () => {
+      void reportKioskAttemptHeartbeat({
+        joinCode,
+        studentId: attempt.studentId,
+        examKey,
+        examTitle,
+        currentQuestion: index + 1,
+        totalQuestions: ordered.length,
+      });
+    };
+    sendHeartbeat();
+    const timer = window.setInterval(sendHeartbeat, 15000);
+    return () => window.clearInterval(timer);
+  }, [repository, attempt, submitted, index, ordered.length]);
+
   const current = ordered[index];
   const currentQuestionRef = useRef<ExamQuestionSnapshot | undefined>(undefined);
   const answersRef = useRef<Record<string, string>>({});
@@ -576,6 +644,7 @@ const SecureExamination: React.FC = () => {
       }
       setAttempt(closed);
       appendQuizHistoryResult(closed);
+      reportKioskResultToCloud(closed);
       setSubmitted(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The examination could not be finalized safely.');
@@ -591,11 +660,11 @@ const SecureExamination: React.FC = () => {
 
   if (message)
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-lg text-center">
-          <LockKeyhole className="w-12 h-12 mx-auto mb-4 text-emerald-400" />
-          <h1 className="text-2xl font-black">Secure examination</h1>
-          <p className="mt-3 text-white/75">{message}</p>
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
+        <div className="max-w-lg text-center rounded-3xl bg-white border border-slate-200 shadow-sm p-8">
+          <LockKeyhole className="w-12 h-12 mx-auto mb-4 text-[#2D6A4F]" />
+          <h1 className="text-2xl font-black text-slate-900">Secure examination</h1>
+          <p className="mt-3 text-slate-600">{message}</p>
         </div>
       </div>
     );
@@ -614,19 +683,19 @@ const SecureExamination: React.FC = () => {
     const isVisible = Boolean(studentResult?.visible);
 
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4 sm:p-6">
-        <div className="max-w-2xl w-full bg-slate-900 border border-white/10 rounded-3xl p-6 sm:p-8 text-center shadow-2xl">
-          <CheckCircle2 className="w-16 h-16 mx-auto mb-4 text-emerald-400" />
-          <h1 className="text-2xl sm:text-3xl font-black text-white">
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6">
+        <div className="max-w-2xl w-full bg-white border border-slate-200 rounded-3xl p-6 sm:p-8 text-center shadow-xl">
+          <CheckCircle2 className="w-16 h-16 mx-auto mb-4 text-[#2D6A4F]" />
+          <h1 className="text-2xl sm:text-3xl font-black text-slate-900">
             {isVisible ? 'Examination Results' : 'Examination Submitted'}
           </h1>
           {studentResult?.examTitle && (
-            <p className="text-emerald-400 font-bold text-sm mt-1">{studentResult.examTitle}</p>
+            <p className="text-[#2D6A4F] font-bold text-sm mt-1">{studentResult.examTitle}</p>
           )}
 
           {!isVisible ? (
-            <div className="my-6 p-6 rounded-2xl bg-white/5 border border-white/10">
-              <p className="text-white/80 text-base leading-relaxed">
+            <div className="my-6 p-6 rounded-2xl bg-slate-50 border border-slate-200">
+              <p className="text-slate-600 text-base leading-relaxed">
                 {studentResult?.message ||
                   'Your examination has been submitted successfully. Your result will be available when released by the administrator.'}
               </p>
@@ -636,30 +705,30 @@ const SecureExamination: React.FC = () => {
               {/* Summary Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {studentResult?.score !== undefined && (
-                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-                    <p className="text-xs uppercase font-black text-white/50">Score</p>
-                    <p className="text-xl sm:text-2xl font-black text-white mt-1">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
+                    <p className="text-xs uppercase font-black text-slate-500">Score</p>
+                    <p className="text-xl sm:text-2xl font-black text-slate-900 mt-1">
                       {studentResult.score}
                       {studentResult.maxMarks ? ` / ${studentResult.maxMarks}` : ''}
                     </p>
                   </div>
                 )}
                 {studentResult?.percentage !== undefined && (
-                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-                    <p className="text-xs uppercase font-black text-white/50">Percentage</p>
-                    <p className="text-xl sm:text-2xl font-black text-emerald-400 mt-1">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
+                    <p className="text-xs uppercase font-black text-slate-500">Percentage</p>
+                    <p className="text-xl sm:text-2xl font-black text-[#2D6A4F] mt-1">
                       {studentResult.percentage}%
                     </p>
                   </div>
                 )}
                 {studentResult?.passed !== undefined && (
-                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-                    <p className="text-xs uppercase font-black text-white/50">Status</p>
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
+                    <p className="text-xs uppercase font-black text-slate-500">Status</p>
                     <span
                       className={`inline-block mt-1 px-3 py-1 rounded-lg text-sm font-black ${
                         studentResult.passed
-                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
+                          : 'bg-rose-100 text-rose-700 border border-rose-300'
                       }`}
                     >
                       {studentResult.passed ? 'PASSED' : 'FAILED'}
@@ -667,9 +736,9 @@ const SecureExamination: React.FC = () => {
                   </div>
                 )}
                 {studentResult?.durationSeconds !== undefined && (
-                  <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-                    <p className="text-xs uppercase font-black text-white/50">Time Used</p>
-                    <p className="text-xl sm:text-2xl font-black text-white mt-1">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-center">
+                    <p className="text-xs uppercase font-black text-slate-500">Time Used</p>
+                    <p className="text-xl sm:text-2xl font-black text-slate-900 mt-1">
                       {Math.floor(studentResult.durationSeconds / 60)}m{' '}
                       {studentResult.durationSeconds % 60}s
                     </p>
@@ -679,46 +748,46 @@ const SecureExamination: React.FC = () => {
 
               {/* Answer Review */}
               {studentResult?.questionResults && studentResult.questionResults.length > 0 && (
-                <div className="mt-6 border-t border-white/10 pt-4">
-                  <h3 className="text-lg font-black text-white mb-3">Answer Review</h3>
+                <div className="mt-6 border-t border-slate-200 pt-4">
+                  <h3 className="text-lg font-black text-slate-900 mb-3">Answer Review</h3>
                   <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
                     {studentResult.questionResults.map((qr, idx) => (
                       <div
                         key={qr.questionId}
-                        className="p-3.5 rounded-xl bg-white/5 border border-white/10 text-sm"
+                        className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-sm"
                       >
                         <div className="flex justify-between items-start gap-2 mb-1">
-                          <span className="font-bold text-white/90">
+                          <span className="font-bold text-slate-800">
                             Q{idx + 1}. {qr.questionText || 'Question'}
                           </span>
                           {qr.isCorrect !== undefined && (
                             <span
                               className={`text-xs px-2 py-0.5 rounded font-black shrink-0 ${
                                 qr.isCorrect
-                                  ? 'bg-emerald-500/20 text-emerald-300'
-                                  : 'bg-rose-500/20 text-rose-300'
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-rose-100 text-rose-700'
                               }`}
                             >
                               {qr.isCorrect ? 'Correct' : 'Incorrect'}
                             </span>
                           )}
                         </div>
-                        <p className="text-white/70 text-xs">
+                        <p className="text-slate-600 text-xs">
                           Your answer:{' '}
-                          <span className="text-white font-medium">{qr.answer || '—'}</span>
+                          <span className="text-slate-900 font-medium">{qr.answer || '—'}</span>
                         </p>
                         {qr.correctOption !== undefined && (
-                          <p className="text-emerald-400 text-xs mt-0.5">
+                          <p className="text-[#2D6A4F] text-xs mt-0.5">
                             Correct option: {String.fromCharCode(65 + qr.correctOption)}
                           </p>
                         )}
                         {qr.correctAnswer && (
-                          <p className="text-emerald-400 text-xs mt-0.5">
+                          <p className="text-[#2D6A4F] text-xs mt-0.5">
                             Correct answer: {qr.correctAnswer}
                           </p>
                         )}
                         {qr.explanation && (
-                          <p className="text-white/50 text-xs mt-1 italic">{qr.explanation}</p>
+                          <p className="text-slate-500 text-xs mt-1 italic">{qr.explanation}</p>
                         )}
                       </div>
                     ))}
@@ -734,7 +803,7 @@ const SecureExamination: React.FC = () => {
               releaseSecureKiosk();
               navigate('/quiz');
             }}
-            className="mt-4 px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl font-black transition-colors"
+            className="mt-4 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black transition-colors"
           >
             Return to Quiz
           </button>
@@ -744,94 +813,96 @@ const SecureExamination: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-3 sm:p-6 pt-safe pb-safe safe-area-x">
-      <header className="max-w-6xl mx-auto border-b border-white/10 pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs uppercase tracking-widest text-emerald-300 font-black">
-                {adapterRef.current?.matrix.platform === 'TAURI_PC'
-                  ? 'Native Desktop Kiosk'
-                  : adapterRef.current?.matrix.platform === 'ANDROID_NATIVE'
-                    ? 'Android Native Kiosk'
-                    : 'Restricted Web Examination Mode'}
+    <div className="min-h-screen bg-slate-100 p-3 sm:p-6 pt-safe pb-safe safe-area-x">
+      <header className="max-w-6xl mx-auto">
+        <div className="rounded-2xl bg-[#0F172A] text-white p-3 sm:p-4 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[10px] sm:text-xs uppercase tracking-widest text-emerald-300 font-black">
+                  {adapterRef.current?.matrix.platform === 'TAURI_PC'
+                    ? 'Native Desktop Kiosk'
+                    : adapterRef.current?.matrix.platform === 'ANDROID_NATIVE'
+                      ? 'Android Native Kiosk'
+                      : 'Restricted Web Examination Mode'}
+                </p>
+                {isIOS() && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-emerald-200 border border-white/20">
+                    {isIOSPWA() ? 'iPhone PWA' : 'iPhone Safari'}
+                  </span>
+                )}
+              </div>
+              <h1 className="text-lg sm:text-2xl font-black mt-0.5 truncate">Secure Examination</h1>
+              <p className="text-[11px] sm:text-xs text-slate-300">
+                Authoritative LAN / local exam timer · Encrypted device state
               </p>
-              {isIOS() && (
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  {isIOSPWA() ? 'iPhone PWA' : 'iPhone Safari'}
-                </span>
-              )}
             </div>
-            <h1 className="text-xl sm:text-2xl font-black mt-0.5">Secure Examination</h1>
-            <p className="text-xs text-white/50">
-              Authoritative LAN / local exam timer · Encrypted device state
-            </p>
+            <div
+              className={`flex items-center gap-2 rounded-xl px-4 py-2 font-black font-mono text-base shrink-0 ${
+                seconds < 300 ? 'bg-red-500/20 text-red-200 animate-pulse ring-1 ring-red-300/40' : 'bg-white/10 text-emerald-100'
+              }`}
+            >
+              <Clock3 className="w-5 h-5 text-emerald-300" />
+              <span>
+                {minutes}:{remainingSeconds}
+              </span>
+            </div>
           </div>
-          <div
-            className={`flex items-center gap-2 rounded-xl px-4 py-2 font-black font-mono text-base ${
-              seconds < 300 ? 'bg-red-500/20 text-red-300 animate-pulse border border-red-500/30' : 'bg-white/10'
-            }`}
-          >
-            <Clock3 className="w-5 h-5 text-emerald-400" />
-            <span>
-              {minutes}:{remainingSeconds}
-            </span>
-          </div>
-        </div>
 
-        {/* Progress & Save Status Row */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-4 pt-3 border-t border-white/5">
-          <div className="w-full sm:w-auto">
-            <p className="text-xs font-bold text-white/70">
-              Question {index + 1} of {ordered.length}
-            </p>
-            <div className="w-full sm:w-64 h-2 bg-white/10 rounded-full mt-1.5 overflow-hidden">
-              <div
-                className="h-full bg-emerald-400 transition-all duration-300"
-                style={{ width: `${((index + 1) / ordered.length) * 100}%` }}
-              />
+          {/* Progress & Save Status Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-3 pt-3 border-t border-white/10">
+            <div className="w-full sm:w-auto">
+              <p className="text-xs font-bold text-slate-200">
+                Question {index + 1} of {ordered.length}
+              </p>
+              <div className="w-full sm:w-64 h-1.5 bg-white/10 rounded-full mt-1.5 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-400 transition-all duration-300"
+                  style={{ width: `${((index + 1) / ordered.length) * 100}%` }}
+                />
+              </div>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${
-                saveState === 'SAVED'
-                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                  : saveState === 'SAVING…'
-                    ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
-                    : 'bg-red-500/10 text-red-300 border-red-500/30'
-              }`}
-            >
-              <Save className="w-3.5 h-3.5" />
-              {saveState}
-            </span>
-            <span
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${
-                syncState === 'SYNCHRONIZED'
-                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                  : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-              }`}
-            >
-              {syncState === 'SYNCHRONIZED' ? (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  Synchronized
-                </>
-              ) : (
-                <>
-                  <WifiOff className="w-3.5 h-3.5 text-amber-400" />
-                  {syncState}
-                </>
-              )}
-            </span>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${
+                  saveState === 'SAVED'
+                    ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
+                    : saveState === 'SAVING…'
+                      ? 'bg-blue-500/15 text-blue-200 border-blue-400/30'
+                      : 'bg-red-500/15 text-red-200 border-red-400/30'
+                }`}
+              >
+                <Save className="w-3.5 h-3.5" />
+                {saveState}
+              </span>
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${
+                  syncState === 'SYNCHRONIZED'
+                    ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
+                    : 'bg-amber-500/15 text-amber-200 border-amber-400/30'
+                }`}
+              >
+                {syncState === 'SYNCHRONIZED' ? (
+                  <>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                    Synchronized
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-amber-300" />
+                    {syncState}
+                  </>
+                )}
+              </span>
+            </div>
           </div>
         </div>
       </header>
 
       {!fullscreenActive && !submitted && (
-        <div className="max-w-6xl mx-auto mt-4 bg-amber-500/15 border border-amber-500/40 rounded-xl p-3 sm:p-4 text-amber-200 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+        <div className="max-w-6xl mx-auto mt-4 bg-amber-50 border border-amber-300 rounded-xl p-3 sm:p-4 text-amber-900 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
             <span>
               <strong>Fullscreen exited:</strong> Fullscreen mode is recommended for this secure examination.
             </span>
@@ -841,7 +912,7 @@ const SecureExamination: React.FC = () => {
             onClick={() => {
               void adapterRef.current?.requestFullscreen();
             }}
-            className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold rounded-lg text-xs shrink-0 transition-colors"
+            className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold rounded-lg text-xs shrink-0 transition-colors"
           >
             Return to Fullscreen
           </button>
@@ -963,10 +1034,10 @@ const SecureExamination: React.FC = () => {
                 <button
                   type="button"
                   disabled={navigationBusy}
-                  onClick={() => void goTo(index + 1)}
-                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 sm:px-6 py-2.5 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl transition-colors shadow-sm disabled:opacity-50 text-base touch-manipulation"
-                >
-                  {navigationBusy ? 'Saving…' : 'Next'}
+                onClick={() => void goTo(index + 1)}
+                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 sm:px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors shadow-sm disabled:opacity-50 text-base touch-manipulation"
+              >
+                {navigationBusy ? 'Saving…' : 'Next'}
                   <ChevronRight className="w-5 h-5" />
                 </button>
               )}
@@ -974,8 +1045,8 @@ const SecureExamination: React.FC = () => {
           </section>
 
           {/* Responsive Question Navigation for Mobile / Tablet */}
-          <div className="lg:hidden mt-6 bg-white/5 border border-white/10 rounded-2xl p-4">
-            <h3 className="font-bold text-sm text-white/80 mb-3">Question Navigator</h3>
+          <div className="lg:hidden mt-6 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+            <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-3">Jump to question</h3>
             <div className="flex flex-wrap gap-2">
               {ordered.map((question, questionIndex) => {
                 const isCurrent = questionIndex === index;
@@ -986,12 +1057,12 @@ const SecureExamination: React.FC = () => {
                     key={question.id}
                     onClick={() => void goTo(questionIndex)}
                     disabled={navigationBusy}
-                    className={`min-w-[44px] min-h-[44px] w-11 h-11 rounded-xl text-sm font-bold transition-all flex items-center justify-center disabled:opacity-50 touch-manipulation ${
+                    className={`min-w-[44px] min-h-[44px] w-11 h-11 rounded-full text-sm font-black transition-all flex items-center justify-center disabled:opacity-50 touch-manipulation ${
                       isCurrent
-                        ? 'bg-emerald-400 text-slate-950 shadow-md ring-2 ring-emerald-300'
+                        ? 'bg-[#2D6A4F] text-white shadow-md ring-2 ring-emerald-200'
                         : isAnswered
-                          ? 'bg-emerald-800 text-emerald-100 border border-emerald-600'
-                          : 'bg-white/10 text-white hover:bg-white/20 border border-white/10'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'border border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
                     }`}
                   >
                     {questionIndex + 1}
@@ -1006,7 +1077,7 @@ const SecureExamination: React.FC = () => {
                 if (window.confirm('Submit this attempt? You may not return after submission.'))
                   void submit();
               }}
-              className="mt-4 w-full min-h-[48px] rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 py-3 px-4 font-black flex items-center justify-center gap-2 transition-colors shadow-sm touch-manipulation text-base"
+              className="mt-4 w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white py-3 px-4 font-black flex items-center justify-center gap-2 transition-colors shadow-sm touch-manipulation text-base"
             >
               <Send className="w-4 h-4" /> SUBMIT EXAM
             </button>
@@ -1014,8 +1085,13 @@ const SecureExamination: React.FC = () => {
         </div>
 
         {/* Desktop Sidebar Aside */}
-        <aside className="rounded-2xl bg-white/10 border border-white/10 p-5 h-fit hidden lg:block">
-          <h2 className="font-black text-lg mb-3">Questions</h2>
+        <aside className="rounded-2xl bg-white border border-slate-200 shadow-sm p-5 h-fit hidden lg:block">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-xs font-black uppercase tracking-wider text-slate-500">Jump to question</h2>
+            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-500">
+              {ordered.length} Qs
+            </span>
+          </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
             {ordered.map((question, questionIndex) => {
               const isCurrent = questionIndex === index;
@@ -1026,12 +1102,12 @@ const SecureExamination: React.FC = () => {
                   key={question.id}
                   onClick={() => void goTo(questionIndex)}
                   disabled={navigationBusy}
-                  className={`rounded-xl p-2.5 text-sm font-black transition-all disabled:opacity-50 ${
+                  className={`rounded-full p-2.5 text-sm font-black transition-all disabled:opacity-50 ${
                     isCurrent
-                      ? 'bg-emerald-400 text-slate-950 shadow-md ring-2 ring-emerald-300'
+                      ? 'bg-[#2D6A4F] text-white shadow-md ring-2 ring-emerald-200'
                       : isAnswered
-                        ? 'bg-emerald-800 text-emerald-100 border border-emerald-600'
-                        : 'bg-white/10 text-white hover:bg-white/20 border border-white/10'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'border border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
                   }`}
                 >
                   {questionIndex + 1}
@@ -1047,13 +1123,13 @@ const SecureExamination: React.FC = () => {
               if (window.confirm('Submit this attempt? You may not return after submission.'))
                 void submit();
             }}
-            className="mt-6 w-full rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 py-3 font-black flex items-center justify-center gap-2 transition-colors shadow-sm"
+            className="mt-6 w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white py-3 font-black flex items-center justify-center gap-2 transition-colors shadow-sm"
           >
             <Send className="w-4 h-4" /> SUBMIT EXAM
           </button>
 
-          <p className="text-xs text-white/50 mt-4 flex gap-1.5 leading-relaxed">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+          <p className="text-xs text-slate-500 mt-4 flex gap-1.5 leading-relaxed">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
             <span>
               Navigation, clipboard, printing, and exit events are audited. Offline state is
               continuously protected.
