@@ -291,16 +291,22 @@ declare
   slots integer[];
 begin
   select * into admin_row from public.pharmatrack_kiosk_admins where join_code = upper(trim(p_join_code));
-  if not found then
+  -- Checked on admin_row itself, not the special FOUND variable: this
+  -- function's own `returns table (found boolean, ...)` declares an OUT
+  -- parameter named `found`, which silently shadows PL/pgSQL's built-in
+  -- FOUND status flag (a well-known gotcha — no error, just the wrong
+  -- value), so `if not found then` here would never be true and an invalid
+  -- join code would fall through as if it were valid.
+  if admin_row.user_id is null then
     return query select false, false, false, array[]::integer[];
     return;
   end if;
 
   select exists(
-    select 1 from public.pharmatrack_kiosk_roster_students
-    where admin_user_id = admin_row.user_id
-      and first_name_key = lower(trim(p_first_name))
-      and level = p_level
+    select 1 from public.pharmatrack_kiosk_roster_students as roster
+    where roster.admin_user_id = admin_row.user_id
+      and roster.first_name_key = lower(trim(p_first_name))
+      and roster.level = p_level
   ) into taken;
 
   select coalesce(array_agg(password_slot), array[]::integer[])
@@ -379,11 +385,17 @@ begin
     raise exception 'Kiosk logins are not currently open. Ask the administrator to enable them.';
   end if;
 
+  -- Table-qualified on purpose: this function's own `returns table (...)`
+  -- declares an OUT parameter named `level`, which PL/pgSQL turns into a
+  -- variable in scope for the whole function body. A bare `level = p_level`
+  -- here is ambiguous between that variable and this table's `level` column
+  -- ("column reference \"level\" is ambiguous"), so every column from this
+  -- table is qualified with its alias to remove any doubt.
   select * into student_row
-  from public.pharmatrack_kiosk_roster_students
-  where admin_user_id = admin_row.user_id
-    and first_name_key = lower(trim(p_first_name))
-    and level = p_level;
+  from public.pharmatrack_kiosk_roster_students as roster
+  where roster.admin_user_id = admin_row.user_id
+    and roster.first_name_key = lower(trim(p_first_name))
+    and roster.level = p_level;
 
   if not found or student_row.password_hash <> crypt(p_password, student_row.password_hash) then
     raise exception 'First name, level, or RX30 Kiosk password is incorrect.';
