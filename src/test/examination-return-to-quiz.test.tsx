@@ -132,7 +132,7 @@ describe('mid-exam early-exit rejection offers Return to quiz', () => {
 
     expect(
       await screen.findByText(
-        /Separate examination administrator authorization was rejected\. RX30 cannot authorize early exit\./,
+        /That exit password was not recognized\. This is the password set when this exam was created, not RX30 or any login password\./,
       ),
     ).toBeTruthy();
     const returnButton = await screen.findByTestId('return-to-quiz');

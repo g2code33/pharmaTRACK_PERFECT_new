@@ -19,6 +19,7 @@ import { ExaminationSyncEngine } from '../examination/sync';
 import type { LanExamTransport } from '../examination/network';
 import { remainingMilliseconds } from '../examination/timer';
 import { createPlatformKioskAdapter } from '../examination/androidAdapter';
+import { queryNativeFullscreenActive } from '../examination/nativeKiosk';
 import { verifyAdminExitPassword } from '../examination/package';
 import { loadStagedPharmaExam } from '../examination/packageCache';
 import { verifyPassword } from '../examination/crypto';
@@ -31,7 +32,7 @@ import {
   onBlockedKioskNavigation,
   releaseSecureKiosk,
 } from '../examination/kioskState';
-import { isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
+import { detectRuntimePlatform, isIOS, isIOSPWA, isIOSSafari } from '../platform/runtime';
 import {
   clearKioskAttemptProgress,
   getStoredKioskJoinCode,
@@ -197,6 +198,31 @@ const SecureExamination: React.FC = () => {
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
+    // Native desktop (Tauri) never puts the page itself into DOM fullscreen —
+    // secure mode fullscreens the OS window directly (see
+    // `enter_secure_exam_mode` / `apply_secure_window_controls` in the Rust
+    // host). Checking `document.fullscreenElement` there would always read
+    // as "not fullscreen", showing a permanent false "Fullscreen exited"
+    // banner regardless of the window's real state, and the matching
+    // "Return to Fullscreen" button would have nothing it could actually do
+    // (`Element.requestFullscreen()` on a page that was never put into DOM
+    // fullscreen is a no-op). Poll the real native state over IPC instead.
+    if (detectRuntimePlatform() === 'native-pc') {
+      let cancelled = false;
+      const pollNativeFullscreen = async () => {
+        const active = await queryNativeFullscreenActive();
+        // `undefined` means the query itself failed (e.g. no secure exam
+        // host available) — treat as unknown rather than flashing a false
+        // "exited fullscreen" notice the student cannot act on.
+        if (!cancelled && active !== undefined) setFullscreenActive(active);
+      };
+      void pollNativeFullscreen();
+      const timer = window.setInterval(() => void pollNativeFullscreen(), 1500);
+      return () => {
+        cancelled = true;
+        window.clearInterval(timer);
+      };
+    }
     const isStandalone = typeof window !== 'undefined' && Boolean(
       (navigator as Navigator & { standalone?: boolean }).standalone ||
       window.matchMedia?.('(display-mode: standalone)')?.matches ||
@@ -335,11 +361,11 @@ const SecureExamination: React.FC = () => {
             }
             let authorized = policy === 'ALLOW_FREE_EXIT';
             if (policy === 'ADMIN_AUTH_REQUIRED') {
-              const supplied = await secureWindowPrompt('Enter the separate examination administrator exit authorization.');
+              const supplied = await secureWindowPrompt('Enter the exit password set when this exam was created. This is not your RX30 password.');
               authorized = await verifyAdminExitAuthorization(supplied, saved);
             }
             if (!authorized) {
-              setMessage('Separate examination administrator authorization was rejected. RX30 cannot authorize early exit.');
+              setMessage('That exit password was not recognized. This is the password set when this exam was created, not RX30 or any login password.');
               setMessageReturnable(true);
               return;
             }
@@ -355,7 +381,7 @@ const SecureExamination: React.FC = () => {
               setAttempt(closed);
               await finalizeSubmissionRef.current?.(true, 'MANUAL');
             } catch (error) {
-              setMessage(error instanceof Error ? error.message : 'Administrator early-exit authorization failed.');
+              setMessage(error instanceof Error ? error.message : 'The exit password could not be processed. Please try again.');
               setMessageReturnable(true);
             }
           });
@@ -458,7 +484,7 @@ const SecureExamination: React.FC = () => {
     setUnlockError('');
     try {
       const supplied = await secureWindowPrompt(
-        'Enter the examination administrator exit authorization to unlock this device.',
+        'Enter the exit password set when this exam was created to unlock this device. This is not your RX30 password.',
       );
       if (!supplied || !attempt) return;
       const authorized = await verifyAdminExitAuthorization(supplied, attempt);
@@ -466,7 +492,7 @@ const SecureExamination: React.FC = () => {
         // Kept local to this notice (not the full-page `message` takeover)
         // so a mistyped password can be retried immediately — the device
         // stays exactly as locked as it was before the attempt either way.
-        setUnlockError('Administrator authorization was rejected. This device remains locked.');
+        setUnlockError('That exit password was not recognized. This is the password set when this exam was created, not RX30 or any login password. This device remains locked.');
         return;
       }
       setExitAuthorized(true);
@@ -931,9 +957,9 @@ const SecureExamination: React.FC = () => {
                 This device is still locked
               </div>
               <p className="mt-1.5 text-sm text-amber-700">
-                Your administrator required their own authorization to release this device, even
-                after submission. Hand the device to them, or enter the administrator exit
-                password they provided for this examination file.
+                This examination requires its own exit password to release this device, even after
+                submission — the one set when this exam was created, not RX30 or any login
+                password. Hand the device to whoever has it, or enter it below.
               </p>
               <button
                 type="button"
@@ -942,7 +968,7 @@ const SecureExamination: React.FC = () => {
                 data-testid="unlock-with-admin-password"
                 className="mt-3 w-full px-6 py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white rounded-xl font-black transition-colors"
               >
-                {unlockBusy ? 'Verifying…' : 'Enter administrator password to unlock'}
+                {unlockBusy ? 'Verifying…' : 'Enter exit password to unlock'}
               </button>
               {unlockError && (
                 <p className="mt-2 text-sm text-rose-700" data-testid="unlock-error">

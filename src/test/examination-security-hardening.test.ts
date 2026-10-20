@@ -115,7 +115,7 @@ describe('secure examination finalization and lockdown hardening', () => {
     );
     await expect(
       adminRequired.repository.authorizeManualEarlyExit(adminRequired.attempt.id, false),
-    ).rejects.toThrow('authorization');
+    ).rejects.toThrow('exit password');
     expect(adminRequired.repository.snapshot.attempts[0].status).toBe('ACTIVE');
 
     const disallowed = await attemptWith({ manualExitPolicy: 'DISALLOW_EARLY_EXIT' });

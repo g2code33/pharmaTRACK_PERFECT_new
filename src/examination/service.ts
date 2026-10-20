@@ -1217,7 +1217,7 @@ export class ExaminationRepository {
     const policy = attempt.settingsSnapshot.security.manualExitPolicy || 'ADMIN_AUTH_REQUIRED';
     if (policy === 'DISALLOW_EARLY_EXIT') throw new Error('Early exit is disabled for this examination.');
     if (policy === 'ADMIN_AUTH_REQUIRED' && !authorized)
-      throw new Error('Separate examination administrator authorization is required.');
+      throw new Error('The exit password set when this exam was created is required.');
     if (policy === 'ADMIN_AUTH_REQUIRED' && authorized && !adminDeviceSessionId && authorizationSource !== 'PACKAGE_ADMIN_PASSWORD')
       throw new Error('A connected examination administrator device or package administrator verifier is required.');
     if (authorized && adminDeviceSessionId) this.requireAdminDevice(adminDeviceSessionId);

@@ -809,6 +809,44 @@ fn exit_secure_exam_mode(
     Ok(())
 }
 
+/// The frontend's own fullscreen check uses the DOM Fullscreen API
+/// (`document.fullscreenElement`), which is never set here: secure mode is
+/// enforced with the OS window's own native fullscreen
+/// (`WebviewWindow::set_fullscreen`), not `Element.requestFullscreen()`. A
+/// native secure exam therefore needs to query the real native state
+/// instead, or it will report "fullscreen exited" immediately and forever
+/// even though the window genuinely is fullscreen.
+#[tauri::command]
+fn secure_exam_fullscreen_active(
+    window: tauri::WebviewWindow,
+    state: State<'_, SecureExamHostState>,
+) -> Result<bool, String> {
+    if !state.is_active() {
+        // Nothing to report outside a secure exam; never surface a
+        // misleading "exited fullscreen" notice when none is running.
+        return Ok(true);
+    }
+    window.is_fullscreen().map_err(|error| error.to_string())
+}
+
+/// Re-applies native fullscreen on demand — the actual effect behind the
+/// student-facing "Return to Fullscreen" button. Calling
+/// `Element.requestFullscreen()` from the page would do nothing here for the
+/// same reason `secure_exam_fullscreen_active` above exists: this window was
+/// never put into DOM fullscreen in the first place.
+#[tauri::command]
+fn reassert_secure_exam_fullscreen(
+    window: tauri::WebviewWindow,
+    state: State<'_, SecureExamHostState>,
+) -> Result<bool, String> {
+    if !state.is_active() {
+        return Err("No secure examination is active.".to_string());
+    }
+    window.set_fullscreen(true).map_err(|error| error.to_string())?;
+    let _ = window.set_focus();
+    window.is_fullscreen().map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn embed_website(
     app: tauri::AppHandle,
@@ -1764,6 +1802,8 @@ fn main() {
             open_external_url,
             enter_secure_exam_mode,
             exit_secure_exam_mode,
+            secure_exam_fullscreen_active,
+            reassert_secure_exam_fullscreen,
             begin_native_dialog,
             end_native_dialog,
             embed_website,

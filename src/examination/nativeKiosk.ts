@@ -245,6 +245,31 @@ export function createTauriKioskAdapter(
         return false;
       }
     },
-    requestFullscreen: async () => Boolean(sessionToken),
+    requestFullscreen: async () => {
+      if (!sessionToken) return false;
+      try {
+        return Boolean(await invoke<boolean>('reassert_secure_exam_fullscreen'));
+      } catch {
+        return false;
+      }
+    },
   };
+}
+
+/**
+ * Queries the OS window's real fullscreen state. The secure-exam page's own
+ * `document.fullscreenElement` check is meaningless on native-pc: secure
+ * mode is enforced with the native window's own fullscreen property
+ * (`enter_secure_exam_mode` -> `WebviewWindow::set_fullscreen`), never the
+ * DOM Fullscreen API, so that check would otherwise report "exited
+ * fullscreen" immediately and permanently regardless of the window's real
+ * state. Returns `undefined` (treat as unknown, not as "exited") if the
+ * native command is unavailable for any reason.
+ */
+export async function queryNativeFullscreenActive(): Promise<boolean | undefined> {
+  try {
+    return await invoke<boolean>('secure_exam_fullscreen_active');
+  } catch {
+    return undefined;
+  }
 }

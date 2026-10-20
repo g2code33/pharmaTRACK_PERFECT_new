@@ -8,7 +8,7 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }));
 
-import { createTauriKioskAdapter } from '../examination/nativeKiosk';
+import { createTauriKioskAdapter, queryNativeFullscreenActive } from '../examination/nativeKiosk';
 import { KIOSK_CAPABILITY_IDS } from '../examination/kioskAdapter';
 
 beforeEach(() => {
@@ -69,5 +69,52 @@ describe('native PC secure examination adapter', () => {
       'EXTERNAL_LINK_ATTEMPT',
     ]);
     cleanup();
+  });
+
+  describe('native fullscreen reassertion (Return to Fullscreen button)', () => {
+    // Before this fix, `requestFullscreen` was a no-op stub that never
+    // called into the OS window at all, and the page's own exited-fullscreen
+    // detector only ever looked at the DOM Fullscreen API — which native-pc
+    // secure exams never use (they fullscreen the OS window directly). The
+    // button therefore visibly did nothing when clicked.
+
+    it('asks the native host to re-enter fullscreen and reports the resulting state', async () => {
+      invokeMock.mockResolvedValueOnce({ sessionToken: 'session-1', capabilities: [] });
+      const adapter = createTauriKioskAdapter(() => undefined);
+      await adapter.enterSecureMode?.('attempt-1');
+
+      invokeMock.mockResolvedValueOnce(true);
+      expect(await adapter.requestFullscreen()).toBe(true);
+      expect(invokeMock).toHaveBeenLastCalledWith('reassert_secure_exam_fullscreen');
+    });
+
+    it('returns false without calling the native host when no secure session has been entered', async () => {
+      const adapter = createTauriKioskAdapter(() => undefined);
+      expect(await adapter.requestFullscreen()).toBe(false);
+      expect(invokeMock).not.toHaveBeenCalledWith('reassert_secure_exam_fullscreen');
+    });
+
+    it('returns false if the native reassertion call fails', async () => {
+      invokeMock.mockResolvedValueOnce({ sessionToken: 'session-1', capabilities: [] });
+      const adapter = createTauriKioskAdapter(() => undefined);
+      await adapter.enterSecureMode?.('attempt-1');
+
+      invokeMock.mockRejectedValueOnce(new Error('no secure examination is active'));
+      expect(await adapter.requestFullscreen()).toBe(false);
+    });
+
+    it('queries the real native fullscreen state instead of the (unused) DOM Fullscreen API', async () => {
+      invokeMock.mockResolvedValueOnce(true);
+      expect(await queryNativeFullscreenActive()).toBe(true);
+      expect(invokeMock).toHaveBeenLastCalledWith('secure_exam_fullscreen_active');
+
+      invokeMock.mockResolvedValueOnce(false);
+      expect(await queryNativeFullscreenActive()).toBe(false);
+    });
+
+    it('reports fullscreen state as unknown (undefined) rather than falsely "exited" if the query fails', async () => {
+      invokeMock.mockRejectedValueOnce(new Error('no window'));
+      expect(await queryNativeFullscreenActive()).toBeUndefined();
+    });
   });
 });

@@ -126,10 +126,11 @@ const ExaminationBuilder: React.FC = () => {
       let adminExitPasswordVerifier: Awaited<ReturnType<typeof derivePasswordVerifier>> | undefined;
       if (draft.security.manualExitPolicy === 'ADMIN_AUTH_REQUIRED') {
         adminExitPassword =
-          window.prompt('Set the separate examination administrator early-exit authorization. RX30 is not accepted here.') ||
-          undefined;
+          window.prompt(
+            'Set the exit password for this exam. Students will be asked for this exact password if they need to leave early or if the device stays locked after submission. RX30 is not accepted here.',
+          ) || undefined;
         if (!adminExitPassword)
-          throw new Error('A separate administrator early-exit authorization is required by this policy.');
+          throw new Error('An exit password is required by this policy. Set one to continue.');
         adminExitPasswordVerifier = await derivePasswordVerifier(adminExitPassword);
       }
       const repository = await ExaminationRepository.open();
@@ -543,7 +544,7 @@ const ExaminationBuilder: React.FC = () => {
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
               >
                 <option value="ALLOW_FREE_EXIT">Allow controlled free exit</option>
-                <option value="ADMIN_AUTH_REQUIRED">Require separate administrator authorization</option>
+                <option value="ADMIN_AUTH_REQUIRED">Require the exit password (set below)</option>
                 <option value="DISALLOW_EARLY_EXIT">Disallow early exit</option>
               </select>
               <span className="text-xs font-normal text-slate-500">
