@@ -294,7 +294,12 @@ const KioskEntry: React.FC = () => {
       } catch {
         // Never block login over a Quiz History backfill problem.
       }
-      const identity = { firstName: outcome.firstName, level: outcome.level, kioskPassword: kioskPassword.trim() };
+      const identity = {
+        firstName: outcome.firstName,
+        level: outcome.level,
+        kioskPassword: kioskPassword.trim(),
+        studentId: student.id,
+      };
       try {
         sessionStorage.setItem(IDENTITY_KEY, JSON.stringify(identity));
       } catch {

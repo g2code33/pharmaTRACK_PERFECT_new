@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 
 /**
  * ensureLocalStudentForCloudIdentity() is the bridge between a kiosk
@@ -70,5 +72,44 @@ describe('ensureLocalStudentForCloudIdentity', () => {
     await expect(
       repository.authenticateStudent('Efua', 'Level 300', 'RX30a'),
     ).rejects.toThrow('First name, level, or RX30 Kiosk password is incorrect.');
+  });
+
+  it('resolving the same mirror a second time (e.g. a page reload mid-attempt) never needs the password either', async () => {
+    // This is exactly what KioskEntry's login() followed by
+    // ExamAttemptEntry's enterExam() does in production: the student is
+    // mirrored once at login, then the exam-attempt page resolves the SAME
+    // record again (on first render and on every reload) using only the
+    // cloud-issued id — never the password, which only the cloud roster
+    // ever actually checks.
+    const repository = await ExaminationRepository.open();
+    const atLogin = await repository.ensureLocalStudentForCloudIdentity(
+      'cloud-student-456',
+      'Kwesi',
+      'Level 400',
+    );
+    const atAttemptEntry = await repository.ensureLocalStudentForCloudIdentity(
+      'cloud-student-456',
+      'Kwesi',
+      'Level 400',
+    );
+    expect(atAttemptEntry.id).toBe(atLogin.id);
+    expect(repository.snapshot.students.filter((item) => item.id === 'cloud-student-456')).toHaveLength(1);
+  });
+
+  it('ExamAttemptEntry.tsx resolves identity through the cloud mirror, never the local password re-check', () => {
+    // A real regression: this page used to call authenticateStudent() with
+    // the password the student typed at login, even though that student's
+    // local mirror record is deliberately seeded with an unguessable random
+    // verifier the moment it is cloud-referenced (see
+    // ensureLocalStudentForCloudIdentity below and the "never lets the
+    // local mirror be used to authenticate" test above). That made every
+    // kiosk exam attempt fail immediately after a correct login with
+    // "First name, level, or RX30 Kiosk password is incorrect." — this pins
+    // the fix at the source level so a future edit cannot silently bring
+    // back the old, always-failing call.
+    const root = path.resolve(process.cwd());
+    const src = fs.readFileSync(path.join(root, 'src', 'pages', 'ExamAttemptEntry.tsx'), 'utf8');
+    expect(src).toContain('repository.ensureLocalStudentForCloudIdentity(');
+    expect(src).not.toContain('repository.authenticateStudent(');
   });
 });

@@ -39,6 +39,19 @@ interface KioskIdentity {
   firstName: string;
   level: string;
   kioskPassword: string;
+  /**
+   * The roster row id the administrator's cloud account already verified
+   * this student against at login. Without it this page fell back to
+   * re-checking the kiosk password against the LOCAL mirror record's
+   * verifier — which `ensureLocalStudentForCloudIdentity` deliberately
+   * seeds with an unguessable random value (see service.ts), since cloud
+   * login already proved identity. That local re-check could therefore
+   * never succeed, and every kiosk exam attempt failed with "First name,
+   * level, or RX30 Kiosk password is incorrect." immediately after a
+   * correct login. Carrying the id through lets this page just fetch (or
+   * create) that same local mirror record instead of re-authenticating it.
+   */
+  studentId: string;
 }
 
 function readStoredIdentity(): KioskIdentity | null {
@@ -46,8 +59,13 @@ function readStoredIdentity(): KioskIdentity | null {
     const raw = sessionStorage.getItem(IDENTITY_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<KioskIdentity>;
-    if (!parsed.firstName || !parsed.level || !parsed.kioskPassword) return null;
-    return { firstName: parsed.firstName, level: parsed.level, kioskPassword: parsed.kioskPassword };
+    if (!parsed.firstName || !parsed.level || !parsed.kioskPassword || !parsed.studentId) return null;
+    return {
+      firstName: parsed.firstName,
+      level: parsed.level,
+      kioskPassword: parsed.kioskPassword,
+      studentId: parsed.studentId,
+    };
   } catch {
     return null;
   }
@@ -74,11 +92,12 @@ const ExamAttemptEntry: React.FC = () => {
 
   const identity = useMemo<KioskIdentity | null>(() => {
     const fromState = (location.state as Partial<KioskIdentity> | null) || null;
-    if (fromState?.firstName && fromState.level && fromState.kioskPassword) {
+    if (fromState?.firstName && fromState.level && fromState.kioskPassword && fromState.studentId) {
       return {
         firstName: fromState.firstName,
         level: fromState.level,
         kioskPassword: fromState.kioskPassword,
+        studentId: fromState.studentId,
       };
     }
     return readStoredIdentity();
@@ -332,12 +351,16 @@ const ExamAttemptEntry: React.FC = () => {
     try {
       const repository = await ExaminationRepository.open();
       await repository.markPackageImported(staged.packageKey);
+      // Identity was already proven by the administrator's cloud roster at
+      // login (see KioskIdentity.studentId above) — this just fetches or
+      // creates the matching local mirror record, it never re-checks the
+      // password locally.
       const authenticated =
         student ||
-        (await repository.authenticateStudent(
+        (await repository.ensureLocalStudentForCloudIdentity(
+          identity.studentId,
           identity.firstName,
           identity.level,
-          identity.kioskPassword,
         ));
       setStudent(authenticated);
       if (!(await verifyExamPassword(examPassword, staged.security)))
