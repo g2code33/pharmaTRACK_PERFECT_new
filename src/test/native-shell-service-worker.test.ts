@@ -373,7 +373,7 @@ describe('shipping the fix', () => {
 
 describe('resume repaint recovery', () => {
   it('rebuilds the compositing layer rather than re-applying the same transform', () => {
-    const source = stripComments(read('src/App.tsx'));
+    const source = stripComments(read('src/utils/resumePaintRecovery.ts'));
     expect(source).toContain("root.style.transform = 'none'");
     expect(source).toContain("root.style.transform = 'translateZ(0)'");
     expect(source).toContain("root.style.opacity = '0.999'");
@@ -390,14 +390,20 @@ describe('resume repaint recovery', () => {
     expect(rust).toContain("pharmatrack:native-resume");
     expect(rust).toContain('WindowEvent::Focused(true)');
     expect(rust).toContain('RESUME_REPAINT_NUDGE');
-    const app = stripComments(read('src/App.tsx'));
-    expect(app).toContain("window.addEventListener('pharmatrack:native-resume', repaint)");
-    expect(app).toContain("window.removeEventListener('pharmatrack:native-resume', repaint)");
+    const recovery = stripComments(read('src/utils/resumePaintRecovery.ts'));
+    expect(recovery).toContain("window.addEventListener('pharmatrack:native-resume', repaint)");
+    expect(recovery).toContain("window.removeEventListener('pharmatrack:native-resume', repaint)");
   });
 
   it('still reloads as a last resort when the shell really is empty', () => {
-    const source = stripComments(read('src/App.tsx'));
+    const source = stripComments(read('src/utils/resumePaintRecovery.ts'));
     expect(source).toContain('!root.childElementCount');
     expect(source).toContain('window.location.reload()');
+  });
+
+  it('covers the surface with a themed overlay instead of letting a stale/blank frame show through', () => {
+    const source = stripComments(read('src/utils/resumePaintRecovery.ts'));
+    expect(source).toContain('showResumeCover();');
+    expect(source).toContain('hideResumeCover();');
   });
 });

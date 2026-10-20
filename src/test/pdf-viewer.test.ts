@@ -19,6 +19,9 @@ const pptxViewer = fs.readFileSync(path.resolve(__dirname, '../components/PptxVi
 const layout = fs.readFileSync(path.resolve(__dirname, '../components/Layout.tsx'), 'utf8');
 const titleBar = fs.readFileSync(path.resolve(__dirname, '../components/NativeTitleBar.tsx'), 'utf8');
 const app = fs.readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf8');
+const resumePaintRecovery = fs.readFileSync(
+  path.resolve(__dirname, '../utils/resumePaintRecovery.ts'), 'utf8',
+);
 const highlightsPage = fs.readFileSync(path.resolve(__dirname, '../pages/Highlights.tsx'), 'utf8');
 const uploader = fs.readFileSync(path.resolve(__dirname, '../components/FileUploader.tsx'), 'utf8');
 const studyMaterials = fs.readFileSync(path.resolve(__dirname, '../pages/StudyMaterials.tsx'), 'utf8');
@@ -305,9 +308,19 @@ describe('stable layout', () => {
 
   it('has a resume-paint watchdog so returning to the app cannot leave a black frame', () => {
     expect(app).toContain('ResumePaintRecovery');
-    expect(app).toContain("window.dispatchEvent(new CustomEvent('pharmatrack:resume'))");
-    expect(app).toContain("window.addEventListener('pageshow', repaint)");
+    expect(app).toContain('installResumePaintRecovery');
+    expect(resumePaintRecovery).toContain("window.dispatchEvent(new CustomEvent(RESUME_EVENT))");
+    expect(resumePaintRecovery).toContain("window.addEventListener('pageshow', repaint)");
     expect(css).toContain('html.pharmatrack-resume-paint #root');
+  });
+
+  it('covers the stale/blank surface with a themed overlay the instant a resume is detected, instead of letting it flash through', () => {
+    expect(resumePaintRecovery).toContain('export function showResumeCover');
+    expect(resumePaintRecovery).toContain('export function hideResumeCover');
+    expect(resumePaintRecovery).toContain('showResumeCover();');
+    // The cover only comes down once real content is confirmed, or as part
+    // of the hard timeout's reload path — never unconditionally.
+    expect(resumePaintRecovery).toContain('hasRealContent(root)');
   });
 
   it('also refreshes the slide viewer surface after resume', () => {

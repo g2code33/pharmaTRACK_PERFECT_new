@@ -1,5 +1,6 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { lazyRoute, prefetchLikelyRoutes } from './utils/routeLoader';
+import { installResumePaintRecovery } from './utils/resumePaintRecovery';
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from './context/AppContext';
 import Layout from './components/Layout';
@@ -212,126 +213,16 @@ const PendingQuickQuizLauncher: React.FC = () => {
 };
 
 /**
- * Some Android/PWA/desktop WebViews can resume from sleep with a stale GPU
- * surface: the app is still running, but the compositor shows a black frame.
- * On every real resume/focus we force a tiny root repaint and tell heavy
- * viewers (PDF canvases, slide renderers) to repaint their visible content.
+ * Some Android/PWA/desktop WebViews can resume from being hidden with a
+ * stale or blank GPU surface: the app is still running, but the compositor
+ * has nothing valid to show until something forces a fresh paint. See
+ * utils/resumePaintRecovery.ts for the actual repaint + themed-cover logic
+ * (covering the stale/blank surface the instant a resume is detected turns
+ * the visible symptom from "flash of blank content" into a seamless
+ * continuation of the current background while the real frame catches up).
  */
 const ResumePaintRecovery: React.FC = () => {
-  useEffect(() => {
-    let settleTimer: number | undefined;
-    let guardTimer: number | undefined;
-    let nudgeTimerA: number | undefined;
-    let nudgeTimerB: number | undefined;
-    let firstFrame: number | undefined;
-    let secondFrame: number | undefined;
-
-    const cancelFrames = () => {
-      if (firstFrame !== undefined) window.cancelAnimationFrame(firstFrame);
-      if (secondFrame !== undefined) window.cancelAnimationFrame(secondFrame);
-      firstFrame = undefined;
-      secondFrame = undefined;
-    };
-    const cancelNudges = () => {
-      window.clearTimeout(nudgeTimerA);
-      window.clearTimeout(nudgeTimerB);
-      nudgeTimerA = undefined;
-      nudgeTimerB = undefined;
-    };
-
-    /** Forces a fresh rasterisation of the root layer and nudges the viewers. */
-    const forceSurfaceRefresh = () => {
-      if (typeof document === 'undefined' || typeof window === 'undefined') return;
-      const root = document.getElementById('root');
-      if (!root) return;
-      // Dropping the compositing layer and immediately re-creating it forces
-      // the webview to rasterise this content into a NEW texture. Re-applying
-      // the same translateZ(0) on its own is a no-op the compositor is free to
-      // skip, which is why a lost/blank surface could survive the old version
-      // of this recovery (the Linux desktop build's black screen on resume).
-      document.documentElement.classList.add('pharmatrack-resume-paint');
-      root.style.transform = 'none';
-      root.getBoundingClientRect();
-      root.style.transform = 'translateZ(0)';
-      // Opacity marks the layer's contents dirty without affecting layout, and
-      // unlike a filter it does not become a containing block for the app's
-      // fixed headers, so nothing shifts while it is applied.
-      root.style.opacity = '0.999';
-      root.getBoundingClientRect();
-      window.dispatchEvent(new CustomEvent('pharmatrack:resume'));
-    };
-
-    const repaint = () => {
-      if (typeof document === 'undefined' || typeof window === 'undefined') return;
-      const root = document.getElementById('root');
-      if (!root) return;
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(guardTimer);
-      cancelFrames();
-      cancelNudges();
-
-      forceSurfaceRefresh();
-
-      const restore = () => {
-        root.style.transform = '';
-        root.style.opacity = '';
-        document.documentElement.classList.remove('pharmatrack-resume-paint');
-        window.clearTimeout(settleTimer);
-        cancelFrames();
-        // If the surface already drew cleanly there is nothing left to nudge.
-        cancelNudges();
-      };
-
-      // Release on the frame after the repaint actually lands rather than after
-      // a fixed delay, so the window is back to normal as soon as it is drawn.
-      firstFrame = window.requestAnimationFrame(() => {
-        secondFrame = window.requestAnimationFrame(restore);
-      });
-      // Frames are not delivered to a window that is still unmapped; the timer
-      // guarantees the styles never get stuck on.
-      settleTimer = window.setTimeout(restore, 600);
-
-      // Some WebViews discard the very first frame after resume, so the single
-      // refresh above never becomes pixels and the window stays blank until
-      // something else draws. Two extra nudges inside the first quarter second
-      // — while the document is actually visible — make the surface recover
-      // immediately instead of "blank for a moment, then it snaps back". They
-      // only re-dirty the layer; the already-scheduled restore cleans up after
-      // whichever refresh landed last.
-      nudgeTimerA = window.setTimeout(() => {
-        if (document.visibilityState === 'visible') forceSurfaceRefresh();
-      }, 90);
-      nudgeTimerB = window.setTimeout(() => {
-        if (document.visibilityState === 'visible') forceSurfaceRefresh();
-      }, 260);
-
-      guardTimer = window.setTimeout(() => {
-        const style = window.getComputedStyle(root);
-        if (!root.childElementCount || style.display === 'none' || style.visibility === 'hidden') {
-          window.location.reload();
-        }
-      }, 1200);
-    };
-    const onVisible = () => { if (document.visibilityState === 'visible') repaint(); };
-    window.addEventListener('pageshow', repaint);
-    window.addEventListener('focus', repaint);
-    document.addEventListener('visibilitychange', onVisible);
-    // The native shell fires this from the Rust side on every platform
-    // (WebKitGTK and the Android WebView alike): a webview can come back with
-    // a blank surface without ever delivering a focus event to the page, which
-    // is how the window ends up blank after switching away.
-    window.addEventListener('pharmatrack:native-resume', repaint);
-    return () => {
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(guardTimer);
-      cancelFrames();
-      cancelNudges();
-      window.removeEventListener('pageshow', repaint);
-      window.removeEventListener('focus', repaint);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('pharmatrack:native-resume', repaint);
-    };
-  }, []);
+  useEffect(() => installResumePaintRecovery(), []);
   return null;
 };
 
