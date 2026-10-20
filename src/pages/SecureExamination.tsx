@@ -34,8 +34,8 @@ import {
   clearKioskAttemptProgress,
   getStoredKioskJoinCode,
   reportKioskAttemptHeartbeat,
-  submitKioskExamResultToAdmin,
 } from '../examination/kioskRoster';
+import { submitOrQueueKioskExamResult } from '../examination/kioskResultOutbox';
 
 const SecureExamination: React.FC = () => {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -118,6 +118,13 @@ const SecureExamination: React.FC = () => {
    * fail a submission that is already durable in encrypted local storage —
    * the offline result remains authoritative regardless of whether this
    * succeeds.
+   *
+   * If the device is offline (or Supabase is briefly unreachable) when the
+   * student finishes, this does NOT just drop the report: it hands off to
+   * the durable local outbox (kioskResultOutbox.ts), which keeps retrying
+   * automatically — on the next 'online' event and periodically in the
+   * background — until it actually reaches the admin, with no manual sync
+   * step for the student or admin.
    */
   const reportKioskResultToCloud = (closed: StudentAttempt) => {
     if (!repository) return;
@@ -129,7 +136,7 @@ const SecureExamination: React.FC = () => {
       if (!result) return;
       const examKey = version?.examId || closed.examVersionId;
       const examTitle = version?.title || 'Examination';
-      void submitKioskExamResultToAdmin({
+      void submitOrQueueKioskExamResult({
         joinCode,
         studentId: closed.studentId,
         examKey,

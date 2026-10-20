@@ -39,11 +39,18 @@ import { ExaminationRepository } from '../examination/service';
 import { loadExaminationState, saveExaminationState } from '../examination/storage';
 import { emptyExaminationState } from '../examination/types';
 import { verifyBuilderPassword, verifyAdminPassword } from '../examination/adminGate';
+import { __storageFallback } from '../examination/secureStorage';
 
 beforeEach(() => {
   idbStore.clear();
   jam.get = false;
   jam.set = false;
+  // secureStorage.ts latches "IndexedDB is broken" for the rest of the page
+  // session once it has seen a real failure — reset that latch between
+  // tests too, or an earlier test's simulated break would silently keep
+  // routing every later test straight to localStorage.
+  __storageFallback.reset();
+  localStorage.clear();
 });
 
 describe('Examination storage resilience', () => {
@@ -70,9 +77,32 @@ describe('Examination storage resilience', () => {
     expect(authenticated.firstName).toBe('Blessing');
   });
 
-  it('saveExaminationState reports failure but never throws when the write is broken', async () => {
+  it('a write survives entirely through the local storage fallback when IndexedDB itself is broken', async () => {
+    // secureStorage.ts now mirrors into localStorage as a last-resort
+    // backend — a device whose IndexedDB never works at all (a real,
+    // reported failure on some locked-down Windows WebView2 profiles) can
+    // still save and read back an exam attempt, instead of being told the
+    // write quietly failed.
     jam.set = true;
-    await expect(saveExaminationState(emptyExaminationState())).resolves.toBe(false);
+    jam.get = true;
+    const populated = { ...emptyExaminationState(), importedPackageKeys: ['via-fallback'] };
+    expect(await saveExaminationState(populated)).toBe(true);
+    expect((await loadExaminationState()).importedPackageKeys).toEqual(['via-fallback']);
+  });
+
+  it('saveExaminationState reports failure but never throws when truly nothing can store it', async () => {
+    jam.set = true;
+    jam.get = true;
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('Simulated local storage quota failure');
+      });
+    try {
+      await expect(saveExaminationState(emptyExaminationState())).resolves.toBe(false);
+    } finally {
+      setItemSpy.mockRestore();
+    }
   });
 
   it('the builder and admin gates still accept the seed password when storage cannot be read or written at all', async () => {
@@ -83,3 +113,4 @@ describe('Examination storage resilience', () => {
     expect(await verifyBuilderPassword('definitely-wrong')).toBe(false);
   });
 });
+

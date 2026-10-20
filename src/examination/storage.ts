@@ -1,5 +1,4 @@
-import * as idb from '../utils/idbStore';
-import { loadEncryptedJson, saveEncryptedJson } from './secureStorage';
+import { deleteEncryptedJson, loadEncryptedJson, saveEncryptedJson } from './secureStorage';
 import {
   EXAMINATION_SCHEMA_VERSION,
   emptyExaminationState,
@@ -13,6 +12,12 @@ import {
 import { timerFromLegacyAttempt } from './timer';
 
 export const EXAMINATION_STATE_KEY = 'pharmatrack_examination_state_v1';
+
+// Exam state is in the exam-entry critical path, so it opts into the
+// IndexedDB-broken localStorage fallback secureStorage.ts offers (other
+// callers of that module, like AI provider credentials, deliberately do
+// not).
+const FALLBACK = { allowLocalStorageFallback: true } as const;
 
 function arrayOrEmpty<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
@@ -134,7 +139,7 @@ let memoryStateCache: ExaminationState | null = null;
 export async function loadExaminationState(): Promise<ExaminationState> {
   try {
     const loaded = normalizeExaminationState(
-      await loadEncryptedJson<ExaminationState>(EXAMINATION_STATE_KEY),
+      await loadEncryptedJson<ExaminationState>(EXAMINATION_STATE_KEY, FALLBACK),
     );
     memoryStateCache = loaded;
     return loaded;
@@ -158,7 +163,7 @@ export async function saveExaminationState(state: ExaminationState): Promise<boo
   // session even if the persistent write below fails outright.
   memoryStateCache = normalized;
   try {
-    await saveEncryptedJson(EXAMINATION_STATE_KEY, normalized);
+    await saveEncryptedJson(EXAMINATION_STATE_KEY, normalized, FALLBACK);
     return true;
   } catch (error) {
     console.error('Examination storage could not be written:', error);
@@ -169,7 +174,7 @@ export async function saveExaminationState(state: ExaminationState): Promise<boo
 export async function clearExaminationState(): Promise<boolean> {
   memoryStateCache = null;
   try {
-    await idb.del(EXAMINATION_STATE_KEY);
+    await deleteEncryptedJson(EXAMINATION_STATE_KEY, FALLBACK);
     return true;
   } catch (error) {
     console.error('Examination storage could not be cleared:', error);

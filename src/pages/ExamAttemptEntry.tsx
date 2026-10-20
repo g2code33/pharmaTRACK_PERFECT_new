@@ -325,6 +325,22 @@ const ExamAttemptEntry: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staged, lanEndpoint, lanToken]);
 
+  // A failing REQUIRED check (storage warming up, the examination network
+  // still being discovered, …) is very often transient — re-checking
+  // automatically in the background means a device that recovers on its own
+  // clears the banner without the student having to notice and press
+  // anything. Stops the moment every required check is green.
+  useEffect(() => {
+    if (!staged || busy) return;
+    const stillFailing = checks.some((check) => check.required && !check.ok);
+    if (!stillFailing) return;
+    const timer = window.setTimeout(() => {
+      void runReadiness(staged);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staged, checks, busy]);
+
   const enterExam = async () => {
     if (!staged || !identity) return;
     // Browsers only grant Element.requestFullscreen() during a direct user
