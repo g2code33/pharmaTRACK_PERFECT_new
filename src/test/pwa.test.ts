@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { registerPwa } from '../pwa';
@@ -39,5 +39,47 @@ describe('PWA web shell', () => {
     expect(await registerPwa()).toBeUndefined();
     if (original) Object.defineProperty(navigator, 'serviceWorker', original);
     else delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
+  });
+
+  describe('re-checks for a new release when a long-lived tab resurfaces', () => {
+    const originalServiceWorker = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker');
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      if (originalServiceWorker) Object.defineProperty(navigator, 'serviceWorker', originalServiceWorker);
+      else delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker;
+    });
+
+    it('calls registration.update() again when the tab becomes visible or the window regains focus', async () => {
+      // A phone browser tab is routinely backgrounded for weeks rather than
+      // closed, so booting with a single update check (the old behaviour)
+      // left it running whatever build was current the day it was first
+      // opened. Returning to the tab must prompt a fresh check every time.
+      vi.stubEnv('PROD', true);
+      const update = vi.fn().mockResolvedValue(undefined);
+      const fakeRegistration = {
+        installing: null,
+        waiting: null,
+        update,
+        addEventListener: vi.fn(),
+      };
+      Object.defineProperty(navigator, 'serviceWorker', {
+        configurable: true,
+        value: {
+          controller: null,
+          register: vi.fn().mockResolvedValue(fakeRegistration),
+          addEventListener: vi.fn(),
+        },
+      });
+
+      await registerPwa();
+      expect(update).toHaveBeenCalledTimes(1);
+
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(update).toHaveBeenCalledTimes(2);
+
+      window.dispatchEvent(new Event('focus'));
+      expect(update).toHaveBeenCalledTimes(3);
+    });
   });
 });

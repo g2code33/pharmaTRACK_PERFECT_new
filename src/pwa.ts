@@ -18,6 +18,33 @@ export { isPWAStandalone as isPwaStandalone } from './platform/runtime';
 
 let registration: ServiceWorkerRegistration | undefined;
 let reloadingForUpdate = false;
+let periodicUpdateChecksArmed = false;
+
+/**
+ * A phone browser tab is very often never "closed" the way a desktop window
+ * is — it is backgrounded by the OS and resumed weeks or months later with
+ * none of this module's boot-time code re-running. Before this, the only
+ * update check was the single `registration.update()` call made once when
+ * the tab first registered the worker, so a tab left open across dozens of
+ * releases could sit on a build from a very old session indefinitely and
+ * never even reach the point of offering the update banner. Re-checking
+ * whenever the tab becomes the foreground tab again (or the window regains
+ * focus) catches exactly that case without needing a background timer that
+ * would keep polling a tab nobody is looking at.
+ */
+function armPeriodicUpdateChecks(): void {
+  if (periodicUpdateChecksArmed || typeof document === 'undefined') return;
+  periodicUpdateChecksArmed = true;
+
+  const recheck = () => {
+    void registration?.update().catch(() => undefined);
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') recheck();
+  });
+  window.addEventListener('focus', recheck);
+}
 
 /**
  * Reload budget for the native cleanup. A single guarded reload was not
@@ -161,6 +188,7 @@ export async function registerPwa(): Promise<ServiceWorkerRegistration | undefin
     // Ask for a fresh worker on later visits. It will wait rather than replace
     // an active session until the user accepts the update banner.
     void registration.update().catch(() => undefined);
+    armPeriodicUpdateChecks();
 
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (reloadingForUpdate) return;
