@@ -3,10 +3,12 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Flag,
   LockKeyhole,
   Save,
   Send,
@@ -27,6 +29,11 @@ import { secureWindowPrompt } from '../platform/securePrompt';
 import type { KioskAdapter } from '../examination/kioskAdapter';
 import type { ExamQuestionSnapshot, StudentAttempt } from '../examination/types';
 import {
+  clearFlaggedQuestions,
+  loadFlaggedQuestions,
+  saveFlaggedQuestions,
+} from '../examination/flaggedQuestions';
+import {
   enterSecureKiosk,
   markSecureKioskSubmitting,
   onBlockedKioskNavigation,
@@ -39,6 +46,10 @@ import {
   reportKioskAttemptHeartbeat,
 } from '../examination/kioskRoster';
 import { submitOrQueueKioskExamResult } from '../examination/kioskResultOutbox';
+
+/** Questions are shown in groups of this size, matching the shared Quick Quiz layout exactly. */
+const QUIZ_SET_SIZE = 3;
+
 
 /**
  * Checks a supplied separate-administrator early-exit password against
@@ -97,6 +108,8 @@ const SecureExamination: React.FC = () => {
   );
   const [fullscreenActive, setFullscreenActive] = useState(true);
   const [navigationBusy, setNavigationBusy] = useState(false);
+  const [flaggedQuestions, setFlaggedQuestions] = useState<Set<string>>(new Set());
+  const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
   // Post-submission admin unlock gate: once true, the release effect below
   // is allowed to actually tear down the kiosk lock. Starts false on every
   // mount, including a reload while "awaiting admin exit" — only the
@@ -105,6 +118,7 @@ const SecureExamination: React.FC = () => {
   const [unlockBusy, setUnlockBusy] = useState(false);
   const [unlockError, setUnlockError] = useState('');
   const adapterRef = useRef<KioskAdapter | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
   const cleanupKioskRef = useRef<(() => void) | null>(null);
   const blockedNavigationCleanupRef = useRef<(() => void) | null>(null);
   const syncRef = useRef<ExaminationSyncEngine | null>(null);
@@ -281,6 +295,7 @@ const SecureExamination: React.FC = () => {
       setQuestions(
         Object.fromEntries(version.questions.map((question) => [question.id, question])),
       );
+      setFlaggedQuestions(loadFlaggedQuestions(saved.id));
       setMessage('');
       setMessageReturnable(false);
       if (saved.status === 'SUBMITTED' || saved.status === 'KIOSK_RELEASED' || saved.status === 'CLOSED') {
@@ -704,6 +719,17 @@ const SecureExamination: React.FC = () => {
     return persistAnswer(current.id, answers[current.id] || '');
   };
 
+  // The question list has its own independent scroll region (like the
+  // shared Quick Quiz) — moving to a different set of three should always
+  // land the student at the top of that set, not wherever they happened to
+  // have scrolled to on the previous one.
+  const scrollQuestionsToTop = () => {
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      mainScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  };
+
   const goTo = async (nextIndex: number) => {
     if (!attempt || !current || navigationBusy || nextIndex < 0 || nextIndex >= ordered.length)
       return;
@@ -713,11 +739,73 @@ const SecureExamination: React.FC = () => {
       try {
         await repository.updateCurrentQuestion(attempt.id, ordered[nextIndex].id);
         setIndex(nextIndex);
+        scrollQuestionsToTop();
       } catch {
         setSaveState('Save problem — retrying');
       }
     }
     setNavigationBusy(false);
+  };
+
+  // Questions are shown three at a time (QUIZ_SET_SIZE), matching the shared
+  // Quick Quiz layout exactly — "index" is the student's furthest-focused
+  // question within the current set of three, used for the progress label,
+  // the heartbeat, and the Finish-unlocks-on-last-question gate.
+  const setStart = Math.floor(index / QUIZ_SET_SIZE) * QUIZ_SET_SIZE;
+  const visibleQuestions = ordered.slice(setStart, setStart + QUIZ_SET_SIZE);
+  const setEnd = Math.min(setStart + visibleQuestions.length, ordered.length);
+  const allowPrevious = attempt?.settingsSnapshot.navigation.allowPrevious !== false;
+  const canGoPreviousSet = allowPrevious && setStart > 0;
+  const canGoNextSet = setStart + QUIZ_SET_SIZE < ordered.length;
+  const isOnLastQuestion = ordered.length > 0 && index === ordered.length - 1;
+  const answeredCount = ordered.filter(
+    (question) => (answers[question.id] || '').trim().length > 0,
+  ).length;
+  const unansweredCount = Math.max(0, ordered.length - answeredCount);
+  const flaggedCount = ordered.filter((question) => flaggedQuestions.has(question.id)).length;
+
+  const goToQuestionSet = (startIndex: number) => {
+    void goTo(Math.min(Math.max(0, startIndex), Math.max(0, ordered.length - 1)));
+  };
+
+  const openSubmitReview = () => {
+    if (!isOnLastQuestion) return;
+    setSubmitReviewOpen(true);
+  };
+
+  /**
+   * Moves the "current question" pointer without the full
+   * save-then-move round trip `goTo` performs — used when a student
+   * interacts with a card inside the visible three-question set that isn't
+   * the lead one. The answer itself is already persisted independently by
+   * that card's own change handler, so there is nothing stale left to save
+   * first, and the pointer move itself is just a best-effort admin-visible
+   * "which question is this student looking at" signal.
+   */
+  const focusQuestion = (targetIndex: number) => {
+    if (targetIndex === index || targetIndex < 0 || targetIndex >= ordered.length) return;
+    setIndex(targetIndex);
+    const target = ordered[targetIndex];
+    if (repository && attempt && target) {
+      void repository.updateCurrentQuestion(attempt.id, target.id);
+    }
+  };
+
+  const answerQuestion = (questionId: string, questionIndex: number, value: string) => {
+    setAnswers((existing) => ({ ...existing, [questionId]: value }));
+    void persistAnswer(questionId, value);
+    if (questionIndex !== index) focusQuestion(questionIndex);
+  };
+
+  /** Flags never affect grading or security — a purely student-facing "come back to this" bookmark. */
+  const toggleFlag = (questionId: string) => {
+    setFlaggedQuestions((existing) => {
+      const next = new Set(existing);
+      if (next.has(questionId)) next.delete(questionId);
+      else next.add(questionId);
+      if (attempt) saveFlaggedQuestions(attempt.id, next);
+      return next;
+    });
   };
 
   const finalizeSubmission = async (
@@ -773,6 +861,7 @@ const SecureExamination: React.FC = () => {
       setAttempt(closed);
       appendQuizHistoryResult(closed);
       reportKioskResultToCloud(closed);
+      clearFlaggedQuestions(closed.id);
       setSubmitted(true);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The examination could not be finalized safely.');
@@ -995,13 +1084,13 @@ const SecureExamination: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 p-3 sm:p-6 pt-safe pb-safe safe-area-x">
-      <header className="max-w-6xl mx-auto">
-        <div className="rounded-2xl bg-[#0F172A] text-white p-3 sm:p-4 shadow-lg">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-slate-100">
+      <header className="safe-area-x shrink-0 border-b border-slate-200/80 bg-slate-100/95 px-3 pb-1.5 pt-safe shadow-sm backdrop-blur sm:px-6 sm:pb-2 sm:pt-3">
+        <div className="mx-auto max-w-7xl rounded-2xl bg-[#0F172A] p-2.5 text-white shadow-lg sm:p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[10px] sm:text-xs uppercase tracking-widest text-emerald-300 font-black">
+                <p className="text-[8px] font-black uppercase tracking-[0.2em] text-emerald-300 sm:text-[10px]">
                   {adapterRef.current?.matrix.platform === 'TAURI_PC'
                     ? 'Native Desktop Kiosk'
                     : adapterRef.current?.matrix.platform === 'ANDROID_NATIVE'
@@ -1009,238 +1098,374 @@ const SecureExamination: React.FC = () => {
                       : 'Restricted Web Examination Mode'}
                 </p>
                 {isIOS() && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-emerald-200 border border-white/20">
+                  <span className="rounded-full border border-white/20 bg-white/10 px-1.5 py-0.5 text-[9px] font-bold text-emerald-200">
                     {isIOSPWA() ? 'iPhone PWA' : 'iPhone Safari'}
                   </span>
                 )}
               </div>
-              <h1 className="text-lg sm:text-2xl font-black mt-0.5 truncate">Secure Examination</h1>
-              <p className="text-[11px] sm:text-xs text-slate-300">
+              <h1 className="mt-0.5 truncate text-sm font-black sm:text-lg">Secure Examination</h1>
+              <p className="mt-0.5 truncate text-[10px] font-semibold text-slate-300 sm:text-xs">
                 Authoritative LAN / local exam timer · Encrypted device state
               </p>
             </div>
             <div
-              className={`flex items-center gap-2 rounded-xl px-4 py-2 font-black font-mono text-base shrink-0 ${
-                seconds < 300 ? 'bg-red-500/20 text-red-200 animate-pulse ring-1 ring-red-300/40' : 'bg-white/10 text-emerald-100'
+              className={`flex h-9 shrink-0 items-center gap-1.5 rounded-xl px-2.5 font-mono font-black text-xs sm:h-10 sm:px-3 sm:text-base ${
+                seconds < 300
+                  ? 'animate-pulse bg-red-500/20 text-red-200 ring-1 ring-red-300/40'
+                  : 'bg-white/10 text-emerald-100'
               }`}
             >
-              <Clock3 className="w-5 h-5 text-emerald-300" />
+              <Clock3 className="h-4 w-4 text-emerald-300 sm:h-5 sm:w-5" />
               <span>
                 {minutes}:{remainingSeconds}
               </span>
             </div>
           </div>
 
-          {/* Progress & Save Status Row */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-3 pt-3 border-t border-white/10">
-            <div className="w-full sm:w-auto">
-              <p className="text-xs font-bold text-slate-200">
-                Question {index + 1} of {ordered.length}
-              </p>
-              <div className="w-full sm:w-64 h-1.5 bg-white/10 rounded-full mt-1.5 overflow-hidden">
+          <div className="mt-1.5 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <div className="flex flex-1 items-center gap-2 sm:gap-3">
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full bg-emerald-400 transition-all duration-300"
-                  style={{ width: `${((index + 1) / ordered.length) * 100}%` }}
+                  className="h-full rounded-full bg-emerald-400 transition-all duration-300"
+                  style={{ width: `${(setEnd / ordered.length) * 100}%` }}
                 />
               </div>
+              <span className="shrink-0 whitespace-nowrap text-[10px] font-black text-slate-200 sm:text-xs">
+                Q{setStart + 1}-{setEnd}/{ordered.length}
+              </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+            <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-semibold sm:gap-2 sm:text-xs">
               <span
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${
                   saveState === 'SAVED'
-                    ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
+                    ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200'
                     : saveState === 'SAVING…'
-                      ? 'bg-blue-500/15 text-blue-200 border-blue-400/30'
-                      : 'bg-red-500/15 text-red-200 border-red-400/30'
+                      ? 'border-blue-400/30 bg-blue-500/15 text-blue-200'
+                      : 'border-red-400/30 bg-red-500/15 text-red-200'
                 }`}
               >
-                <Save className="w-3.5 h-3.5" />
+                <Save className="h-3.5 w-3.5" />
                 {saveState}
               </span>
               <span
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ${
                   syncState === 'SYNCHRONIZED'
-                    ? 'bg-emerald-500/15 text-emerald-200 border-emerald-400/30'
-                    : 'bg-amber-500/15 text-amber-200 border-amber-400/30'
+                    ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200'
+                    : 'border-amber-400/30 bg-amber-500/15 text-amber-200'
                 }`}
               >
                 {syncState === 'SYNCHRONIZED' ? (
                   <>
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300" />
                     Synchronized
                   </>
                 ) : (
                   <>
-                    <WifiOff className="w-3.5 h-3.5 text-amber-300" />
+                    <WifiOff className="h-3.5 w-3.5 text-amber-300" />
                     {syncState}
                   </>
                 )}
               </span>
+              {flaggedCount > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/15 px-2.5 py-1 text-amber-200">
+                  <Flag className="h-3.5 w-3.5" fill="currentColor" />
+                  {flaggedCount} flagged
+                </span>
+              )}
             </div>
           </div>
         </div>
       </header>
 
       {!fullscreenActive && !submitted && (
-        <div className="max-w-6xl mx-auto mt-4 bg-amber-50 border border-amber-300 rounded-xl p-3 sm:p-4 text-amber-900 text-xs sm:text-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>
-              <strong>Fullscreen exited:</strong> Fullscreen mode is recommended for this secure examination.
-            </span>
+        <div className="safe-area-x shrink-0 bg-slate-100 px-3 pt-2 sm:px-6">
+          <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 shadow-sm sm:flex-row sm:items-center sm:p-4 sm:text-sm">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
+              <span>
+                <strong>Fullscreen exited:</strong> Fullscreen mode is recommended for this secure
+                examination.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                void adapterRef.current?.requestFullscreen();
+              }}
+              className="shrink-0 rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-bold text-amber-950 transition-colors hover:bg-amber-300"
+            >
+              Return to Fullscreen
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              void adapterRef.current?.requestFullscreen();
-            }}
-            className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold rounded-lg text-xs shrink-0 transition-colors"
-          >
-            Return to Fullscreen
-          </button>
         </div>
       )}
 
-      <main className="max-w-6xl mx-auto grid lg:grid-cols-[1fr_280px] gap-6 mt-6">
-        {/* Main Question Card Section */}
-        <div>
-          <section className="rounded-2xl bg-white text-slate-900 p-5 sm:p-8 shadow-md border border-slate-100">
-            {/* Question Type and Marks Badge */}
-            <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
-              <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-lg text-xs font-bold uppercase tracking-wider">
-                {current.questionType === 'mcq'
-                  ? 'Multiple Choice'
-                  : current.questionType
-                      .split('_')
-                      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-                      .join(' ')}
-              </span>
-              <span className="text-sm font-semibold text-slate-500">
-                {current.marks || 1} {(current.marks || 1) === 1 ? 'mark' : 'marks'}
-              </span>
-            </div>
-
-            {/* Question Text */}
-            <h2 className="text-lg sm:text-xl font-medium text-slate-900 leading-relaxed mb-6">
-              {current.questionText}
-            </h2>
-
-            {/* MCQ Options with Letters A, B, C, D */}
-            {current.questionType === 'mcq' && (
-              <div className="space-y-3">
-                {(
-                  attempt.optionOrders[current.id] ||
-                  current.options?.map((_, optionIndex) => optionIndex) ||
-                  []
-                ).map((optionIndex, displayIdx) => {
-                  const isSelected = answers[current.id] === String(optionIndex);
-                  const letter = String.fromCharCode(65 + displayIdx);
-                  const optionText = current.options?.[optionIndex];
-                  return (
-                    <button
-                      key={optionIndex}
-                      type="button"
-                      onClick={() => {
-                        setAnswers((existing) => ({
-                          ...existing,
-                          [current.id]: String(optionIndex),
-                        }));
-                        void persistAnswer(current.id, String(optionIndex));
-                      }}
-                      className={`w-full p-4 rounded-xl border-2 text-left transition-all flex items-center gap-3.5 min-h-[52px] ${
-                        isSelected
-                          ? 'border-emerald-600 bg-emerald-50 text-slate-900 shadow-sm'
-                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700'
-                      }`}
-                    >
-                      <span
-                        className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm shrink-0 transition-colors ${
-                          isSelected
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-slate-100 text-slate-600'
+      <main
+        ref={mainScrollRef}
+        className="safe-area-x min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-2 sm:px-6 sm:py-4"
+      >
+        <div className="mx-auto grid max-w-7xl gap-3 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-start">
+          <section className="min-w-0 space-y-3">
+            <div className="grid gap-3">
+              {visibleQuestions.map((question, offset) => {
+                const absoluteIndex = setStart + offset;
+                const isFlagged = flaggedQuestions.has(question.id);
+                return (
+                  <article
+                    key={question.id}
+                    className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:p-5"
+                  >
+                    <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                          Q{absoluteIndex + 1}
+                        </span>
+                        <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[10px] font-black uppercase text-purple-700">
+                          {question.questionType === 'mcq'
+                            ? 'Multiple Choice'
+                            : question.questionType
+                                .split('_')
+                                .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                                .join(' ')}
+                        </span>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
+                          {question.marks || 1} {(question.marks || 1) === 1 ? 'mark' : 'marks'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleFlag(question.id)}
+                        aria-pressed={isFlagged}
+                        title={isFlagged ? 'Remove flag' : 'Flag this question for review'}
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase transition-colors ${
+                          isFlagged
+                            ? 'bg-amber-400 text-amber-950'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                         }`}
                       >
-                        {letter}
-                      </span>
-                      <span className="text-base font-medium leading-relaxed">{optionText}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                        <Flag className="h-3.5 w-3.5" fill={isFlagged ? 'currentColor' : 'none'} />
+                        {isFlagged ? 'Flagged' : 'Flag'}
+                      </button>
+                    </div>
 
-            {/* Text / Short-Answer / Essay */}
-            {current.questionType !== 'mcq' && (
-              <textarea
-                value={answers[current.id] || ''}
-                onChange={(event) => {
-                  setAnswers((existing) => ({ ...existing, [current.id]: event.target.value }));
-                  void persistAnswer(current.id, event.target.value);
-                }}
-                rows={6}
-                className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-none text-slate-800 text-base"
-                placeholder="Type your answer here..."
-              />
-            )}
+                    <h2 className="text-[15px] font-black leading-snug text-slate-900 sm:text-base lg:text-lg">
+                      {question.questionText}
+                    </h2>
 
-            {/* Navigation Previous / Next */}
-            <div className="flex items-center justify-between pt-6 border-t border-slate-100 mt-8">
+                    {question.questionType === 'mcq' ? (
+                      <div className="mt-3 grid gap-2">
+                        {(
+                          attempt.optionOrders[question.id] ||
+                          question.options?.map((_, optionIndex) => optionIndex) ||
+                          []
+                        ).map((optionIndex, displayIdx) => {
+                          const isSelected = answers[question.id] === String(optionIndex);
+                          const letter = String.fromCharCode(65 + displayIdx);
+                          const optionText = question.options?.[optionIndex];
+                          return (
+                            <button
+                              key={optionIndex}
+                              type="button"
+                              onClick={() =>
+                                answerQuestion(question.id, absoluteIndex, String(optionIndex))
+                              }
+                              className={`flex w-full touch-manipulation items-start gap-2 rounded-xl border p-3 text-left text-sm transition-colors ${
+                                isSelected
+                                  ? 'border-[#2D6A4F] bg-emerald-50 text-emerald-950 shadow-sm'
+                                  : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50'
+                              }`}
+                            >
+                              <span
+                                className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                                  isSelected
+                                    ? 'bg-[#2D6A4F] text-white'
+                                    : 'bg-slate-100 text-slate-500'
+                                }`}
+                              >
+                                {letter}
+                              </span>
+                              <span className="min-w-0 flex-1 leading-snug">{optionText}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <textarea
+                        value={answers[question.id] || ''}
+                        onFocus={() => focusQuestion(absoluteIndex)}
+                        onChange={(event) =>
+                          answerQuestion(question.id, absoluteIndex, event.target.value)
+                        }
+                        rows={5}
+                        placeholder="Type your answer here..."
+                        className="mt-3 min-h-[7rem] w-full rounded-xl border border-slate-300 p-3 text-sm text-slate-800 outline-none focus:border-transparent focus:ring-4 focus:ring-[#2D6A4F]/15"
+                      />
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+
+            <div
+              className="grid grid-cols-[repeat(3,minmax(0,1fr))] items-center gap-2 rounded-2xl border border-slate-200 bg-white/90 p-2 shadow-sm"
+              data-testid="secure-exam-set-navigation"
+            >
               <button
                 type="button"
-                disabled={
-                  index === 0 ||
-                  navigationBusy ||
-                  attempt.settingsSnapshot.navigation.allowPrevious === false
-                }
-                onClick={() => void goTo(index - 1)}
-                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 sm:px-5 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-bold hover:bg-slate-50 transition-colors disabled:opacity-30 disabled:pointer-events-none text-base touch-manipulation"
+                onClick={() => goToQuestionSet(setStart - QUIZ_SET_SIZE)}
+                disabled={!canGoPreviousSet || navigationBusy}
+                className="inline-flex items-center justify-self-start gap-1 rounded-xl bg-slate-100 px-2 py-2 text-xs font-black text-slate-700 disabled:opacity-35"
               >
-                <ChevronLeft className="w-5 h-5" />
-                Previous
+                <ChevronLeft className="h-4 w-4" /> Back 3
               </button>
-
-              {index === ordered.length - 1 ? (
-                <button
-                  type="button"
-                  disabled={navigationBusy}
-                  onClick={() => {
-                    if (window.confirm('Submit this attempt? You may not return after submission.'))
-                      void submit();
-                  }}
-                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 sm:px-6 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl transition-colors shadow-sm disabled:opacity-50 text-base touch-manipulation"
-                >
-                  <Send className="w-4 h-4" />
-                  Submit Exam
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={navigationBusy}
-                onClick={() => void goTo(index + 1)}
-                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-5 sm:px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors shadow-sm disabled:opacity-50 text-base touch-manipulation"
+              <button
+                type="button"
+                onClick={openSubmitReview}
+                disabled={!isOnLastQuestion || navigationBusy}
+                title={
+                  isOnLastQuestion
+                    ? 'Review answers before submitting'
+                    : `Go to question ${ordered.length} to unlock Finish`
+                }
+                className="inline-flex items-center justify-self-center gap-1 rounded-xl bg-emerald-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 sm:text-sm"
               >
-                {navigationBusy ? 'Saving…' : 'Next'}
-                  <ChevronRight className="w-5 h-5" />
-                </button>
-              )}
+                Finish <Check className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => goToQuestionSet(setStart + QUIZ_SET_SIZE)}
+                disabled={!canGoNextSet || navigationBusy}
+                className="inline-flex items-center justify-self-end gap-1 rounded-xl bg-blue-600 px-2 py-2 text-xs font-black text-white shadow-sm disabled:opacity-35 sm:text-sm"
+              >
+                {navigationBusy ? 'Saving…' : 'Next 3'} <ChevronRight className="h-4 w-4" />
+              </button>
             </div>
+            {!isOnLastQuestion && ordered.length > 0 && (
+              <p className="px-1 text-center text-[11px] font-bold text-slate-500">
+                Finish unlocks on question {ordered.length}. Use the jump list to go there when
+                you are ready to submit.
+              </p>
+            )}
           </section>
 
-          {/* Responsive Question Navigation for Mobile / Tablet */}
-          <div className="lg:hidden mt-6 bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-            <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-3">Jump to question</h3>
+          {submitReviewOpen && (
+            <div
+              className="fixed inset-0 z-[260] flex items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Review examination before submission"
+            >
+              <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl">
+                <div className="border-b border-slate-100 p-4">
+                  <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-700">
+                    Final review
+                  </p>
+                  <h2 className="mt-1 text-xl font-black text-slate-900">
+                    Check answered and unanswered questions
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {answeredCount} answered · {unansweredCount} unanswered
+                    {flaggedCount ? ` · ${flaggedCount} flagged` : ''}. Use Corrections to go back
+                    before submitting.
+                  </p>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="grid gap-2">
+                    {ordered.map((question, idx) => {
+                      const hasAnswer = (answers[question.id] || '').trim().length > 0;
+                      const isFlagged = flaggedQuestions.has(question.id);
+                      return (
+                        <button
+                          key={question.id}
+                          type="button"
+                          onClick={() => {
+                            setSubmitReviewOpen(false);
+                            void goTo(idx);
+                          }}
+                          className={`flex items-start gap-3 rounded-2xl border p-3 text-left ${
+                            hasAnswer
+                              ? 'border-emerald-200 bg-emerald-50'
+                              : 'border-amber-200 bg-amber-50'
+                          }`}
+                        >
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
+                              hasAnswer
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-amber-500 text-amber-950'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-1.5">
+                              <span className="block line-clamp-2 text-sm font-black text-slate-900">
+                                {question.questionText}
+                              </span>
+                              {isFlagged && (
+                                <Flag className="h-3.5 w-3.5 shrink-0 text-amber-500" fill="currentColor" />
+                              )}
+                            </span>
+                            <span
+                              className={`mt-1 block text-xs font-bold ${
+                                hasAnswer ? 'text-emerald-800' : 'text-amber-800'
+                              }`}
+                            >
+                              {hasAnswer ? 'Answered — tap to review' : 'Unanswered — tap to correct'}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="safe-area-bottom sticky bottom-0 grid grid-cols-[repeat(2,minmax(0,1fr))] gap-2 border-t border-slate-100 bg-white p-3">
+                  <button
+                    type="button"
+                    onClick={() => setSubmitReviewOpen(false)}
+                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 hover:bg-slate-50"
+                  >
+                    Corrections
+                  </button>
+                  <button
+                    type="button"
+                    disabled={navigationBusy}
+                    onClick={() => void submit()}
+                    className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-2xl bg-[#2D6A4F] px-4 py-3 text-sm font-black text-white transition-colors hover:bg-[#1B4332] disabled:opacity-60"
+                  >
+                    <Send className="h-4 w-4" /> {navigationBusy ? 'Submitting…' : 'Submit Exam'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <aside
+            className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm lg:sticky lg:top-3 lg:max-h-[calc(100dvh-1.5rem)] lg:overflow-y-auto"
+            aria-label="Jump to question"
+          >
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase tracking-wider text-slate-500">
+                Jump to question
+              </p>
+              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-500">
+                {ordered.length} Qs
+              </span>
+            </div>
             <div className="flex flex-wrap gap-2">
               {ordered.map((question, questionIndex) => {
-                const isCurrent = questionIndex === index;
+                const inVisibleSet = questionIndex >= setStart && questionIndex < setEnd;
                 const isAnswered = Boolean(answers[question.id]);
+                const isFlagged = flaggedQuestions.has(question.id);
                 return (
                   <button
                     type="button"
                     key={question.id}
                     onClick={() => void goTo(questionIndex)}
                     disabled={navigationBusy}
-                    className={`min-w-[44px] min-h-[44px] w-11 h-11 rounded-full text-sm font-black transition-all flex items-center justify-center disabled:opacity-50 touch-manipulation ${
-                      isCurrent
+                    aria-current={questionIndex === index ? 'step' : undefined}
+                    className={`relative flex h-11 w-11 min-h-[44px] min-w-[44px] touch-manipulation items-center justify-center rounded-full text-sm font-black transition-all disabled:opacity-50 ${
+                      inVisibleSet
                         ? 'bg-[#2D6A4F] text-white shadow-md ring-2 ring-emerald-200'
                         : isAnswered
                           ? 'bg-emerald-100 text-emerald-700'
@@ -1248,76 +1473,25 @@ const SecureExamination: React.FC = () => {
                     }`}
                   >
                     {questionIndex + 1}
+                    {isFlagged && (
+                      <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-amber-950 ring-2 ring-white">
+                        <Flag className="h-2.5 w-2.5" fill="currentColor" />
+                      </span>
+                    )}
                   </button>
                 );
               })}
             </div>
-            <button
-              type="button"
-              disabled={navigationBusy}
-              onClick={() => {
-                if (window.confirm('Submit this attempt? You may not return after submission.'))
-                  void submit();
-              }}
-              className="mt-4 w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white py-3 px-4 font-black flex items-center justify-center gap-2 transition-colors shadow-sm touch-manipulation text-base"
-            >
-              <Send className="w-4 h-4" /> SUBMIT EXAM
-            </button>
-          </div>
+
+            <p className="mt-4 flex gap-1.5 text-xs leading-relaxed text-slate-500">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <span>
+                Navigation, clipboard, printing, and exit events are audited. Offline state is
+                continuously protected.
+              </span>
+            </p>
+          </aside>
         </div>
-
-        {/* Desktop Sidebar Aside */}
-        <aside className="rounded-2xl bg-white border border-slate-200 shadow-sm p-5 h-fit hidden lg:block">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="text-xs font-black uppercase tracking-wider text-slate-500">Jump to question</h2>
-            <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-500">
-              {ordered.length} Qs
-            </span>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-            {ordered.map((question, questionIndex) => {
-              const isCurrent = questionIndex === index;
-              const isAnswered = Boolean(answers[question.id]);
-              return (
-                <button
-                  type="button"
-                  key={question.id}
-                  onClick={() => void goTo(questionIndex)}
-                  disabled={navigationBusy}
-                  className={`rounded-full p-2.5 text-sm font-black transition-all disabled:opacity-50 ${
-                    isCurrent
-                      ? 'bg-[#2D6A4F] text-white shadow-md ring-2 ring-emerald-200'
-                      : isAnswered
-                        ? 'bg-emerald-100 text-emerald-700'
-                        : 'border border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
-                  }`}
-                >
-                  {questionIndex + 1}
-                </button>
-              );
-            })}
-          </div>
-
-          <button
-            type="button"
-            disabled={navigationBusy}
-            onClick={() => {
-              if (window.confirm('Submit this attempt? You may not return after submission.'))
-                void submit();
-            }}
-            className="mt-6 w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white py-3 font-black flex items-center justify-center gap-2 transition-colors shadow-sm"
-          >
-            <Send className="w-4 h-4" /> SUBMIT EXAM
-          </button>
-
-          <p className="text-xs text-slate-500 mt-4 flex gap-1.5 leading-relaxed">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500 mt-0.5" />
-            <span>
-              Navigation, clipboard, printing, and exit events are audited. Offline state is
-              continuously protected.
-            </span>
-          </p>
-        </aside>
       </main>
     </div>
   );

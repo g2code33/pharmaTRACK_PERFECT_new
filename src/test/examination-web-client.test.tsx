@@ -528,15 +528,22 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
         </MemoryRouter>,
       );
 
-      // Verify question card header and question text
+      // Kiosk UI now matches Quick Quiz: both questions of this short exam
+      // fit in a single batch-of-3, so they render together on one scrolling
+      // screen rather than one-question-at-a-time.
       expect(
         await screen.findByText('Which organ is the primary site of drug metabolism?'),
       ).toBeTruthy();
       expect(screen.getByText('Multiple Choice')).toBeTruthy();
       expect(screen.getByText('2 marks')).toBeTruthy();
+      expect(
+        screen.getByText('Explain the mechanism of competitive receptor antagonism.'),
+      ).toBeTruthy();
+      expect(screen.getByText('Short Answer')).toBeTruthy();
+      expect(screen.getByText('3 marks')).toBeTruthy();
 
-      // Verify numbering and progress
-      expect(screen.getByText('Question 1 of 2')).toBeTruthy();
+      // Verify progress (batch-of-3 style: "Q1-2/2")
+      expect(screen.getByText(/Q1-2\/2/)).toBeTruthy();
 
       // Verify timer
       expect(screen.getByText(/59:|60:00/)).toBeTruthy();
@@ -555,7 +562,7 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
       expect(screen.getByText('D')).toBeTruthy();
       expect(screen.getByText('Heart')).toBeTruthy();
 
-      // Select Option B (Liver)
+      // Select Option B (Liver) for question 1
       fireEvent.click(screen.getByText('Liver'));
 
       // Verify Save status updates or remains saved
@@ -563,41 +570,52 @@ describe('PHARMATRACK — Web/PWA Examination Client', () => {
         expect(screen.getByText('SAVED')).toBeTruthy();
       });
 
-      // Verify Next button exists and navigates to Question 2
-      const nextButton = screen.getByText('Next');
-      expect(nextButton).toBeTruthy();
-      fireEvent.click(nextButton);
+      // Finish is gated until the student has reached the last question —
+      // the same rule the shared Quick Quiz uses.
+      const finishButton = screen.getByRole('button', { name: /Finish/i });
+      expect(finishButton).toBeDisabled();
 
-      // Question 2: Short answer
-      expect(
-        await screen.findByText('Explain the mechanism of competitive receptor antagonism.'),
-      ).toBeTruthy();
-      expect(screen.getByText('Short Answer')).toBeTruthy();
-      expect(screen.getByText('3 marks')).toBeTruthy();
-      expect(screen.getByText('Question 2 of 2')).toBeTruthy();
+      // Flag question 1 for review.
+      const flagButtons = screen.getAllByRole('button', { name: /^Flag$/i });
+      fireEvent.click(flagButtons[0]);
+      expect((await screen.findAllByText(/1 flagged/)).length).toBeGreaterThan(0);
 
-      // Enter answer in textarea
+      // Answer question 2 (short answer) — focusing it moves the kiosk
+      // pointer to the last question and unlocks Finish.
       const textarea = screen.getByPlaceholderText('Type your answer here...');
       fireEvent.change(textarea, { target: { value: 'Binds active site reversibly.' } });
 
-      // Click Previous button to navigate back to Question 1
-      const prevButton = screen.getByText('Previous');
-      fireEvent.click(prevButton);
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Finish/i })).not.toBeDisabled();
+      });
 
-      // Verify Question 1 is back and Option B is still selected
-      expect(
-        await screen.findByText('Which organ is the primary site of drug metabolism?'),
-      ).toBeTruthy();
-      expect(screen.getByText('Question 1 of 2')).toBeTruthy();
-
-      // Verify question navigation grid buttons (1, 2)
-      const questionNav1 = screen.getAllByRole('button', { name: '1' });
-      const questionNav2 = screen.getAllByRole('button', { name: '2' });
+      // Verify question navigation grid buttons (1, 2) with 44px touch targets
+      const questionNav1 = screen.getAllByRole('button', { name: /^1$/ });
+      const questionNav2 = screen.getAllByRole('button', { name: /^2$/ });
       expect(questionNav1.length).toBeGreaterThan(0);
       expect(questionNav2.length).toBeGreaterThan(0);
 
-      // Verify SUBMIT EXAM button exists
-      expect(screen.getAllByText(/SUBMIT EXAM|Submit Exam/).length).toBeGreaterThan(0);
+      // Clicking Finish opens a full review of answered/unanswered/flagged
+      // questions before any real submission happens.
+      fireEvent.click(screen.getByRole('button', { name: /Finish/i }));
+      expect(
+        await screen.findByText('Check answered and unanswered questions'),
+      ).toBeTruthy();
+      expect(screen.getByText(/2 answered/)).toBeTruthy();
+      expect(screen.getAllByText(/1 flagged/).length).toBeGreaterThan(0);
+
+      // The review screen offers Corrections (go back) and a final submit —
+      // no exam has actually been submitted yet.
+      expect(screen.getByRole('button', { name: /Corrections/i })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Submit Exam/i })).toBeTruthy();
+
+      // Corrections closes the review without submitting.
+      fireEvent.click(screen.getByRole('button', { name: /Corrections/i }));
+      await waitFor(() => {
+        expect(
+          screen.queryByText('Check answered and unanswered questions'),
+        ).toBeNull();
+      });
     });
 
     it('renders the Kiosk entry screen with file drop area, RX30 inputs, and a login button — no LAN or exam-password fields on this page', async () => {

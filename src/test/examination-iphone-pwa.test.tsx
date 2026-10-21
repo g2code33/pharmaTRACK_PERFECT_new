@@ -622,10 +622,21 @@ describe('PHARMATRACK — iPhone PWA Examination Flow', () => {
       expect(mobileNavBtn?.className).toContain('min-w-[44px]');
       expect(mobileNavBtn?.className).toContain('min-h-[44px]');
 
-      // Submit Exam button exists
-      const submitButtons = screen.getAllByRole('button', { name: /SUBMIT EXAM/i });
-      expect(submitButtons.length).toBeGreaterThanOrEqual(1);
-      expect(submitButtons[0].className).toContain('min-h-[48px]');
+      // Finish button exists in the Back 3 / Finish / Next 3 nav bar, gated
+      // until the student reaches the last question — matching the shared
+      // Quick Quiz behavior exactly.
+      const finishButton = screen.getByRole('button', { name: /Finish/i });
+      expect(finishButton).toBeInTheDocument();
+      expect(finishButton).toBeDisabled();
+
+      // Flagging is available per-question.
+      const flagButtons = screen.getAllByRole('button', { name: /^Flag$/i });
+      expect(flagButtons.length).toBeGreaterThanOrEqual(1);
+
+      // Clicking Finish while locked must never open the review or submit —
+      // only reaching the final question unlocks it.
+      fireEvent.click(finishButton);
+      expect(screen.queryByText('Check answered and unanswered questions')).toBeNull();
     });
   });
 });

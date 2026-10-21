@@ -26,6 +26,8 @@ export type PausedQuickQuizState = {
   currentIndex: number;
   timeRemainingSeconds: number | null;
   timeExpired: boolean;
+  /** Student-only "come back to this" bookmarks — never affects grading. Optional for backward compatibility with saves made before flagging existed. */
+  flagged?: string[];
 };
 
 export type QuickCourseResult = {

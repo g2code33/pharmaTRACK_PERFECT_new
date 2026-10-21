@@ -11,6 +11,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Flag,
   Home,
   Layers,
   Loader2,
@@ -132,6 +133,7 @@ const QuickQuiz: React.FC = () => {
   const [packResult, setPackResult] = useState<PackState>({ loading: true, questions: [] });
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [flagged, setFlagged] = useState<Set<string>>(new Set());
   const [finished, setFinished] = useState(false);
   const [timeRemainingSeconds, setTimeRemainingSeconds] = useState<number | null>(null);
   const [timeExpired, setTimeExpired] = useState(false);
@@ -171,6 +173,7 @@ const QuickQuiz: React.FC = () => {
     const load = async () => {
       setPackResult({ loading: true, questions: [] });
       setAnswers({});
+      setFlagged(new Set());
       setCurrentIndex(0);
       setFinished(false);
       setTimeRemainingSeconds(null);
@@ -268,6 +271,7 @@ const QuickQuiz: React.FC = () => {
       return;
     }
     setAnswers(saved.answers || {});
+    setFlagged(new Set(saved.flagged || []));
     setCurrentIndex(
       Math.min(Math.max(0, saved.currentIndex), Math.max(0, packResult.questions.length - 1)),
     );
@@ -298,8 +302,17 @@ const QuickQuiz: React.FC = () => {
 
   const saveAnswer = (id: string, answer: string) =>
     setAnswers((prev) => ({ ...prev, [id]: answer }));
+  /** Student-only "come back to this" bookmark — never affects grading. */
+  const toggleFlag = (id: string) =>
+    setFlagged((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const reset = () => {
     setAnswers({});
+    setFlagged(new Set());
     setCurrentIndex(0);
     setFinished(false);
     setTimeExpired(false);
@@ -468,6 +481,7 @@ const QuickQuiz: React.FC = () => {
       savedAt: new Date().toISOString(),
       packKey: packResult.packKey,
       answers,
+      flagged: Array.from(flagged),
       currentIndex,
       timeRemainingSeconds: timerSeconds,
       timeExpired,
@@ -481,6 +495,7 @@ const QuickQuiz: React.FC = () => {
   const continuePausedQuickQuiz = () => {
     if (!pausedAttempt) return;
     setAnswers(pausedAttempt.answers || {});
+    setFlagged(new Set(pausedAttempt.flagged || []));
     setCurrentIndex(Math.min(pausedAttempt.currentIndex, Math.max(0, packResult.questions.length - 1)));
     setTimeRemainingSeconds(pausedAttempt.timeRemainingSeconds ?? timeLimitSeconds);
     setTimeExpired(pausedAttempt.timeExpired);
@@ -495,12 +510,13 @@ const QuickQuiz: React.FC = () => {
   const autosaveSnapshot = useMemo(() => {
     const hasProgress = Object.values(answers).some((value) => (value || '').trim().length > 0);
     if (finished || isPaused || !packResult.packKey || !packResult.questions.length) return null;
-    if (!hasProgress && currentIndex === 0) return null;
+    if (!hasProgress && currentIndex === 0 && flagged.size === 0) return null;
     return {
       version: 1 as const,
       reason: 'auto' as const,
       packKey: packResult.packKey,
       answers,
+      flagged: Array.from(flagged),
       currentIndex,
       timeRemainingSeconds: timerSeconds,
       timeExpired,
@@ -509,6 +525,7 @@ const QuickQuiz: React.FC = () => {
     answers,
     currentIndex,
     finished,
+    flagged,
     isPaused,
     packResult.packKey,
     packResult.questions.length,
@@ -525,6 +542,7 @@ const QuickQuiz: React.FC = () => {
     setPausedAttempt(null);
     setIsPaused(false);
     setAnswers({});
+    setFlagged(new Set());
     setCurrentIndex(0);
     setTimeExpired(false);
     setTimeRemainingSeconds(timeLimitSeconds);
@@ -1031,6 +1049,11 @@ const QuickQuiz: React.FC = () => {
               >
                 <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" /> {timerLabel}
               </span>
+              {flagged.size > 0 && (
+                <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-1 text-amber-200">
+                  <Flag className="h-3 w-3 sm:h-3.5 sm:w-3.5" fill="currentColor" /> {flagged.size}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -1094,16 +1117,32 @@ const QuickQuiz: React.FC = () => {
                     key={question.id}
                     className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 lg:p-5"
                   >
-                    <div className="mb-2.5 flex flex-wrap items-center gap-2">
-                      <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase text-white">
-                        Q{absoluteIndex + 1}
-                      </span>
-                      <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[10px] font-black uppercase text-purple-700">
-                        {question.questionType.replace('_', ' ')}
-                      </span>
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
-                        {question.difficulty}
-                      </span>
+                    <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase text-white">
+                          Q{absoluteIndex + 1}
+                        </span>
+                        <span className="rounded-full bg-purple-100 px-2.5 py-1 text-[10px] font-black uppercase text-purple-700">
+                          {question.questionType.replace('_', ' ')}
+                        </span>
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase text-slate-600">
+                          {question.difficulty}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleFlag(question.id)}
+                        aria-pressed={flagged.has(question.id)}
+                        title={flagged.has(question.id) ? 'Remove flag' : 'Flag this question for review'}
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black uppercase transition-colors ${
+                          flagged.has(question.id)
+                            ? 'bg-amber-400 text-amber-950'
+                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                        }`}
+                      >
+                        <Flag className="h-3.5 w-3.5" fill={flagged.has(question.id) ? 'currentColor' : 'none'} />
+                        {flagged.has(question.id) ? 'Flagged' : 'Flag'}
+                      </button>
                     </div>
                     <h2 className="text-[15px] font-black leading-snug text-slate-900 sm:text-base lg:text-lg">
                       {question.questionText}
@@ -1181,13 +1220,15 @@ const QuickQuiz: React.FC = () => {
                   <p className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-700">Final review</p>
                   <h2 className="mt-1 text-xl font-black text-slate-900">Check answered and unanswered questions</h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    {answeredCount} answered · {unansweredCount} unanswered. Use Corrections to go back before submitting.
+                    {answeredCount} answered · {unansweredCount} unanswered
+                    {flagged.size ? ` · ${flagged.size} flagged` : ''}. Use Corrections to go back before submitting.
                   </p>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">
                   <div className="grid gap-2">
                     {packResult.questions.map((question, idx) => {
                       const hasAnswer = (answers[question.id] || '').trim().length > 0;
+                      const isFlagged = flagged.has(question.id);
                       return (
                         <button
                           key={question.id}
@@ -1199,7 +1240,10 @@ const QuickQuiz: React.FC = () => {
                             {idx + 1}
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-black text-slate-900 line-clamp-2">{question.questionText}</span>
+                            <span className="flex items-center gap-1.5">
+                              <span className="block text-sm font-black text-slate-900 line-clamp-2">{question.questionText}</span>
+                              {isFlagged && <Flag className="h-3.5 w-3.5 shrink-0 text-amber-500" fill="currentColor" />}
+                            </span>
                             <span className={`mt-1 block text-xs font-bold ${hasAnswer ? 'text-emerald-800' : 'text-amber-800'}`}>
                               {hasAnswer ? `Answered: ${answerLabel(question, answers[question.id] || '')}` : 'Unanswered — tap to correct'}
                             </span>
@@ -1241,10 +1285,15 @@ const QuickQuiz: React.FC = () => {
                 <button
                   key={q.id}
                   onClick={() => goToQuestion(idx)}
-                  className={`h-9 rounded-full text-sm font-black ${idx >= setStart && idx < setEnd ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'border border-slate-200 bg-white text-slate-500'}`}
+                  className={`relative h-9 rounded-full text-sm font-black ${idx >= setStart && idx < setEnd ? 'bg-[#2D6A4F] text-white' : answers[q.id] ? 'bg-emerald-100 text-emerald-700' : 'border border-slate-200 bg-white text-slate-500'}`}
                   aria-current={idx === currentIndex ? 'step' : undefined}
                 >
                   {idx + 1}
+                  {flagged.has(q.id) && (
+                    <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-amber-400 text-amber-950 ring-2 ring-white">
+                      <Flag className="h-2.5 w-2.5" fill="currentColor" />
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
