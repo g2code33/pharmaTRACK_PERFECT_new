@@ -305,6 +305,99 @@ describe('PptxViewer', () => {
     expect(pageInput().value).toBe('1');
   });
 
+  it('falls back to the poster frame instead of a dead black box when a video codec is unsupported', async () => {
+    // Regression test: Chromium cannot decode every historical PowerPoint
+    // codec (notably some WMV variants), and some H.265 clips are
+    // unsupported on Linux/WebKitGTK. An unplayable <video> firing `error`
+    // must not leave the slide with a silent, broken player.
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+    const IMG_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+    const VIDEO_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/video';
+
+    const zip = new JSZip();
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}">
+         <Relationship Id="rId2" Type="${IMG_REL}" Target="../media/poster1.png"/>
+         <Relationship Id="rId3" Type="${VIDEO_REL}" Target="../media/clip1.wmv"/>
+       </Relationships>`,
+    );
+    zip.file('ppt/media/poster1.png', new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+    zip.file('ppt/media/clip1.wmv', new Uint8Array([48, 38, 178, 117]));
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+
+    render(<PptxViewer fileUrl="local:test-video-unplayable" />);
+    const video = await waitFor(() => {
+      const el = screen.getByTestId('pptx-stage').querySelector('video');
+      expect(el).toBeTruthy();
+      return el as HTMLVideoElement;
+    });
+
+    fireEvent.error(video);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pptx-stage').querySelector('video')).toBeNull();
+      const poster = screen.getByTestId('pptx-stage').querySelector('img[alt*="codec"]');
+      expect(poster).toBeTruthy();
+      expect((poster as HTMLImageElement).src).toMatch(/^blob:/);
+    });
+  });
+
+  it('shows an explicit placeholder instead of nothing when a video shape has neither a poster nor a resolvable clip', async () => {
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+
+    const zip = new JSZip();
+    zip.file(
+      'ppt/slides/slide1.xml',
+      `<?xml version="1.0"?>
+<p:sld xmlns:p="${P}" xmlns:a="${A}" xmlns:r="${R}">
+  <p:cSld><p:spTree>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video 1"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill/>
+      <p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`,
+    );
+    // No rId3 relationship at all: neither the poster nor the clip resolves.
+    zip.file(
+      'ppt/slides/_rels/slide1.xml.rels',
+      `<Relationships xmlns="${REL_NS}"></Relationships>`,
+    );
+    mockFetchBlob((await zip.generateAsync({ type: 'blob' })) as Blob);
+
+    render(<PptxViewer fileUrl="local:test-video-unavailable" />);
+    await waitFor(() => expect(pageInput().value).toBe('1'));
+    await waitFor(() => {
+      expect(screen.getByTestId('pptx-stage').querySelector('video')).toBeNull();
+      expect(screen.getByText(/video/i, { selector: '[aria-label="Embedded video unavailable"] span' })).toBeTruthy();
+    });
+  });
+
   it('enters fullscreen and exits with Escape', async () => {
     mockFetchBlob(await buildDeck(DECK));
     render(<PptxViewer fileUrl="local:test-10" />);

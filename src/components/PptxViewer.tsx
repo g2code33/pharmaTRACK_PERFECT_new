@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import {
   AlertTriangle, ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight,
   Download, FileText, Image as ImageIcon, Info, Loader2, Maximize, Menu, Minimize,
-  PanelLeft, Palette, Search, StickyNote, X, ZoomIn, ZoomOut,
+  PanelLeft, Palette, Search, StickyNote, VideoOff, X, ZoomIn, ZoomOut,
 } from 'lucide-react';
 import { isSymbolBulletFont, mapSymbolFontChar, normalizeBulletGlyph, openPptxDeck, ptToPx, type PptxDeck, type PptxLevelDefault, type PptxParagraph, type PptxShape, type PptxSlide } from '../utils/pptxRenderer';
 import SelectionPopup from './SelectionPopup';
@@ -376,7 +376,83 @@ const SlideImage = memo(function SlideImage({
   );
 });
 
-const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxShape; showImages: boolean }) {
+/**
+ * An embedded clip's codec is not guaranteed to be one the device's playback
+ * engine supports (older PowerPoint decks commonly ship WMV, and some H.265
+ * variants are unsupported on Linux/WebKitGTK). Previously an unplayable
+ * video left a dead black box with no explanation. Fall back to the poster
+ * frame PowerPoint always stores alongside the placeholder — still faithful
+ * to the original slide — with a tooltip explaining why it is not playing.
+ */
+const SlideVideo = memo(function SlideVideo({
+  videoUrl,
+  posterUrl,
+  style,
+}: {
+  videoUrl: string;
+  posterUrl?: string;
+  style: React.CSSProperties;
+}) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [videoUrl]);
+  if (failed) {
+    if (posterUrl) {
+      return (
+        <img
+          src={posterUrl}
+          alt="Video poster; this video's codec is not supported on this device"
+          title="This video's codec is not supported on this device. The embedded poster is shown instead."
+          loading="lazy"
+          draggable={false}
+          className="absolute select-none"
+          style={{ ...style, objectFit: 'contain', background: '#000' }}
+        />
+      );
+    }
+    return (
+      <div
+        role="img"
+        aria-label="Embedded video unavailable"
+        className="absolute flex items-center justify-center gap-1 bg-black text-white"
+        style={style}
+      >
+        <VideoOff className="h-4 w-4 shrink-0" />
+        <span className="text-[10px] font-semibold uppercase tracking-wider">Video unavailable</span>
+      </div>
+    );
+  }
+  return (
+    <video
+      data-pptx-video
+      src={videoUrl}
+      poster={posterUrl}
+      controls
+      preload="metadata"
+      playsInline
+      tabIndex={0}
+      title="Click to play. Space to pause/resume, arrow keys to seek, once focused."
+      className="absolute bg-black"
+      style={style}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onError={() => setFailed(true)}
+    />
+  );
+});
+
+const ShapeView = memo(function ShapeView({
+  shape,
+  showImages,
+  // Unused beyond forcing a real re-render: `ensureSlideMedia` mutates a
+  // shape's imageUrl/videoUrl *in place* on the same object the previous
+  // render already saw, so React.memo's shallow prop comparison would
+  // otherwise see an identical `shape` reference and skip re-rendering —
+  // leaving a slide's pictures (and its video) stuck invisible forever once
+  // their media resolves after the shape's first (blank) paint. Including
+  // mediaEpoch in the props makes that resolution visible again.
+  mediaEpoch: _mediaEpoch,
+}: { shape: PptxShape; showImages: boolean; mediaEpoch?: number }) {
   const base: React.CSSProperties = {
     position: 'absolute',
     left: shape.x,
@@ -388,11 +464,25 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
 
   if (shape.type === 'video') {
     if (!showImages || shape.w <= 0 || shape.h <= 0) return null;
-    // A linked (not embedded) clip may not resolve offline — fall back to
-    // the poster frame PowerPoint always stores alongside the placeholder
-    // rather than showing nothing.
+    // A linked (not embedded) clip may not resolve offline, and the clip
+    // itself may still be decoding in the background (it is intentionally
+    // the last thing a slide's media load resolves) — the poster frame
+    // PowerPoint always stores alongside the placeholder covers both cases
+    // rather than showing nothing until the right moment.
     if (!shape.videoUrl) {
-      if (!shape.imageUrl) return null;
+      if (!shape.imageUrl) {
+        return (
+          <div
+            role="img"
+            aria-label="Embedded video unavailable"
+            className="absolute flex items-center justify-center gap-1 bg-black text-white"
+            style={{ ...base, objectFit: 'contain' }}
+          >
+            <VideoOff className="h-4 w-4 shrink-0" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider">Video</span>
+          </div>
+        );
+      }
       return (
         <img
           src={shape.imageUrl}
@@ -405,20 +495,10 @@ const ShapeView = memo(function ShapeView({ shape, showImages }: { shape: PptxSh
       );
     }
     return (
-      <video
-        data-pptx-video
-        src={shape.videoUrl}
-        poster={shape.imageUrl}
-        controls
-        preload="metadata"
-        playsInline
-        tabIndex={0}
-        title="Click to play. Space to pause/resume, arrow keys to seek, once focused."
-        className="absolute bg-black"
+      <SlideVideo
+        videoUrl={shape.videoUrl}
+        posterUrl={shape.imageUrl}
         style={{ ...base, objectFit: 'contain' }}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
       />
     );
   }
@@ -592,7 +672,7 @@ const SlideCanvas = memo(function SlideCanvas({
       data-slide-canvas
     >
       {slide.shapes.map((s) => (
-        <ShapeView key={s.id} shape={s} showImages={showImages} />
+        <ShapeView key={s.id} shape={s} showImages={showImages} mediaEpoch={mediaEpoch} />
       ))}
     </div>
   );
@@ -834,7 +914,13 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
         if (saved && saved >= 1 && saved <= parsed.slideCount) start = saved;
         if (jumpToPage && jumpToPage >= 1 && jumpToPage <= parsed.slideCount) start = jumpToPage;
         const first = await parsed.getSlide(start);
-        await parsed.ensureSlideMedia(start);
+        // Pictures and the starting slide's own video poster only — never the
+        // embedded clip itself. A lecture that opens on a slide with a large
+        // video used to sit on this "Opening presentation…" overlay until
+        // the whole clip was decompressed into memory; the slide-publish
+        // effect below decodes it in the background right after, under its
+        // own lightweight per-slide indicator instead of the full-screen one.
+        await parsed.ensureSlideMedia(start, { includeClips: false });
         if (cancelled) {
           parsed.dispose();
           return;
@@ -903,25 +989,37 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
         setCurrentSlideData(s);
         onSlideChange?.(slide, deck.slideCount, s.text);
       }
-      // Pictures for this slide only. Neighbouring slides stay as text until shown.
-      await deck.ensureSlideMedia(slide);
-      if (!cancelled) {
-        setMediaEpoch((n) => n + 1);
-        setSlidePending(false);
-      }
+      // Pictures (and this slide's own video poster) only, for this slide.
+      // A slide's embedded clip is routinely the single largest part of the
+      // whole file, so it is decoded separately below — the rest of the
+      // slide must never sit waiting behind somebody else's movie.
+      await deck.ensureSlideMedia(slide, { includeClips: false });
+      if (cancelled) return;
+      setMediaEpoch((n) => n + 1);
+      setSlidePending(false);
+      // Decode any embedded video/audio clip in the background. Slides
+      // without one resolve this instantly (already marked loaded above);
+      // slides with one become playable a moment later without blocking
+      // anything else on screen.
+      void deck.ensureSlideMedia(slide).then(() => {
+        if (!cancelled) setMediaEpoch((n) => n + 1);
+      });
     });
     return () => { cancelled = true; };
   }, [deck, slide, onSlideChange]);
 
-  // Quietly warm the neighbouring slides' pictures (and clips) right after
-  // the one on screen. Lazy decks only decode a slide's media when it is
-  // actually viewed, which used to mean a visible pop-in delay every single
-  // time a student pressed "next" while reading. Pre-decoding into the same
+  // Quietly warm the neighbouring slides' pictures right after the one on
+  // screen. Lazy decks only decode a slide's media when it is actually
+  // viewed, which used to mean a visible pop-in delay every single time a
+  // student pressed "next" while reading. Pre-decoding into the same
   // object-URL cache `ensureSlideMedia` already uses means that by the time
   // they get there it is already resolved, so the next slide's images (and
   // video posters) are there immediately instead of after a beat. This never
   // blocks or flashes the currently-shown slide — it does not bump
-  // mediaEpoch, so it cannot re-render anything that is not already on screen.
+  // mediaEpoch, so it cannot re-render anything that is not already on
+  // screen. Embedded clips are deliberately excluded: nobody has opened this
+  // slide yet, so speculatively decompressing its (possibly huge) video
+  // would only compete with the slide the student is actually reading.
   useEffect(() => {
     if (!deck) return;
     let cancelled = false;
@@ -929,7 +1027,7 @@ const PptxViewer: React.FC<PptxViewerProps> = ({
       if (cancelled || n < 1 || n > deck.slideCount) return;
       await deck.getSlide(n).catch(() => null);
       if (cancelled) return;
-      await deck.ensureSlideMedia(n).catch(() => undefined);
+      await deck.ensureSlideMedia(n, { includeClips: false }).catch(() => undefined);
     };
     // Defer one tick so the current slide's own media always wins the race.
     const id = window.setTimeout(() => {

@@ -9,7 +9,7 @@
  *   - the text-only pass (find / extraction) never triggers a visual parse;
  *   - disposal revokes media URLs and no parse survives dispose.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { openPptxDeck, renderPptx, type PptxDeck } from '../utils/pptxRenderer';
 
@@ -103,6 +103,54 @@ async function buildDeckBlobWithImages(count: number): Promise<Blob> {
     // Content does not need to be a real PNG — the renderer only reads the
     // bytes as a Blob and hands them to URL.createObjectURL (mocked in tests).
     zip.file(`ppt/media/image${i}.png`, `fake-image-bytes-${i}`);
+  }
+  const bytes = await zip.generateAsync({ type: 'uint8array' });
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+}
+
+/** A slide with a poster picture and an embedded video clip, like PowerPoint stores them. */
+const slideXmlWithVideo = (n: number) => `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree>
+    <p:pic>
+      <p:nvPicPr>
+        <p:cNvPr id="2" name="Video ${n}"/>
+        <p:cNvPicPr/>
+        <p:nvPr><a:videoFile r:link="rId3"/></p:nvPr>
+      </p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="914400" y="1828800"/><a:ext cx="3657600" cy="2743200"/></a:xfrm></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`;
+
+const slideRelsXmlWithVideo = (n: number) => `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/poster${n}.png"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/video" Target="../media/clip${n}.mp4"/>
+</Relationships>`;
+
+/** Deck where every slide carries a poster picture plus an embedded video clip. */
+async function buildDeckBlobWithVideo(count: number): Promise<Blob> {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+  zip.file('ppt/presentation.xml', PRESENTATION_XML(count));
+  zip.file('ppt/_rels/presentation.xml.rels', RELS_XML(count));
+  zip.file(
+    'ppt/slideLayouts/slideLayout1.xml',
+    '<?xml version="1.0"?><p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree/></p:cSld></p:sldLayout>',
+  );
+  for (let i = 1; i <= count; i++) {
+    zip.file(`ppt/slides/slide${i}.xml`, slideXmlWithVideo(i));
+    zip.file(`ppt/slides/_rels/slide${i}.xml.rels`, slideRelsXmlWithVideo(i));
+    zip.file(`ppt/media/poster${i}.png`, `fake-poster-bytes-${i}`);
+    // Content does not need to be a real MP4 — the renderer only reads the
+    // bytes as a Blob and hands them to URL.createObjectURL (mocked in tests).
+    zip.file(`ppt/media/clip${i}.mp4`, `fake-video-bytes-${i}`);
   }
   const bytes = await zip.generateAsync({ type: 'uint8array' });
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -211,6 +259,64 @@ describe('openPptxDeck — opening a deck parses one slide, not the file', () =>
     expect(await deck.getSlide(0)).toBeNull();
     expect(await deck.getSlide(4)).toBeNull();
     deck.dispose();
+  });
+});
+
+describe('ensureSlideMedia({ includeClips }) — a slide\'s video clip is deferred separately', () => {
+  it('loads the poster picture but not the embedded clip when includeClips is false', async () => {
+    // Regression test: a video shape's own poster used to be resolved in the
+    // same pass as its (potentially huge) clip, and a neighbour prefetch had
+    // no way to warm a slide's pictures without also decompressing its
+    // movie. `includeClips: false` must resolve the poster alone.
+    const deck = await openPptxDeck(await buildDeckBlobWithVideo(3), { lazyMedia: true });
+    const slide = await deck.getSlide(1);
+    await deck.ensureSlideMedia(1, { includeClips: false });
+    const shape = slide?.shapes.find((s) => s.type === 'video');
+    expect(shape?.imageUrl).toBeTruthy();
+    expect(shape?.videoUrl).toBeUndefined();
+    deck.dispose();
+  });
+
+  it('loads the clip too once includeClips is true (the default)', async () => {
+    const deck = await openPptxDeck(await buildDeckBlobWithVideo(3), { lazyMedia: true });
+    const slide = await deck.getSlide(1);
+    await deck.ensureSlideMedia(1, { includeClips: false });
+    await deck.ensureSlideMedia(1);
+    const shape = slide?.shapes.find((s) => s.type === 'video');
+    expect(shape?.imageUrl).toBeTruthy();
+    expect(shape?.videoUrl).toBeTruthy();
+    deck.dispose();
+  });
+
+  it('a bare ensureSlideMedia call (no options) still loads both, unchanged from before', async () => {
+    const deck = await openPptxDeck(await buildDeckBlobWithVideo(3), { lazyMedia: true });
+    const slide = await deck.getSlide(2);
+    await deck.ensureSlideMedia(2);
+    const shape = slide?.shapes.find((s) => s.type === 'video');
+    expect(shape?.imageUrl).toBeTruthy();
+    expect(shape?.videoUrl).toBeTruthy();
+    deck.dispose();
+  });
+
+  it('gives an embedded video a real video MIME type instead of an untyped blob', async () => {
+    // WebView2/WebKitGTK (and Chromium) can refuse to decode a video from an
+    // untyped blob: URL — JSZip hands back parts with blob.type === ''. The
+    // object URL handed to <video src> must carry the codec's real MIME.
+    const seen: string[] = [];
+    const spy = vi.spyOn(URL, 'createObjectURL').mockImplementation((obj: Blob | MediaSource) => {
+      seen.push((obj as Blob).type);
+      return `blob:mock/${seen.length}`;
+    });
+    try {
+      const deck = await openPptxDeck(await buildDeckBlobWithVideo(1), { lazyMedia: true });
+      await deck.getSlide(1);
+      await deck.ensureSlideMedia(1);
+      expect(seen).toContain('video/mp4');
+      expect(seen).toContain('image/png');
+      deck.dispose();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

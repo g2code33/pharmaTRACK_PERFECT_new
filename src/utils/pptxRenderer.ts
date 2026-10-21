@@ -171,6 +171,16 @@ export interface PptxSlide {
   shapes: PptxShape[];
 }
 
+export interface PptxMediaOptions {
+  /**
+   * False to skip embedded video/audio clips: load backgrounds, pictures and
+   * a video's own poster frame only. A speculative prefetch (or a static
+   * thumbnail) has no business decompressing a multi-hundred-megabyte movie
+   * for a slide nobody has opened yet. Defaults to true.
+   */
+  includeClips?: boolean;
+}
+
 export interface PptxDocument {
   slides: PptxSlide[];
   /** CSS pixels. */
@@ -184,7 +194,7 @@ export interface PptxDocument {
    * parse. Safe to call more than once. Large decks pass `{ lazyMedia: true }`
    * so opening the file does not decode every picture.
    */
-  ensureSlideMedia: (slideNumber: number) => Promise<void>;
+  ensureSlideMedia: (slideNumber: number, options?: PptxMediaOptions) => Promise<void>;
   dispose: () => void;
 }
 
@@ -853,6 +863,37 @@ function resolveZipPath(fromDir: string, target: string): string {
   return parts.join('/');
 }
 
+/**
+ * JSZip hands back embedded parts as untyped Blobs (`type: ''`). Images
+ * generally still render because `<img>` sniffs the file's magic bytes, but
+ * Chromium (and the WebView2/WebKitGTK engines the desktop build embeds)
+ * intentionally relies on a real `Content-Type`-equivalent before it will
+ * decode several video/audio codecs from a `blob:` URL — an untyped video
+ * blob can silently fail to play. Preserve the package bytes untouched while
+ * giving the object URL the MIME its file extension implies.
+ */
+const MEDIA_MIME_BY_EXTENSION: Record<string, string> = {
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime',
+  webm: 'video/webm', ogv: 'video/ogg', avi: 'video/x-msvideo',
+  wmv: 'video/x-ms-wmv', mpg: 'video/mpeg', mpeg: 'video/mpeg',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac',
+  wav: 'audio/wav', oga: 'audio/ogg', ogg: 'audio/ogg',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+  bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
+};
+
+function mediaMimeForPath(path: string): string {
+  const extension = path.toLowerCase().split(/[?#]/)[0].split('.').pop() || '';
+  return MEDIA_MIME_BY_EXTENSION[extension] || '';
+}
+
+/** Re-types an untyped (or mistyped) Blob without copying its bytes. */
+function withMediaMime(blob: Blob, path: string): Blob {
+  const mime = mediaMimeForPath(path);
+  return mime && blob.type !== mime ? blob.slice(0, blob.size, mime) : blob;
+}
+
 /* ------------------------------------------------------------------ */
 /* Package-level helpers                                              */
 /* ------------------------------------------------------------------ */
@@ -1026,10 +1067,11 @@ async function backgroundPicture(
   if (!rid) return undefined;
   const rel = rels.get(rid);
   if (!rel) return undefined;
-  const media = zip.file(resolveZipPath(partDir, rel.target));
+  const mediaPath = resolveZipPath(partDir, rel.target);
+  const media = zip.file(mediaPath);
   if (!media) return undefined;
   try {
-    const url = URL.createObjectURL(await media.async('blob'));
+    const url = URL.createObjectURL(withMediaMime(await media.async('blob'), mediaPath));
     onUrl(url);
     return url;
   } catch {
@@ -1481,8 +1523,14 @@ export interface PptxDeck {
    * so searching a deck never triggers layout/theme parsing.
    */
   textIndex: (onProgress?: (done: number, total: number) => void) => Promise<{ slide: number; text: string }[]>;
-  /** Decodes the pictures of one slide. No-op when already loaded. */
-  ensureSlideMedia: (slideNumber: number) => Promise<void>;
+  /**
+   * Decodes the media of one slide. No-op once already loaded at the
+   * requested tier. `{ includeClips: false }` (the default for prefetch and
+   * thumbnails) resolves backgrounds, pictures and video poster frames only
+   * — the embedded clip itself, often the single largest part of the file,
+   * is deferred until the slide is actually the one on screen.
+   */
+  ensureSlideMedia: (slideNumber: number, options?: PptxMediaOptions) => Promise<void>;
   /** Releases every object URL and cache entry. The deck is unusable after. */
   dispose: () => void;
 }
@@ -1537,6 +1585,9 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
   /** Media paths decoded for a given slide number (for eviction/refcount). */
   const slideLoadedPaths = new Map<number, string[]>();
   const jobs = new Map<number, { rels: Map<string, Rel>; slideBgPath?: string; layoutBgPath?: string }>();
+  /** Slides whose backgrounds, pictures and video poster frames are ready. */
+  const loadedPreviewMedia = new Set<number>();
+  /** Slides whose preview media AND embedded video/audio clips are ready. */
   const loadedMedia = new Set<number>();
   const inflight = new Map<number, Promise<void>>();
   let alive = true;
@@ -1551,7 +1602,7 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
     const media = zip.file(path);
     if (!media) return undefined;
     try {
-      const url = URL.createObjectURL(await media.async('blob'));
+      const url = URL.createObjectURL(withMediaMime(await media.async('blob'), path));
       if (!alive) {
         try { URL.revokeObjectURL(url); } catch { /* disposed mid-load */ }
         return undefined;
@@ -1754,6 +1805,12 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
   let allParsed = false;
 
   const revokeSlideMedia = (n: number) => {
+    // A later visit reparses the slide and must be allowed to rematerialise
+    // every URL revoked below. Leaving either flag set used to make a
+    // revisited slide's media (images AND video) stay permanently blank.
+    loadedPreviewMedia.delete(n);
+    loadedMedia.delete(n);
+    inflight.delete(n);
     const paths = slideLoadedPaths.get(n);
     if (!paths) return;
     for (const path of paths) {
@@ -1781,15 +1838,6 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
       parsedSlides.delete(oldest.value);
       jobs.delete(oldest.value);
       revokeSlideMedia(oldest.value);
-      // The slide object (and its `job`) are gone, so a future revisit calls
-      // parseSlideAt() again and gets a brand-new PptxSlide whose shapes have
-      // imageUrl/videoUrl unset once more. Without clearing these too,
-      // ensureSlideMedia() for that slide number would see it already marked
-      // "loaded" from before eviction and return immediately without ever
-      // decoding the picture/video again — leaving every image and video on
-      // a revisited slide permanently blank for the rest of the session.
-      loadedMedia.delete(oldest.value);
-      inflight.delete(oldest.value);
     }
   };
 
@@ -1820,15 +1868,32 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
 
   /* ---- media loading for one slide (lazy decks) ---- */
 
-  const ensureSlideMedia = (slideNumber: number): Promise<void> => {
-    if (!alive || loadedMedia.has(slideNumber)) return Promise.resolve();
+  // A slide's embedded video/audio clip is routinely the single largest part
+  // of the whole package — PowerPoint decks with a short lecture clip are
+  // dominated by it. Decoding it inline with the slide's pictures used to
+  // mean a plain picture-only slide waited behind a stranger's giant movie
+  // during prefetch, and a video slide's OWN poster frame could not appear
+  // until its own clip had finished decoding too. `includeClips: false`
+  // (the default for neighbour prefetch and thumbnails) resolves everything
+  // except clips — backgrounds, pictures, fills and a video's poster — so
+  // that work is cheap and bounded regardless of what media the deck holds.
+  const ensureSlideMedia = (slideNumber: number, options: PptxMediaOptions = {}): Promise<void> => {
+    const includeClips = options.includeClips !== false;
+    if (!alive || (includeClips ? loadedMedia.has(slideNumber) : loadedPreviewMedia.has(slideNumber))) {
+      return Promise.resolve();
+    }
     const pending = inflight.get(slideNumber);
-    if (pending) return pending;
+    if (pending) {
+      // Serialize per slide. A full request arriving while a lightweight
+      // preview is in flight waits for it, then runs its own continuation.
+      return pending.then(() => ensureSlideMedia(slideNumber, options));
+    }
     const run = (async () => {
       const job = jobs.get(slideNumber);
       const slide = parsedSlides.get(slideNumber);
       if (!job || !slide) {
-        loadedMedia.add(slideNumber);
+        loadedPreviewMedia.add(slideNumber);
+        if (includeClips) loadedMedia.add(slideNumber);
         return;
       }
       const note = (path?: string) => {
@@ -1836,18 +1901,50 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
         const list = slideLoadedPaths.get(slideNumber) ?? [];
         if (!list.includes(path)) { list.push(path); slideLoadedPaths.set(slideNumber, list); }
       };
-      if (job.slideBgPath) {
-        slide.backgroundImageUrl = (await urlFor(job.slideBgPath, slideNumber)) ?? slide.backgroundImageUrl;
-        note(job.slideBgPath);
-      } else if (job.layoutBgPath && !slide.backgroundImageUrl) {
-        const layoutUrl = await urlFor(job.layoutBgPath, slideNumber);
-        if (layoutUrl) {
-          note(job.layoutBgPath);
-          slide.backgroundImageUrl = layoutUrl;
+
+      if (!loadedPreviewMedia.has(slideNumber)) {
+        if (job.slideBgPath) {
+          slide.backgroundImageUrl = (await urlFor(job.slideBgPath, slideNumber)) ?? slide.backgroundImageUrl;
+          note(job.slideBgPath);
+        } else if (job.layoutBgPath && !slide.backgroundImageUrl) {
+          const layoutUrl = await urlFor(job.layoutBgPath, slideNumber);
+          if (layoutUrl) {
+            note(job.layoutBgPath);
+            slide.backgroundImageUrl = layoutUrl;
+          }
         }
+        for (const shape of slide.shapes) {
+          if (shape.fillImageRid && !shape.fill) {
+            const fillRel = job.rels.get(shape.fillImageRid);
+            if (fillRel && fillRel.type.endsWith('/image')) {
+              const fillPath = resolveZipPath('ppt/slides', fillRel.target);
+              const fillUrl = await urlFor(fillPath, slideNumber);
+              if (fillUrl) {
+                note(fillPath);
+                shape.fill = pictureFillCss(fillUrl, Boolean(shape.fillImageTiled));
+                if (!slide.images.includes(fillUrl)) slide.images.push(fillUrl);
+              }
+            }
+          }
+          // Ordinary image relationships (including a video shape's own
+          // poster frame) — cheap enough for a static thumbnail. The
+          // potentially very large clip itself stays deferred below.
+          if (!shape.imageRid || shape.imageUrl) continue;
+          const rel = job.rels.get(shape.imageRid);
+          if (!rel || !rel.type.endsWith('/image')) continue;
+          const path = resolveZipPath('ppt/slides', rel.target);
+          const url = await urlFor(path, slideNumber);
+          if (!url) continue;
+          note(path);
+          shape.imageUrl = url;
+          if (!slide.images.includes(url)) slide.images.push(url);
+        }
+        loadedPreviewMedia.add(slideNumber);
       }
-      for (const shape of slide.shapes) {
-        if (shape.videoRid && !shape.videoUrl) {
+
+      if (includeClips) {
+        for (const shape of slide.shapes) {
+          if (!shape.videoRid || shape.videoUrl) continue;
           const videoRel = job.rels.get(shape.videoRid);
           if (
             videoRel &&
@@ -1861,30 +1958,13 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
             }
           }
         }
-        if (shape.fillImageRid && !shape.fill) {
-          const fillRel = job.rels.get(shape.fillImageRid);
-          if (fillRel && fillRel.type.endsWith('/image')) {
-            const fillPath = resolveZipPath('ppt/slides', fillRel.target);
-            const fillUrl = await urlFor(fillPath, slideNumber);
-            if (fillUrl) {
-              note(fillPath);
-              shape.fill = pictureFillCss(fillUrl, Boolean(shape.fillImageTiled));
-              if (!slide.images.includes(fillUrl)) slide.images.push(fillUrl);
-            }
-          }
-        }
-        if (!shape.imageRid || shape.imageUrl) continue;
-        const rel = job.rels.get(shape.imageRid);
-        if (!rel || !rel.type.endsWith('/image')) continue;
-        const path = resolveZipPath('ppt/slides', rel.target);
-        const url = await urlFor(path, slideNumber);
-        if (!url) continue;
-        note(path);
-        shape.imageUrl = url;
-        if (!slide.images.includes(url)) slide.images.push(url);
+        loadedMedia.add(slideNumber);
       }
-      loadedMedia.add(slideNumber);
-    })();
+    })().finally(() => {
+      // Completed and failed runs both leave the map retryable. A full
+      // request that was waiting on a preview starts right after this.
+      inflight.delete(slideNumber);
+    });
     inflight.set(slideNumber, run);
     return run;
   };
@@ -1910,7 +1990,10 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
       for (const s of slides) {
         parsedSlides.set(s.slideNumber, s);
       }
-      if (!lazyMedia) slides.forEach((s) => loadedMedia.add(s.slideNumber));
+      if (!lazyMedia) slides.forEach((s) => {
+        loadedPreviewMedia.add(s.slideNumber);
+        loadedMedia.add(s.slideNumber);
+      });
       allParsed = true;
     }
     return slides;
@@ -1981,6 +2064,7 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
     relsCache.clear();
     layoutCache.clear();
     inflight.clear();
+    loadedPreviewMedia.clear();
     loadedMedia.clear();
     urlRevoke.forEach((u) => {
       try {
