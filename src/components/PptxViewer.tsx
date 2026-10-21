@@ -604,6 +604,38 @@ const SlideCanvas = memo(function SlideCanvas({
 
 const THUMB_W = 132;
 
+/**
+ * One shared IntersectionObserver for the whole thumbnail rail instead of
+ * one per thumbnail. A 125+ slide deck used to spin up 125+ independent
+ * observers (each with its own internal bookkeeping) the moment the sidebar
+ * opened — real, measurable setup/teardown cost that made the rail itself
+ * feel heavy to scroll. A single observer watching every thumbnail element
+ * and dispatching to a per-element callback does the identical job for a
+ * fraction of the overhead.
+ */
+let sharedThumbObserver: IntersectionObserver | null = null;
+const thumbCallbacks = new WeakMap<Element, (visible: boolean) => void>();
+function observeThumb(el: Element, onChange: (visible: boolean) => void): () => void {
+  if (typeof IntersectionObserver === 'undefined') {
+    onChange(true);
+    return () => {};
+  }
+  if (!sharedThumbObserver) {
+    sharedThumbObserver = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) thumbCallbacks.get(e.target)?.(e.isIntersecting);
+      },
+      { rootMargin: '400px 0px' },
+    );
+  }
+  thumbCallbacks.set(el, onChange);
+  sharedThumbObserver.observe(el);
+  return () => {
+    sharedThumbObserver?.unobserve(el);
+    thumbCallbacks.delete(el);
+  };
+}
+
 const Thumb = memo(function Thumb({
   index, active, deck, onGo,
 }: { index: number; active: number; deck: PptxDeck; onGo: (n: number) => void }) {
@@ -617,30 +649,30 @@ const Thumb = memo(function Thumb({
     // Rooted at the viewport: the strip lives in its own scroll container
     // (sidebar on desktop, bottom sheet on mobile), so a stage-rooted observer
     // would never fire.
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      setInView(true);
-      return;
-    }
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) setInView(e.isIntersecting);
-      },
-      { rootMargin: '400px 0px' },
-    );
-    io.observe(el);
-    return () => io.disconnect();
+    if (!el) return;
+    return observeThumb(el, setInView);
   }, []);
 
-  // Parse the thumbnail's slide only when it is actually shown (or near the
-  // active slide). On a 150-slide deck that keeps the sidebar's cost at a
-  // handful of parsed slides instead of the whole file.
+  // Parse the thumbnail's slide only once it has stayed in view for a beat.
+  // A fast fling through a 100+ slide rail used to make every thumbnail it
+  // swept past fire a synchronous XML parse the instant it crossed the
+  // (generous, 400px) prefetch margin — a burst of main-thread work on every
+  // scroll frame that was the actual cause of the rail feeling slow and
+  // janky. Waiting a short beat, and skipping entirely if the thumbnail is
+  // scrolled back out of view before it fires, means only the thumbnails the
+  // student actually pauses on ever get parsed.
   useEffect(() => {
-    let cancelled = false;
     if (slide || !inView) return;
-    void deck.getSlide(index).then((s) => {
-      if (!cancelled) setSlide(s);
-    });
-    return () => { cancelled = true; };
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void deck.getSlide(index).then((s) => {
+        if (!cancelled) setSlide(s);
+      });
+    }, 60);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [inView, index, deck, slide]);
 
   const isActive = active === index;
@@ -654,7 +686,7 @@ const Thumb = memo(function Thumb({
       ref={ref}
       onClick={() => onGo(index)}
       data-testid={`pptx-thumb-${index}`}
-      className={`w-36 shrink-0 p-2 sm:w-full sm:p-0 transition-colors ${isActive ? 'bg-amber-50' : 'hover:bg-slate-200/70'}`}
+      className={`pptx-thumb-rail-item w-36 shrink-0 p-2 sm:w-full sm:p-0 transition-colors ${isActive ? 'bg-amber-50' : 'hover:bg-slate-200/70'}`}
       title={`Go to slide ${index}`}
     >
       <div

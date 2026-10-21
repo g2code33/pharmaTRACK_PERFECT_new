@@ -631,6 +631,21 @@ html.dark select {
   backface-visibility: hidden;
   contain: layout paint style;
 }
+/* Thumbnail rail: a long deck mounts every thumbnail (so Prev/Next and
+   scroll position stay correct) but most of them sit off-screen most of the
+   time. `content-visibility: auto` tells the browser to skip layout/paint
+   for the ones currently scrolled out of view entirely, instead of doing
+   that work for 100+ boxes on every scroll frame — the single biggest
+   contributor to a long deck's thumbnail rail feeling slow to scroll. */
+.pptx-thumb-rail-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 148px auto 84px;
+}
+@supports not (content-visibility: auto) {
+  .pptx-thumb-rail-item {
+    contain: layout paint style;
+  }
+}
 /* Slide-change feel: a short fade-and-lift, keyed to remount per slide so it
    replays on every page turn. PowerPoint-fast (140 ms) and switched off
    entirely for users who prefer reduced motion. */

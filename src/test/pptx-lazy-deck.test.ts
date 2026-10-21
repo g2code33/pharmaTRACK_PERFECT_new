@@ -63,6 +63,52 @@ async function buildDeckBlob(count: number, withNotes = false): Promise<Blob> {
   return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
 }
 
+/** A slide with a single embedded picture (its own, slide-numbered image part). */
+const slideXmlWithImage = (n: number) => `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld><p:spTree>
+    <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title ${n}"/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+      <p:spPr><a:xfrm><a:off x="685800" y="457200"/><a:ext cx="7772400" cy="914400"/></a:xfrm></p:spPr>
+      <p:txBody><a:p><a:r><a:t>Slide ${n} title</a:t></a:r></a:p></p:txBody></p:sp>
+    <p:pic>
+      <p:nvPicPr><p:cNvPr id="3" name="Picture ${n}"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>
+      <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+      <p:spPr><a:xfrm><a:off x="914400" y="1828800"/><a:ext cx="2743200" cy="2057400"/></a:xfrm>
+        <a:prstGeom prst="rect"/></p:spPr>
+    </p:pic>
+  </p:spTree></p:cSld>
+</p:sld>`;
+
+const slideRelsXmlWithImage = (n: number) => `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${n}.png"/>
+</Relationships>`;
+
+/** Deck where every slide carries its own embedded picture (distinct media part). */
+async function buildDeckBlobWithImages(count: number): Promise<Blob> {
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+  zip.file('ppt/presentation.xml', PRESENTATION_XML(count));
+  zip.file('ppt/_rels/presentation.xml.rels', RELS_XML(count));
+  zip.file(
+    'ppt/slideLayouts/slideLayout1.xml',
+    '<?xml version="1.0"?><p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree/></p:cSld></p:sldLayout>',
+  );
+  for (let i = 1; i <= count; i++) {
+    zip.file(`ppt/slides/slide${i}.xml`, slideXmlWithImage(i));
+    zip.file(`ppt/slides/_rels/slide${i}.xml.rels`, slideRelsXmlWithImage(i));
+    // Content does not need to be a real PNG — the renderer only reads the
+    // bytes as a Blob and hands them to URL.createObjectURL (mocked in tests).
+    zip.file(`ppt/media/image${i}.png`, `fake-image-bytes-${i}`);
+  }
+  const bytes = await zip.generateAsync({ type: 'uint8array' });
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+}
+
 /** Instrumented DOMParser: counts slide XMLs actually parsed. */
 function countSlideParses(): () => number {
   const original = globalThis.DOMParser;
@@ -130,6 +176,33 @@ describe('openPptxDeck — opening a deck parses one slide, not the file', () =>
     expect(again?.title).toBe('Slide 1 title');
     const last = await deck.getSlide(40);
     expect(last?.title).toBe('Slide 40 title');
+    deck.dispose();
+  });
+
+  it('still decodes a picture on a slide after it is evicted and revisited', async () => {
+    // Regression test: a long deck's LRU drops old slides from its parse
+    // cache as the student pages forward. Revisiting one of those slides
+    // must decode its picture again — not silently skip it forever because
+    // the slide number was already marked "media loaded" before eviction.
+    const deck = await openPptxDeck(await buildDeckBlobWithImages(40), { lazyMedia: true });
+
+    const first = await deck.getSlide(1);
+    await deck.ensureSlideMedia(1);
+    expect(first?.shapes.find((s) => s.type === 'image')?.imageUrl).toBeTruthy();
+
+    // Page through enough slides to evict slide 1 from the bounded cache.
+    for (let n = 2; n <= 40; n++) {
+      await deck.getSlide(n);
+      await deck.ensureSlideMedia(n);
+    }
+
+    // Revisiting slide 1: it is re-parsed from scratch (new shape objects,
+    // imageUrl unset again) — ensureSlideMedia must still decode it.
+    const revisited = await deck.getSlide(1);
+    await deck.ensureSlideMedia(1);
+    const picture = revisited?.shapes.find((s) => s.type === 'image');
+    expect(picture?.imageUrl).toBeTruthy();
+
     deck.dispose();
   });
 

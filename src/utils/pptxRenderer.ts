@@ -1781,6 +1781,15 @@ export async function openPptxDeck(blob: Blob, opts?: { lazyMedia?: boolean }): 
       parsedSlides.delete(oldest.value);
       jobs.delete(oldest.value);
       revokeSlideMedia(oldest.value);
+      // The slide object (and its `job`) are gone, so a future revisit calls
+      // parseSlideAt() again and gets a brand-new PptxSlide whose shapes have
+      // imageUrl/videoUrl unset once more. Without clearing these too,
+      // ensureSlideMedia() for that slide number would see it already marked
+      // "loaded" from before eviction and return immediately without ever
+      // decoding the picture/video again — leaving every image and video on
+      // a revisited slide permanently blank for the rest of the session.
+      loadedMedia.delete(oldest.value);
+      inflight.delete(oldest.value);
     }
   };
 
